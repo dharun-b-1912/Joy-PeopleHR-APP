@@ -126,6 +126,7 @@ class _DocumentsScreenState extends State<DocumentsScreen> {
               ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
               : RefreshIndicator(
                   color: AppColors.primary,
+                  backgroundColor: Colors.white,
                   onRefresh: () => controller.loadAllData(),
                   child: ListView(
                     physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),

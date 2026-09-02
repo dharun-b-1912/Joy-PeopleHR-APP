@@ -33,6 +33,8 @@ class _RegularizationModalState extends State<RegularizationModal> {
   final TextEditingController _reasonController = TextEditingController();
   String? _errorText;
 
+  bool _isSubmitting = false;
+
   final List<String> _quickReasons = const [
     "Forgot to check in",
     "Forgot to check out",
@@ -417,48 +419,69 @@ class _RegularizationModalState extends State<RegularizationModal> {
                 ),
                 AppSpacing.gapXL,
                 AppButton(
-                  label: "Submit Request",
-                  icon: CupertinoIcons.arrow_right,
+                  label: _isSubmitting ? "Submitting..." : "Submit Request",
+                  icon: _isSubmitting ? null : CupertinoIcons.arrow_right,
+                  isLoading: _isSubmitting,
                   isFullWidth: true,
                   variant: AppButtonVariant.primaryPill,
-                  onPressed: () async {
-                    if (_isOffDay) {
-                      setState(() => _errorText = "No shift assigned for this date (Week Off)");
-                      return;
-                    }
+                  onPressed: _isSubmitting
+                      ? null
+                      : () async {
+                          if (_isOffDay) {
+                            setState(() => _errorText = "No shift assigned for this date (Week Off)");
+                            return;
+                          }
 
-                    final reason = _reasonController.text.trim();
-                    if (reason.isEmpty) {
-                      setState(() => _errorText = "Please enter a reason for regularization");
-                      return;
-                    }
+                          // Check if a regularization request is already pending for this date
+                          final existingPending = AttendanceDetailController.instance.regularizations.any((r) =>
+                              r.date.year == _selectedDate.year &&
+                              r.date.month == _selectedDate.month &&
+                              r.date.day == _selectedDate.day &&
+                              r.statusState != RegularizationStatusState.rejected);
 
-                    final inStr = _formatTimeOfDay(_inTime);
-                    final outStr = _formatTimeOfDay(_outTime);
+                          if (existingPending) {
+                            setState(() => _errorText = "A regularization request already exists for this date.");
+                            return;
+                          }
 
-                    final nav = Navigator.of(context);
-                    final messenger = ScaffoldMessenger.of(context);
+                          final reason = _reasonController.text.trim();
+                          if (reason.isEmpty) {
+                            setState(() => _errorText = "Please enter a reason for regularization");
+                            return;
+                          }
 
-                    final success = await AttendanceDetailController.instance.submitRegularization(
-                      date: _selectedDate,
-                      inTime: inStr,
-                      outTime: outStr,
-                      reason: reason,
-                      shiftName: _allocatedShiftName,
-                      shiftWindow: _allocatedShiftWindow,
-                    );
+                          final inStr = _formatTimeOfDay(_inTime);
+                          final outStr = _formatTimeOfDay(_outTime);
 
-                    if (mounted) {
-                      nav.pop();
-                      messenger.showSnackBar(
-                        SnackBar(
-                          content: Text(success ? "Regularization request submitted (Pending Approval)" : "Submission failed."),
-                          backgroundColor: success ? AppColors.primary : AppColors.statusError,
-                          behavior: SnackBarBehavior.floating,
-                        ),
-                      );
-                    }
-                  },
+                          setState(() {
+                            _isSubmitting = true;
+                            _errorText = null;
+                          });
+
+                          final nav = Navigator.of(context);
+                          final messenger = ScaffoldMessenger.of(context);
+
+                          final success = await AttendanceDetailController.instance.submitRegularization(
+                            date: _selectedDate,
+                            inTime: inStr,
+                            outTime: outStr,
+                            reason: reason,
+                            shiftName: _allocatedShiftName,
+                            shiftWindow: _allocatedShiftWindow,
+                          );
+
+                          if (mounted) {
+                            setState(() => _isSubmitting = false);
+                            nav.pop();
+                            messenger.showSnackBar(
+                              SnackBar(
+                                content: Text(success ? "Regularization request submitted (Pending Approval)" : "Submission failed."),
+                                backgroundColor: success ? AppColors.primary : AppColors.statusError,
+                                behavior: SnackBarBehavior.floating,
+                              ),
+                            );
+                          }
+                        },
                 ),
               ],
             ),

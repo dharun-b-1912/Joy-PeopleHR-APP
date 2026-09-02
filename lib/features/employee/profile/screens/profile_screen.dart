@@ -17,7 +17,6 @@ import '../../../../widgets/core/status_chip.dart';
 import '../../../profile/dialogs/change_password_modal.dart';
 import '../../../../repositories/supabase/supabase_auth_repository.dart';
 import '../../../../core/services/avatar_service.dart';
-import '../widgets/profile_photo_editor_dialog.dart';
 import '../dialogs/emergency_contact_dialog.dart';
 import '../dialogs/documents_summary_dialog.dart';
 import '../dialogs/assets_summary_dialog.dart';
@@ -412,66 +411,59 @@ class _ProfileScreenState extends State<ProfileScreen> {
           }
           return;
         }
-        _showImagePreviewDialog(bytes, fileName: picked.name);
+        await _uploadAndSavePhoto(bytes, fileName: picked.name);
       }
     } catch (e) {
       secureLog("Error picking image: $e");
     }
   }
 
-  void _showImagePreviewDialog(Uint8List imageBytes, {String? fileName}) {
-    ProfilePhotoEditorDialog.show(
-      context: context,
-      imageBytes: imageBytes,
-      onChooseAnother: _showPhotoPickerOptions,
-      onPhotoSaved: (bytes) async {
-        setState(() => _isUploadingPhoto = true);
-        try {
-          await AvatarService.instance
-              .uploadAndActivateAvatarBytes(bytes, fileName: fileName);
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Row(
-                  children: [
-                    const Icon(CupertinoIcons.checkmark_circle_fill,
-                        color: Colors.white, size: 18),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        "Profile photo updated and synced successfully.",
-                        style: AppTypography.bodyLarge.copyWith(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
+  Future<void> _uploadAndSavePhoto(Uint8List imageBytes, {String? fileName}) async {
+    setState(() => _isUploadingPhoto = true);
+    try {
+      await AvatarService.instance
+          .uploadAndActivateAvatarBytes(imageBytes, fileName: fileName);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(CupertinoIcons.checkmark_circle_fill,
+                    color: Colors.white, size: 18),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    "Profile photo updated and synced successfully.",
+                    style: AppTypography.bodyLarge.copyWith(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w600,
                     ),
-                  ],
+                  ),
                 ),
-                backgroundColor: AppColors.primary,
-                duration: const Duration(seconds: 3),
-                behavior: SnackBarBehavior.floating,
-                shape: RoundedRectangleBorder(borderRadius: AppRadius.borderMd),
-              ),
-            );
-          }
-        } catch (e) {
-          secureLog("Error saving avatar: $e");
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text(
-                    "We couldn't save the new profile photo. Your existing photo is safe. ($e)"),
-                backgroundColor: Colors.red,
-                behavior: SnackBarBehavior.floating,
-              ),
-            );
-          }
-        } finally {
-          if (mounted) setState(() => _isUploadingPhoto = false);
-        }
-      },
-    );
+              ],
+            ),
+            backgroundColor: AppColors.primary,
+            duration: const Duration(seconds: 3),
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(borderRadius: AppRadius.borderMd),
+          ),
+        );
+      }
+    } catch (e) {
+      secureLog("Error saving avatar: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+                "We couldn't save the new profile photo. Your existing photo is safe. ($e)"),
+            backgroundColor: Colors.red,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isUploadingPhoto = false);
+    }
   }
 
   Widget _buildSectionTitle(String title, {IconData? icon, Widget? trailing}) {
@@ -681,6 +673,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             bottom: true,
             child: RefreshIndicator(
               color: AppColors.primary,
+              backgroundColor: Colors.white,
               onRefresh: () async {
                 await EmployeeRealtimeService.instance.reconcile();
               },
@@ -1790,6 +1783,38 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                     size: 16, color: AppColors.roseFg),
                               ],
                             ),
+                          ),
+                        ),
+
+                        AppSpacing.gapLG,
+                        Center(
+                          child: Column(
+                            children: [
+                              Text(
+                                "JOY PeopleHR Enterprise",
+                                style: AppTypography.caption.copyWith(
+                                  color: AppColors.textMuted,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                                decoration: BoxDecoration(
+                                  color: AppColors.slateBg,
+                                  borderRadius: AppRadius.borderPill,
+                                  border: Border.all(color: AppColors.borderSubtle),
+                                ),
+                                child: Text(
+                                  "v1.0.0 (Build 4)",
+                                  style: AppTypography.overline.copyWith(
+                                    color: AppColors.primary,
+                                    fontWeight: FontWeight.bold,
+                                    letterSpacing: 0.5,
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
                         ),
 

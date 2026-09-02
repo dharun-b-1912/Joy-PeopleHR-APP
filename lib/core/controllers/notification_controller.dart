@@ -43,6 +43,8 @@ class NotificationController extends ChangeNotifier {
     loadNotifications();
   }
 
+  Future<void> refresh() => loadNotifications();
+
   void _subscribeRealtime(String targetId) {
     if (_subscribedTargetId == targetId && _notificationChannel != null) return;
     _notificationChannel?.unsubscribe();

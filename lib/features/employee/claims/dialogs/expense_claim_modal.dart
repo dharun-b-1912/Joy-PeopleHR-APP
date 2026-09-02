@@ -85,6 +85,10 @@ class _ExpenseClaimModalState extends State<ExpenseClaimModal> {
       setState(() => _errorText = "Please enter a valid expense amount (> ₹0)");
       return;
     }
+    if (_receiptBytes == null || _receiptFileName == null) {
+      setState(() => _errorText = "Please upload a bill or receipt proof (Mandatory)");
+      return;
+    }
 
     setState(() => _isSubmitting = true);
 
@@ -199,7 +203,13 @@ class _ExpenseClaimModalState extends State<ExpenseClaimModal> {
             ),
           ),
           AppSpacing.gapMD,
-          Text("Bill / Receipt Proof (Photo / PDF)", style: AppTypography.caption.copyWith(fontWeight: FontWeight.bold)),
+          Row(
+            children: [
+              Text("Bill / Receipt Proof (Photo / PDF)", style: AppTypography.caption.copyWith(fontWeight: FontWeight.bold)),
+              const SizedBox(width: 4),
+              Text("*", style: AppTypography.caption.copyWith(color: AppColors.statusError, fontWeight: FontWeight.bold)),
+            ],
+          ),
           const SizedBox(height: 6),
           if (_receiptFileName == null) ...[
             InkWell(

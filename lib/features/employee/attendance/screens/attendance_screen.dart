@@ -83,6 +83,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> with SingleTickerPr
               ]);
             },
             color: AppColors.primary,
+            backgroundColor: Colors.white,
             child: SingleChildScrollView(
               physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
               padding: const EdgeInsets.only(bottom: AppSpacing.bottomNavClearance),

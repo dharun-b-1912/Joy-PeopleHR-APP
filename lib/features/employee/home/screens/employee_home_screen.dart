@@ -23,7 +23,7 @@ import '../../leave/dialogs/apply_leave_modal.dart';
 import '../../leave/screens/leave_screen.dart';
 import '../../payslips/screens/payslips_screen.dart';
 import '../../profile/screens/profile_screen.dart';
-import '../../services/screens/employee_services_screen.dart';
+import '../../../../repositories/supabase/supabase_employee_repository.dart';
 import '../../virtual_id/dialogs/virtual_id_card_dialog.dart';
 import '../../../../models/employee_models.dart';
 import '../../../../widgets/attendance/attendance_live_timer.dart';
@@ -787,6 +787,17 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
   }
 
 
+  Future<void> _handlePullToRefresh() async {
+    await Future.wait([
+      LocationService.instance.evaluateLiveLocation(),
+      AttendanceService.instance.fetchTodayAttendance(),
+      NotificationController.instance.refresh(),
+      MoreModulesController.instance.loadAllData(),
+      AttendanceDetailController.instance.refresh(),
+      SupabaseEmployeeRepository().getCurrentEmployee(),
+    ]);
+  }
+
   @override
   Widget build(BuildContext context) {
     final double topSafeArea = MediaQuery.of(context).padding.top + 16;
@@ -807,15 +818,19 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
             ),
           ),
         ),
-        SingleChildScrollView(
-          physics: const BouncingScrollPhysics(),
-          padding: EdgeInsets.fromLTRB(
-            AppSpacing.screenHorizontal,
-            topSafeArea,
-            AppSpacing.screenHorizontal,
-            AppSpacing.bottomNavClearance,
-          ),
-          child: Column(
+        RefreshIndicator(
+          color: AppColors.primary,
+          backgroundColor: Colors.white,
+          onRefresh: _handlePullToRefresh,
+          child: SingleChildScrollView(
+            physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
+            padding: EdgeInsets.fromLTRB(
+              AppSpacing.screenHorizontal,
+              topSafeArea,
+              AppSpacing.screenHorizontal,
+              AppSpacing.bottomNavClearance,
+            ),
+            child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Row(
@@ -1547,12 +1562,6 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
                                   CupertinoPageRoute(builder: (_) => const HelpdeskScreen()),
                                 );
                                 break;
-                              case "services":
-                                Navigator.push(
-                                  context,
-                                  CupertinoPageRoute(builder: (_) => const EmployeeServicesScreen()),
-                                );
-                                break;
                               default:
                                 widget.onOpenServices();
                             }
@@ -1610,6 +1619,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
                     );
                   },
                 ),
+                _buildCelebrationsSection(),
                 AppSpacing.gapXXL,
                 Text(
                   "Passes & Cards",
@@ -1698,8 +1708,148 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
               ],
             ),
           ),
-        ],
-      );
+        ),
+      ],
+    );
+  }
+
+  Widget _buildCelebrationsSection() {
+    return ListenableBuilder(
+      listenable: MoreModulesController.instance,
+      builder: (context, _) {
+        final celebrations = MoreModulesController.instance.celebrations;
+        if (celebrations.isEmpty) return const SizedBox.shrink();
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            AppSpacing.gapXXL,
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  children: [
+                    Text("Celebrations", style: AppTypography.titleLarge),
+                    const SizedBox(width: 8),
+                    const Text("🎉", style: TextStyle(fontSize: 18)),
+                  ],
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: AppColors.peachBg,
+                    borderRadius: AppRadius.borderPill,
+                  ),
+                  child: Text(
+                    "${celebrations.length} Upcoming",
+                    style: AppTypography.caption.copyWith(
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                      color: AppColors.peachFg,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            AppSpacing.gapMD,
+            SizedBox(
+              height: 110,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                physics: const BouncingScrollPhysics(),
+                itemCount: celebrations.length,
+                separatorBuilder: (_, __) => const SizedBox(width: 12),
+                itemBuilder: (context, index) {
+                  final c = celebrations[index];
+                  final isBday = c.type == CelebrationType.birthday;
+                  final isToday = c.isToday;
+
+                  return Container(
+                    width: 255,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: AppRadius.borderCard,
+                      border: Border.all(
+                        color: isToday
+                            ? AppColors.primary.withValues(alpha: 0.4)
+                            : AppColors.borderSubtle,
+                        width: isToday ? 1.5 : 1,
+                      ),
+                      boxShadow: AppShadows.softCard,
+                    ),
+                    child: Row(
+                      children: [
+                        WorkforceAvatar(
+                          pathOrUrl: c.avatarUrl,
+                          fallbackInitials: c.employeeName.isNotEmpty
+                              ? (c.employeeName.length >= 2
+                                  ? c.employeeName.substring(0, 2).toUpperCase()
+                                  : c.employeeName.toUpperCase())
+                              : "EM",
+                          size: 46,
+                          variant: AvatarVariant.small,
+                          backgroundColor: isBday ? AppColors.peachBg : AppColors.mintBg,
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: isToday
+                                      ? AppColors.primary
+                                      : (isBday ? AppColors.peachBg : AppColors.mintBg),
+                                  borderRadius: AppRadius.borderPill,
+                                ),
+                                child: Text(
+                                  c.relativeLabel,
+                                  style: AppTypography.caption.copyWith(
+                                    fontSize: 9.5,
+                                    fontWeight: FontWeight.w700,
+                                    color: isToday
+                                        ? Colors.white
+                                        : (isBday ? AppColors.peachFg : AppColors.mintFg),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                c.employeeName,
+                                style: AppTypography.bodySmall.copyWith(
+                                  fontWeight: FontWeight.bold,
+                                  color: AppColors.textPrimary,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                c.celebrationTitle,
+                                style: AppTypography.caption.copyWith(
+                                  fontSize: 10.5,
+                                  color: isBday ? const Color(0xFFD97706) : AppColors.primary,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        );
+      },
+    );
   }
 }
 
@@ -1775,7 +1925,7 @@ class _RecentActivitiesCarouselState extends State<_RecentActivitiesCarousel> {
       case 'SERVICE_REQUEST':
         Navigator.push(
           context,
-          CupertinoPageRoute(builder: (_) => const EmployeeServicesScreen()),
+          CupertinoPageRoute(builder: (_) => const HelpdeskScreen()),
         );
         break;
       case 'CLAIM':

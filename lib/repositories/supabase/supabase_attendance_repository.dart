@@ -24,6 +24,36 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
   // TODAY'S ATTENDANCE QUERY (used on app launch / resume / punch sync)
   // ────────────────────────────────────────────────────────────────────────
 
+  static bool _isApprovedStatus(String? status) {
+    if (status == null) return false;
+    final s = status.trim().toUpperCase();
+    if (s.contains('DISAPPROV') ||
+        s.contains('REJECT') ||
+        s.contains('DECLIN') ||
+        s.contains('NOT_APPROV') ||
+        s.contains('WITHDRAW') ||
+        s.contains('CANCEL') ||
+        s.contains('PENDING')) {
+      return false;
+    }
+    return s.contains('APPROV') || s.contains('ACCEPT') || s == 'REGULARIZED';
+  }
+
+  static bool _isRejectedStatus(String? status) {
+    if (status == null) return false;
+    final s = status.trim().toUpperCase();
+    return s.contains('DISAPPROV') ||
+        s.contains('REJECT') ||
+        s.contains('DECLIN') ||
+        s.contains('NOT_APPROV');
+  }
+
+  static bool _isWithdrawnStatus(String? status) {
+    if (status == null) return false;
+    final s = status.trim().toUpperCase();
+    return s.contains('WITHDRAW') || s.contains('CANCEL');
+  }
+
   /// Fetch the authoritative attendance_daily and attendance_events record for today.
   Future<Map<String, dynamic>?> getTodayAttendance(String employeeId) async {
     try {
@@ -497,8 +527,8 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
         // 1. Regularization check (Approved regularization makes it full Present)
         bool isRegularizedApproved = false;
         if (regRecord != null) {
-          final regStatus = (regRecord['status'] ?? '').toString().toUpperCase();
-          if (regStatus == 'APPROVED') {
+          final regStatus = (regRecord['status'] ?? '').toString();
+          if (_isApprovedStatus(regStatus)) {
             isRegularizedApproved = true;
             firstCheckIn ??= regRecord['requested_check_in']?.toString() ?? '09:30 AM';
             lastCheckOut ??= regRecord['requested_check_out']?.toString() ?? '06:30 PM';
@@ -740,21 +770,24 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
             final dateRaw = row['attendance_date'] ?? row['created_at'];
             final inTime = row['requested_check_in'] ?? '09:30 AM';
             final outTime = row['requested_check_out'] ?? '06:30 PM';
-            final rawStatus = (row['status'] ?? 'MANAGER_PENDING').toString().toUpperCase();
+            final rawStatus = (row['status'] ?? 'MANAGER_PENDING').toString();
 
             RegularizationStatusState state = RegularizationStatusState.managerPending;
             LeaveStatus leaveStatus = LeaveStatus.pending;
 
-            if (rawStatus.contains('HR')) {
-              state = RegularizationStatusState.hrPending;
-              leaveStatus = LeaveStatus.pending;
-            } else if (rawStatus.contains('APPROV')) {
-              state = RegularizationStatusState.approved;
-              leaveStatus = LeaveStatus.approved;
-            } else if (rawStatus.contains('REJECT')) {
+            if (_isWithdrawnStatus(rawStatus)) {
               state = RegularizationStatusState.rejected;
               leaveStatus = LeaveStatus.rejected;
-            } else if (rawStatus.contains('CLARIF')) {
+            } else if (_isRejectedStatus(rawStatus)) {
+              state = RegularizationStatusState.rejected;
+              leaveStatus = LeaveStatus.rejected;
+            } else if (_isApprovedStatus(rawStatus)) {
+              state = RegularizationStatusState.approved;
+              leaveStatus = LeaveStatus.approved;
+            } else if (rawStatus.toUpperCase().contains('HR')) {
+              state = RegularizationStatusState.hrPending;
+              leaveStatus = LeaveStatus.pending;
+            } else if (rawStatus.toUpperCase().contains('CLARIF')) {
               state = RegularizationStatusState.clarificationRequired;
               leaveStatus = LeaveStatus.pending;
             }
@@ -814,21 +847,24 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
                 final dateRaw = payload['attendance_date'] ?? payload['date'] ?? row['created_at'];
                 final inTime = payload['requested_check_in'] ?? payload['requested_in'] ?? '09:30 AM';
                 final outTime = payload['requested_check_out'] ?? payload['requested_out'] ?? '06:30 PM';
-                final rawStatus = (payload['status'] ?? 'MANAGER_PENDING').toString().toUpperCase();
+                final rawStatus = (payload['status'] ?? 'MANAGER_PENDING').toString();
 
                 RegularizationStatusState state = RegularizationStatusState.managerPending;
                 LeaveStatus leaveStatus = LeaveStatus.pending;
 
-                if (rawStatus.contains('HR')) {
-                  state = RegularizationStatusState.hrPending;
-                  leaveStatus = LeaveStatus.pending;
-                } else if (rawStatus.contains('APPROV')) {
-                  state = RegularizationStatusState.approved;
-                  leaveStatus = LeaveStatus.approved;
-                } else if (rawStatus.contains('REJECT')) {
+                if (_isWithdrawnStatus(rawStatus)) {
                   state = RegularizationStatusState.rejected;
                   leaveStatus = LeaveStatus.rejected;
-                } else if (rawStatus.contains('CLARIF')) {
+                } else if (_isRejectedStatus(rawStatus)) {
+                  state = RegularizationStatusState.rejected;
+                  leaveStatus = LeaveStatus.rejected;
+                } else if (_isApprovedStatus(rawStatus)) {
+                  state = RegularizationStatusState.approved;
+                  leaveStatus = LeaveStatus.approved;
+                } else if (rawStatus.toUpperCase().contains('HR')) {
+                  state = RegularizationStatusState.hrPending;
+                  leaveStatus = LeaveStatus.pending;
+                } else if (rawStatus.toUpperCase().contains('CLARIF')) {
                   state = RegularizationStatusState.clarificationRequired;
                   leaveStatus = LeaveStatus.pending;
                 }
@@ -881,7 +917,8 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
         final nowStr = DateTime.now().toIso8601String();
         final dateStr = request.date.toIso8601String().split('T')[0];
 
-        // 1. Direct Table Insert into 'attendance_regularization_requests' (The primary table displayed on the Web App)
+        // 1. Single Direct Table Insert into 'attendance_regularization_requests' (The primary table for HR Web App)
+        bool insertedDirectly = false;
         try {
           await _client.from('attendance_regularization_requests').insert({
             'id': request.id,
@@ -918,26 +955,29 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
             'created_at': nowStr,
             'updated_at': nowStr,
           });
+          insertedDirectly = true;
           secureLog('[Attendance] attendance_regularization_requests direct insert succeeded for ${request.id}');
         } catch (tableErr) {
           secureLog('[Attendance] attendance_regularization_requests direct insert notice: $tableErr');
         }
 
-        // 2. RPC Submission (if procedure configured in DB)
-        try {
-          await _client.rpc('fn_submit_attendance_regularization', params: {
-            'p_tenant_id': tenantId,
-            'p_employee_id': user.resolvedEmployeeId,
-            'p_date': dateStr,
-            'p_requested_in': request.requestedInTime,
-            'p_requested_out': request.requestedOutTime,
-            'p_reason_code': request.reasonCode,
-            'p_reason_text': request.reason,
-            'p_actor_id': user.resolvedEmployeeId,
-          });
-          secureLog('[Attendance] RPC fn_submit_attendance_regularization succeeded');
-        } catch (rpcErr) {
-          secureLog('[Attendance] RPC fallback: $rpcErr');
+        // 2. RPC Submission fallback only if direct insert was not available
+        if (!insertedDirectly) {
+          try {
+            await _client.rpc('fn_submit_attendance_regularization', params: {
+              'p_tenant_id': tenantId,
+              'p_employee_id': user.resolvedEmployeeId,
+              'p_date': dateStr,
+              'p_requested_in': request.requestedInTime,
+              'p_requested_out': request.requestedOutTime,
+              'p_reason_code': request.reasonCode,
+              'p_reason_text': request.reason,
+              'p_actor_id': user.resolvedEmployeeId,
+            });
+            secureLog('[Attendance] RPC fn_submit_attendance_regularization fallback succeeded');
+          } catch (rpcErr) {
+            secureLog('[Attendance] RPC fallback notice: $rpcErr');
+          }
         }
 
         // 3. Realtime Outbox Insert via centralized service
@@ -1015,18 +1055,42 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
   Future<void> withdrawRegularization(String requestId) async {
     if (!SupabaseConfig.isConfigured || requestId.isEmpty) return;
     try {
-      // 1. Delete from primary table 'attendance_regularization_requests'
+      final nowStr = DateTime.now().toIso8601String();
+
+      // 1. Update status to WITHDRAWN in primary table 'attendance_regularization_requests'
       try {
         await _client
             .from('attendance_regularization_requests')
-            .delete()
+            .update({
+              'status': 'WITHDRAWN',
+              'current_stage': 'WITHDRAWN',
+              'updated_at': nowStr,
+            })
             .eq('id', requestId);
-        secureLog('[Attendance] attendance_regularization_requests deleted id=$requestId');
+        secureLog('[Attendance] attendance_regularization_requests marked WITHDRAWN id=$requestId');
       } catch (e) {
-        secureLog('[Attendance] attendance_regularization_requests delete error: $e');
+        secureLog('[Attendance] attendance_regularization_requests update notice: $e');
+        // Fallback delete if update fails
+        try {
+          await _client
+              .from('attendance_regularization_requests')
+              .delete()
+              .eq('id', requestId);
+        } catch (_) {}
       }
 
-      // 2. Delete from 'realtime_outbox'
+      // 2. Also update fallback table if exists
+      try {
+        await _client
+            .from('attendance_regularizations')
+            .update({
+              'status': 'WITHDRAWN',
+              'updated_at': nowStr,
+            })
+            .eq('id', requestId);
+      } catch (_) {}
+
+      // 3. Delete from 'realtime_outbox'
       await RealtimeOutboxService.deleteEvent(entityId: requestId);
       await RealtimeOutboxService.deleteEvent(id: requestId);
     } catch (e) {

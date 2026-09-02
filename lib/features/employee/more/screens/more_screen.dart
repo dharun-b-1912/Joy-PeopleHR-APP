@@ -14,7 +14,6 @@ import '../../letters/screens/digital_letters_screen.dart';
 import '../../payslips/screens/payslips_screen.dart';
 import '../../performance/screens/performance_screen.dart';
 import '../../roster/screens/shift_roster_screen.dart';
-import '../../services/screens/employee_services_screen.dart';
 
 class MoreScreen extends StatefulWidget {
   const MoreScreen({super.key});
@@ -42,9 +41,6 @@ class _MoreScreenState extends State<MoreScreen> {
       case 'expense':
       case 'claims':
         target = const ExpenseClaimsScreen();
-        break;
-      case 'services':
-        target = const EmployeeServicesScreen();
         break;
       case 'helpdesk':
         target = const HelpdeskScreen();
@@ -125,18 +121,6 @@ class _MoreScreenState extends State<MoreScreen> {
           {
             'title': 'HR Services & Support',
             'modules': [
-              {
-                'id': 'services',
-                'title': 'Employee Services',
-                'subtitle': 'Certificates & Requests',
-                'icon': CupertinoIcons.square_stack_3d_up,
-                'bg': AppColors.mintBg,
-                'fg': AppColors.mintFg,
-                'badge': controller.serviceRequests.where((r) => r.status == 'ACTION_REQUIRED').isNotEmpty
-                    ? "Action Required"
-                    : null,
-                'badgeType': StatusType.warning,
-              },
               {
                 'id': 'helpdesk',
                 'title': 'HR Helpdesk',
@@ -324,6 +308,38 @@ class _MoreScreenState extends State<MoreScreen> {
                     ),
                   );
                 }),
+                AppSpacing.gapLG,
+                Center(
+                  child: Column(
+                    children: [
+                      Text(
+                        "JOY PeopleHR Enterprise Mobile",
+                        style: AppTypography.caption.copyWith(
+                          color: AppColors.textMuted,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: AppColors.slateBg,
+                          borderRadius: AppRadius.borderPill,
+                          border: Border.all(color: AppColors.borderSubtle),
+                        ),
+                        child: Text(
+                          "v1.0.0 (Build 4)",
+                          style: AppTypography.overline.copyWith(
+                            color: AppColors.primary,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                AppSpacing.gapLG,
               ],
             ),
           ),

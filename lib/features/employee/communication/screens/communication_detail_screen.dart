@@ -23,6 +23,9 @@ class _CommunicationDetailScreenState extends State<CommunicationDetailScreen> {
   void initState() {
     super.initState();
     _isAcknowledged = widget.communication.acknowledgedAt != null;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      MoreModulesController.instance.markCommunicationAsRead(widget.communication.id);
+    });
   }
 
   Future<void> _handleAcknowledge() async {

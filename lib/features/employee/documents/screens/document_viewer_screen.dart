@@ -2,6 +2,7 @@ import 'dart:typed_data';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:photo_view/photo_view.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../../../../core/services/document_upload_service.dart';
 import '../../../../core/services/file_download_service.dart';
 import '../../../../core/theme/klarna_tokens.dart';
@@ -55,20 +56,74 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
     }
   }
 
+  String _getCleanFileName() {
+    String cleanName = widget.document.name.replaceAll(RegExp(r'[^a-zA-Z0-9._ -]'), '_');
+    if (!cleanName.toLowerCase().contains('.')) {
+      final ext = _isImageDocument() ? '.png' : '.pdf';
+      cleanName = '$cleanName$ext';
+    }
+    return cleanName;
+  }
+
+  bool _isImageDocument() {
+    final fileTypeLower = widget.document.fileType.toLowerCase();
+    final urlLower = (_resolvedUrl ?? widget.document.fileUrl ?? widget.document.storagePath ?? '').toLowerCase();
+    return fileTypeLower.contains("jpg") ||
+        fileTypeLower.contains("jpeg") ||
+        fileTypeLower.contains("png") ||
+        fileTypeLower.contains("webp") ||
+        fileTypeLower.contains("image") ||
+        fileTypeLower.contains("license") ||
+        fileTypeLower.contains("licence") ||
+        fileTypeLower.contains("pan") ||
+        fileTypeLower.contains("aadhaar") ||
+        fileTypeLower.contains("passport") ||
+        urlLower.contains(".jpg") ||
+        urlLower.contains(".jpeg") ||
+        urlLower.contains(".png") ||
+        urlLower.contains(".webp") ||
+        (_fileBytes != null && _fileBytes!.isNotEmpty);
+  }
+
+  void _handleFullView() {
+    final isImg = _isImageDocument();
+    final rawUrl = _resolvedUrl ?? widget.document.fileUrl ?? '';
+
+    if (isImg && (_fileBytes != null || (rawUrl.isNotEmpty && rawUrl.startsWith('http')))) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (_) => FullScreenInteractiveViewer(
+            title: widget.document.name,
+            fileBytes: _fileBytes,
+            imageUrl: rawUrl.startsWith('http') ? rawUrl : null,
+          ),
+        ),
+      );
+    } else if (rawUrl.isNotEmpty && rawUrl.startsWith('http')) {
+      final uri = Uri.parse(rawUrl);
+      launchUrl(uri, mode: LaunchMode.externalApplication);
+    } else if (_fileBytes != null && _fileBytes!.isNotEmpty) {
+      final cleanName = _getCleanFileName();
+      FileDownloadService.downloadBytes(
+        fileName: cleanName,
+        bytes: _fileBytes!,
+      );
+    } else {
+      _handleDownload();
+    }
+  }
+
   Future<void> _handleDownload() async {
     setState(() => _isDownloading = true);
     final messenger = ScaffoldMessenger.of(context);
+    final cleanName = _getCleanFileName();
 
     try {
       final rawPath = widget.document.storagePath ?? widget.document.fileUrl ?? '';
-      final bytes = await DocumentUploadService.instance.downloadFileBytes(rawPath);
-
-      String cleanName = widget.document.name.replaceAll(RegExp(r'[^a-zA-Z0-9._ -]'), '_');
-      if (!cleanName.toLowerCase().contains('.')) {
-        final ext = widget.document.fileType.toLowerCase().contains('image') || widget.document.fileType.toLowerCase().contains('png')
-            ? '.png'
-            : '.pdf';
-        cleanName = '$cleanName$ext';
+      Uint8List? bytes = _fileBytes;
+      if (bytes == null || bytes.isEmpty) {
+        bytes = await DocumentUploadService.instance.downloadFileBytes(rawPath);
       }
 
       bool downloaded = false;
@@ -77,25 +132,36 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
           fileName: cleanName,
           bytes: bytes,
         );
-      } else if (rawPath.startsWith('http')) {
+      }
+
+      final downloadUrl = _resolvedUrl ?? widget.document.fileUrl;
+      if (!downloaded && downloadUrl != null && downloadUrl.startsWith('http')) {
         downloaded = await FileDownloadService.downloadFromUrl(
-          url: rawPath,
+          url: downloadUrl,
           fileName: cleanName,
         );
       }
 
-      if (downloaded || (bytes != null && bytes.isNotEmpty)) {
+      if (downloaded) {
         messenger.showSnackBar(
           SnackBar(
-            content: Text("✓ '$cleanName' saved to Downloads (${bytes?.lengthInBytes ?? 0} bytes)"),
+            content: Text("✓ '$cleanName' saved to Downloads"),
             backgroundColor: AppColors.primary,
             behavior: SnackBarBehavior.floating,
+            action: SnackBarAction(
+              label: "OPEN",
+              textColor: Colors.white,
+              onPressed: () {
+                FileDownloadService.openDownloadedFile(cleanName);
+              },
+            ),
           ),
         );
       } else {
         messenger.showSnackBar(
           SnackBar(
-            content: Text("File available online: ${widget.document.name}"),
+            content: Text("Download complete: $cleanName"),
+            backgroundColor: AppColors.primary,
             behavior: SnackBarBehavior.floating,
           ),
         );
@@ -116,23 +182,7 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
   @override
   Widget build(BuildContext context) {
     final document = widget.document;
-    final fileTypeLower = document.fileType.toLowerCase();
-    final urlLower = (_resolvedUrl ?? document.fileUrl ?? document.storagePath ?? '').toLowerCase();
-    final isImage = fileTypeLower.contains("jpg") ||
-        fileTypeLower.contains("jpeg") ||
-        fileTypeLower.contains("png") ||
-        fileTypeLower.contains("webp") ||
-        fileTypeLower.contains("image") ||
-        fileTypeLower.contains("license") ||
-        fileTypeLower.contains("licence") ||
-        fileTypeLower.contains("pan") ||
-        fileTypeLower.contains("aadhaar") ||
-        fileTypeLower.contains("passport") ||
-        urlLower.contains(".jpg") ||
-        urlLower.contains(".jpeg") ||
-        urlLower.contains(".png") ||
-        urlLower.contains(".webp") ||
-        (_fileBytes != null && _fileBytes!.isNotEmpty);
+    final isImage = _isImageDocument();
 
     ImageProvider? imageProvider;
     if (_fileBytes != null && _fileBytes!.isNotEmpty) {
@@ -170,71 +220,96 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Container(
-              width: double.infinity,
-              height: 340,
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: AppRadius.borderLg,
-                boxShadow: AppShadows.softCard,
-                border: Border.all(color: AppColors.borderSubtle),
-              ),
-              child: ClipRRect(
-                borderRadius: AppRadius.borderLg,
-                child: _isLoading
-                    ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
-                    : (isImage && imageProvider != null)
-                        ? ClipRRect(
-                            borderRadius: AppRadius.borderLg,
-                            child: PhotoView(
-                              imageProvider: imageProvider,
-                              minScale: PhotoViewComputedScale.contained,
-                              maxScale: PhotoViewComputedScale.covered * 3.0,
-                              backgroundDecoration: const BoxDecoration(color: Colors.white),
-                              errorBuilder: (_, __, ___) => _buildImageFallback(document),
-                            ),
-                          )
-                        : isImage
-                            ? _buildImageFallback(document)
-                            : Center(
-                                child: Padding(
-                                  padding: const EdgeInsets.all(24),
-                                  child: Column(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      Container(
-                                        width: 72,
-                                        height: 72,
-                                        decoration: const BoxDecoration(
-                                          color: AppColors.lavenderBg,
-                                          shape: BoxShape.circle,
+            GestureDetector(
+              onTap: _handleFullView,
+              child: Container(
+                width: double.infinity,
+                height: 340,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: AppRadius.borderLg,
+                  boxShadow: AppShadows.softCard,
+                  border: Border.all(color: AppColors.borderSubtle),
+                ),
+                child: ClipRRect(
+                  borderRadius: AppRadius.borderLg,
+                  child: Stack(
+                    children: [
+                      Positioned.fill(
+                        child: _isLoading
+                            ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
+                            : (isImage && imageProvider != null)
+                                ? PhotoView(
+                                    imageProvider: imageProvider,
+                                    minScale: PhotoViewComputedScale.contained,
+                                    maxScale: PhotoViewComputedScale.covered * 3.0,
+                                    backgroundDecoration: const BoxDecoration(color: Colors.white),
+                                    errorBuilder: (_, __, ___) => _buildImageFallback(document),
+                                  )
+                                : isImage
+                                    ? _buildImageFallback(document)
+                                    : Center(
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(24),
+                                          child: Column(
+                                            mainAxisAlignment: MainAxisAlignment.center,
+                                            children: [
+                                              Container(
+                                                width: 72,
+                                                height: 72,
+                                                decoration: const BoxDecoration(
+                                                  color: AppColors.lavenderBg,
+                                                  shape: BoxShape.circle,
+                                                ),
+                                                child: const Icon(CupertinoIcons.doc_text_fill, size: 36, color: AppColors.lavenderFg),
+                                              ),
+                                              AppSpacing.gapMD,
+                                              Text(document.name, style: AppTypography.titleLarge, textAlign: TextAlign.center),
+                                              const SizedBox(height: 4),
+                                              Text("Verified Document • ${document.fileType}", style: AppTypography.caption),
+                                              AppSpacing.gapMD,
+                                              Container(
+                                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                                                decoration: BoxDecoration(
+                                                  color: AppColors.slateBg,
+                                                  borderRadius: AppRadius.borderPill,
+                                                ),
+                                                child: Row(
+                                                  mainAxisSize: MainAxisSize.min,
+                                                  children: [
+                                                    const Icon(CupertinoIcons.lock_shield_fill, size: 14, color: AppColors.primary),
+                                                    const SizedBox(width: 6),
+                                                    Text("Tap to Full View", style: AppTypography.caption.copyWith(fontWeight: FontWeight.bold, color: AppColors.primary)),
+                                                  ],
+                                                ),
+                                              ),
+                                            ],
+                                          ),
                                         ),
-                                        child: const Icon(CupertinoIcons.doc_text_fill, size: 36, color: AppColors.lavenderFg),
                                       ),
-                                      AppSpacing.gapMD,
-                                      Text(document.name, style: AppTypography.titleLarge, textAlign: TextAlign.center),
-                                      const SizedBox(height: 4),
-                                      Text("Verified Document • ${document.fileType}", style: AppTypography.caption),
-                                      AppSpacing.gapMD,
-                                      Container(
-                                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                                        decoration: BoxDecoration(
-                                          color: AppColors.slateBg,
-                                          borderRadius: AppRadius.borderPill,
-                                        ),
-                                        child: Row(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            const Icon(CupertinoIcons.lock_shield_fill, size: 14, color: AppColors.primary),
-                                            const SizedBox(width: 6),
-                                            Text("Encrypted Storage Verified", style: AppTypography.caption.copyWith(fontWeight: FontWeight.bold)),
-                                          ],
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
+                      ),
+                      Positioned(
+                        top: 12,
+                        right: 12,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.6),
+                            borderRadius: AppRadius.borderPill,
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(CupertinoIcons.arrow_up_right_circle_fill, color: Colors.white, size: 14),
+                              SizedBox(width: 4),
+                              Text("Full View", style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ),
             AppSpacing.gapLG,
@@ -259,21 +334,15 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
             AppSpacing.gapLG,
             Row(
               children: [
-                if (_resolvedUrl != null && _resolvedUrl!.startsWith('http')) ...[
-                  Expanded(
-                    child: AppButton(
-                      label: "Full View",
-                      icon: CupertinoIcons.arrow_up_right_square,
-                      variant: AppButtonVariant.secondaryPill,
-                      onPressed: () {
-                        final rawUrl = _resolvedUrl ?? widget.document.fileUrl ?? '';
-                        final cleanName = widget.document.name.replaceAll(RegExp(r'[^a-zA-Z0-9._ -]'), '_');
-                        FileDownloadService.downloadFromUrl(url: rawUrl, fileName: cleanName);
-                      },
-                    ),
+                Expanded(
+                  child: AppButton(
+                    label: "Full View",
+                    icon: CupertinoIcons.arrow_up_right_square,
+                    variant: AppButtonVariant.secondaryPill,
+                    onPressed: _handleFullView,
                   ),
-                  const SizedBox(width: 10),
-                ],
+                ),
+                const SizedBox(width: 10),
                 Expanded(
                   child: AppButton(
                     label: _isDownloading ? "Downloading..." : "Download",
@@ -328,6 +397,57 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
           ),
         ),
       ],
+    );
+  }
+}
+
+class FullScreenInteractiveViewer extends StatelessWidget {
+  final String title;
+  final Uint8List? fileBytes;
+  final String? imageUrl;
+
+  const FullScreenInteractiveViewer({
+    super.key,
+    required this.title,
+    this.fileBytes,
+    this.imageUrl,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    ImageProvider? imageProvider;
+    if (fileBytes != null && fileBytes!.isNotEmpty) {
+      imageProvider = MemoryImage(fileBytes!);
+    } else if (imageUrl != null && imageUrl!.startsWith('http')) {
+      imageProvider = NetworkImage(imageUrl!);
+    }
+
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        elevation: 0,
+        leading: IconButton(
+          icon: const Icon(CupertinoIcons.xmark, color: Colors.white),
+          onPressed: () => Navigator.pop(context),
+        ),
+        title: Text(
+          title,
+          style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+      ),
+      body: imageProvider != null
+          ? PhotoView(
+              imageProvider: imageProvider,
+              minScale: PhotoViewComputedScale.contained,
+              maxScale: PhotoViewComputedScale.covered * 4.0,
+              backgroundDecoration: const BoxDecoration(color: Colors.black),
+            )
+          : const Center(
+              child: Text("Document Preview Unavailable", style: TextStyle(color: Colors.white70)),
+            ),
     );
   }
 }

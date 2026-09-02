@@ -364,4 +364,32 @@ class CommunicationModel {
       isRead: isRead || json['is_read'] == true,
     );
   }
+
+  CommunicationModel copyWith({
+    String? id,
+    String? title,
+    String? body,
+    String? communicationType,
+    String? priority,
+    String? status,
+    bool? requiresAcknowledgement,
+    String? authorName,
+    DateTime? publishAt,
+    DateTime? acknowledgedAt,
+    bool? isRead,
+  }) {
+    return CommunicationModel(
+      id: id ?? this.id,
+      title: title ?? this.title,
+      body: body ?? this.body,
+      communicationType: communicationType ?? this.communicationType,
+      priority: priority ?? this.priority,
+      status: status ?? this.status,
+      requiresAcknowledgement: requiresAcknowledgement ?? this.requiresAcknowledgement,
+      authorName: authorName ?? this.authorName,
+      publishAt: publishAt ?? this.publishAt,
+      acknowledgedAt: acknowledgedAt ?? this.acknowledgedAt,
+      isRead: isRead ?? this.isRead,
+    );
+  }
 }

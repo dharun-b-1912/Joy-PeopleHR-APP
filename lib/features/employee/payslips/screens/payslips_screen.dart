@@ -43,6 +43,7 @@ class _PayslipsScreenState extends State<PayslipsScreen> {
           ),
           body: RefreshIndicator(
             color: AppColors.primary,
+            backgroundColor: Colors.white,
             onRefresh: () => controller.loadAllData(),
             child: controller.isLoading && payslips.isEmpty
                 ? const Center(child: CircularProgressIndicator())

@@ -1,7 +1,7 @@
 name: workforce_os
 description: "JOY PeopleHR Enterprise HRMS - Klarna Style Mobile Experience"
 # publish_to: "none"  # Remove this line if publishing the package
-version: 1.0.0+2
+version: 1.0.0+4
 
 environment:
   sdk: ">=3.0.0 <4.0.0"
@@ -27,6 +27,8 @@ dependencies:
   flutter_local_notifications: ^18.0.1
   shared_preferences: ^2.2.2
   permission_handler: ^11.3.1
+  path_provider: ^2.1.4
+  open_filex: ^4.5.0
 
 
 

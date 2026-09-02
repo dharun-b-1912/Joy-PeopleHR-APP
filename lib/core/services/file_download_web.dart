@@ -45,3 +45,7 @@ Future<bool> downloadUrlPlatform({
     return false;
   }
 }
+
+Future<bool> openDownloadedFilePlatform(String fileName) async {
+  return true;
+}

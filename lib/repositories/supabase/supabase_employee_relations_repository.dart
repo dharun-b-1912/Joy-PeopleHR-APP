@@ -382,4 +382,39 @@ class SupabaseEmployeeRelationsRepository {
       return false;
     }
   }
+
+  Future<bool> markCommunicationAsRead(String communicationId) async {
+    if (!SupabaseConfig.isConfigured || communicationId.isEmpty) return false;
+    try {
+      final user = UserService.instance.currentUser;
+      final empId = user.resolvedEmployeeId;
+      final tenantId = user.companyId.isNotEmpty
+          ? user.companyId
+          : (user.organizationId?.isNotEmpty == true ? user.organizationId! : '');
+
+      try {
+        await _client.from('communication_recipients').upsert({
+          if (tenantId.isNotEmpty) 'tenant_id': tenantId,
+          'communication_id': communicationId,
+          'employee_id': empId,
+          'delivery_status': 'DELIVERED',
+          'read_at': DateTime.now().toIso8601String(),
+        });
+      } catch (_) {}
+
+      try {
+        await _client.from('company_announcement_reads').upsert({
+          if (tenantId.isNotEmpty) 'tenant_id': tenantId,
+          'announcement_id': communicationId,
+          'employee_id': empId,
+          'read_at': DateTime.now().toIso8601String(),
+        });
+      } catch (_) {}
+
+      return true;
+    } catch (e) {
+      secureLog('[HelpdeskRepo] markCommunicationAsRead error: $e');
+      return false;
+    }
+  }
 }

@@ -43,13 +43,14 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+*.apk
 
 # ── Security: secrets, keys, and platform config ──
 **/.env*
 **/*.env
 **/key.properties
-**/*.jks
-**/*.keystore
+**/*.jks*
+**/*.keystore*
 **/keystore.properties
 **/google-services.json
 **/GoogleService-Info.plist

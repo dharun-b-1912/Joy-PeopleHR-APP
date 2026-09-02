@@ -381,7 +381,19 @@ class LocationService extends ChangeNotifier {
 
   /// Full Refresh: Loads locations and evaluates live GPS
   Future<UserLocationResult> refreshLocationsAndEvaluate() async {
-    await fetchAuthorizedLocations();
+    final freshLocations = await fetchAuthorizedLocations();
+    if (freshLocations.isNotEmpty) {
+      final user = UserService.instance.currentUser;
+      final primary = freshLocations.firstWhere(
+        (l) => l.isPrimary,
+        orElse: () => freshLocations.first,
+      );
+      final updatedUser = user.copyWith(
+        approvedLocation: primary,
+        assignedLocations: freshLocations,
+      );
+      UserService.instance.setUser(updatedUser);
+    }
     return evaluateLiveLocation(silent: true);
   }
 

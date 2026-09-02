@@ -41,6 +41,7 @@ class _LeaveScreenState extends State<LeaveScreen> {
 
           return RefreshIndicator(
             color: AppColors.primary,
+            backgroundColor: Colors.white,
             onRefresh: () => controller.refresh(),
             child: SingleChildScrollView(
               physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),

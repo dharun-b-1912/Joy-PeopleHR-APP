@@ -595,3 +595,66 @@ class AttendanceSession {
   bool get isCheckedOut => status == AttendanceStatus.checkedOut;
 }
 
+enum CelebrationType { birthday, workAnniversary }
+
+class CelebrationModel {
+  final String id;
+  final String employeeId;
+  final String employeeName;
+  final String? avatarUrl;
+  final String department;
+  final String designation;
+  final CelebrationType type;
+  final DateTime date;
+  final int? yearsOfService;
+
+  const CelebrationModel({
+    required this.id,
+    required this.employeeId,
+    required this.employeeName,
+    this.avatarUrl,
+    required this.department,
+    required this.designation,
+    required this.type,
+    required this.date,
+    this.yearsOfService,
+  });
+
+  bool get isToday {
+    final now = DateTime.now();
+    return date.month == now.month && date.day == now.day;
+  }
+
+  bool get isTomorrow {
+    final tomorrow = DateTime.now().add(const Duration(days: 1));
+    return date.month == tomorrow.month && date.day == tomorrow.day;
+  }
+
+  int get daysUntil {
+    final now = DateTime.now();
+    final thisYearDate = DateTime(now.year, date.month, date.day);
+    if (thisYearDate.isBefore(DateTime(now.year, now.month, now.day))) {
+      final nextYearDate = DateTime(now.year + 1, date.month, date.day);
+      return nextYearDate.difference(DateTime(now.year, now.month, now.day)).inDays;
+    }
+    return thisYearDate.difference(DateTime(now.year, now.month, now.day)).inDays;
+  }
+
+  String get relativeLabel {
+    if (isToday) return "Today 🎉";
+    if (isTomorrow) return "Tomorrow 🎈";
+    final days = daysUntil;
+    return "In $days days";
+  }
+
+  String get celebrationTitle {
+    if (type == CelebrationType.birthday) {
+      return "Birthday 🎂";
+    } else {
+      final y = yearsOfService ?? 1;
+      final suffix = y == 1 ? 'st' : y == 2 ? 'nd' : y == 3 ? 'rd' : 'th';
+      return "$y$suffix Work Anniversary 🌟";
+    }
+  }
+}
+

@@ -26,4 +26,9 @@ class FileDownloadService {
       fileName: fileName,
     );
   }
+
+  /// Open previously saved/downloaded file with the default device viewer
+  static Future<bool> openDownloadedFile(String fileName) async {
+    return openDownloadedFilePlatform(fileName);
+  }
 }

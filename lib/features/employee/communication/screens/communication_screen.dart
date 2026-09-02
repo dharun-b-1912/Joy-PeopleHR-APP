@@ -44,6 +44,7 @@ class _CommunicationScreenState extends State<CommunicationScreen> {
           ),
           body: RefreshIndicator(
             color: AppColors.primary,
+            backgroundColor: Colors.white,
             onRefresh: () => controller.loadAllData(),
             child: controller.isLoading && communications.isEmpty
                 ? const Center(child: CircularProgressIndicator())
@@ -76,6 +77,7 @@ class _CommunicationScreenState extends State<CommunicationScreen> {
                             child: InkWell(
                               borderRadius: AppRadius.borderLg,
                               onTap: () {
+                                MoreModulesController.instance.markCommunicationAsRead(item.id);
                                 Navigator.push(
                                   context,
                                   CupertinoPageRoute(

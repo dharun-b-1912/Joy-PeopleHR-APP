@@ -5,11 +5,14 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/utils/secure_log.dart';
 import '../../models/employee_models.dart';
 import '../../models/employee_relations_models.dart';
+import '../../models/hrms_models.dart';
 import '../../repositories/interfaces/employee_repository.dart';
 import '../../repositories/supabase/supabase_employee_relations_repository.dart';
+import '../../repositories/supabase/supabase_employee_repository.dart';
 import '../../repositories/supabase/supabase_more_modules_repository.dart';
 import '../services/document_upload_service.dart';
 import '../services/user_service.dart';
+import 'notification_controller.dart';
 
 class MoreModulesController extends ChangeNotifier {
   static final MoreModulesController instance =
@@ -30,6 +33,7 @@ class MoreModulesController extends ChangeNotifier {
   List<PerformanceGoalModel> goals = [];
   List<AnnouncementModel> announcements = [];
   List<ComplaintModel> complaints = [];
+  List<CelebrationModel> celebrations = [];
 
   // Module A, B, C state
   List<HelpdeskTicketModel> helpdeskTickets = [];
@@ -203,6 +207,7 @@ class MoreModulesController extends ChangeNotifier {
         SupabaseEmployeeRelationsRepository.instance.getServiceRequests(empId),
         SupabaseEmployeeRelationsRepository.instance.getCommunications(empId),
         _repo.getPerformanceGoals(empId),
+        SupabaseEmployeeRepository().getColleagueCelebrations(),
       ]);
 
       serviceConfigs = results[0] as List<EmployeeServiceConfigModel>;
@@ -218,10 +223,25 @@ class MoreModulesController extends ChangeNotifier {
       serviceRequests = results[10] as List<ServiceRequestModel>;
       communicationsList = results[11] as List<CommunicationModel>;
       goals = results[12] as List<PerformanceGoalModel>;
+      celebrations = results[13] as List<CelebrationModel>;
     } catch (_) {}
 
     _isLoading = false;
     notifyListeners();
+  }
+
+  Future<void> markCommunicationAsRead(String id) async {
+    try {
+      final index = communicationsList.indexWhere((c) => c.id == id);
+      if (index != -1 && !communicationsList[index].isRead) {
+        communicationsList[index] = communicationsList[index].copyWith(isRead: true);
+        notifyListeners();
+      }
+      await SupabaseEmployeeRelationsRepository.instance.markCommunicationAsRead(id);
+      await NotificationController.instance.markAsRead(id);
+    } catch (e) {
+      secureLog('[MoreModulesController] markCommunicationAsRead error: $e');
+    }
   }
 
   Future<bool> uploadDocument({
