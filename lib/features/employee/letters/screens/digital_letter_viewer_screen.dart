@@ -88,6 +88,13 @@ class _DigitalLetterViewerScreenState extends State<DigitalLetterViewerScreen> {
             content: Text("✓ '$cleanName' saved to Downloads"),
             backgroundColor: AppColors.primary,
             behavior: SnackBarBehavior.floating,
+            action: SnackBarAction(
+              label: "OPEN",
+              textColor: Colors.white,
+              onPressed: () {
+                FileDownloadService.openDownloadedFile(cleanName);
+              },
+            ),
           ),
         );
       } else {
