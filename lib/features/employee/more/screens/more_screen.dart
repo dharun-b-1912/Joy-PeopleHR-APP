@@ -328,7 +328,7 @@ class _MoreScreenState extends State<MoreScreen> {
                           border: Border.all(color: AppColors.borderSubtle),
                         ),
                         child: Text(
-                          "v1.0.0 (Build 4)",
+                          "v1.0.0 (Build 5)",
                           style: AppTypography.overline.copyWith(
                             color: AppColors.primary,
                             fontWeight: FontWeight.bold,
