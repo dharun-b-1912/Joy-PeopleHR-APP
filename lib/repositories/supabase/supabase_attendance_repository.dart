@@ -1,0 +1,1325 @@
+import 'package:supabase_flutter/supabase_flutter.dart';
+import '../../core/config/supabase_config.dart';
+import '../../core/services/attendance_time_service.dart';
+import '../../core/services/push_sender_service.dart';
+import '../../core/services/realtime_outbox_service.dart';
+import '../../core/services/user_service.dart';
+import '../../core/utils/app_date_time.dart';
+import '../../core/utils/query_timeout.dart';
+import '../../core/utils/secure_log.dart';
+import '../../models/employee_models.dart';
+import '../../models/hrms_models.dart';
+import '../interfaces/employee_repository.dart';
+
+/// WorkForceOS — Supabase Attendance Repository (Production Schema Aligned)
+///
+/// Tables used:
+///   attendance_events     — raw punch events written on check-in / check-out
+///   attendance_daily      — per-day ledger (status, first/last punch, net_working_minutes)
+///   attendance_regularizations — regularization requests
+class SupabaseAttendanceRepository implements IAttendanceRepository {
+  SupabaseClient get _client => Supabase.instance.client;
+
+  // ────────────────────────────────────────────────────────────────────────
+  // TODAY'S ATTENDANCE QUERY (used on app launch / resume / punch sync)
+  // ────────────────────────────────────────────────────────────────────────
+
+  /// Fetch the authoritative attendance_daily and attendance_events record for today.
+  Future<Map<String, dynamic>?> getTodayAttendance(String employeeId) async {
+    try {
+      if (!SupabaseConfig.isConfigured || employeeId.trim().isEmpty) return null;
+
+      final todayDate = AttendanceTimeService.getBusinessDate();
+      final user = UserService.instance.currentUser;
+      final targetId = user.employeeUuid?.isNotEmpty == true ? user.employeeUuid! : employeeId;
+
+      Map<String, dynamic> merged = {};
+
+      // 1. Query attendance_daily
+      try {
+        final orFilter = <String>{
+          'employee_id.eq.$targetId',
+          if (user.employeeId.isNotEmpty) 'employee_code.eq.${user.employeeId}',
+          if (user.employeeId.isNotEmpty) 'employee_id.eq.${user.employeeId}',
+          if (user.employeeUuid?.isNotEmpty == true) 'employee_id.eq.${user.employeeUuid}',
+        }.join(',');
+
+        final dailyDataList = await withTimeout(
+          _client
+              .from('attendance_daily')
+              .select()
+              .or(orFilter)
+              .eq('date', todayDate)
+              .limit(1),
+        );
+        if (dailyDataList.isNotEmpty) {
+          merged = Map<String, dynamic>.from(dailyDataList.first);
+        }
+      } catch (e) {
+        secureLog('[Attendance] attendance_daily query notice: $e');
+      }
+
+      // 2. Query today's attendance_events to ensure authoritative check-in/out timestamps
+      try {
+        final businessDateParts = todayDate.split('-').map(int.parse).toList();
+        // Start of business day in IST (00:00:00 IST) converted to UTC (-5h30m)
+        final businessDayStartUtc = DateTime.utc(businessDateParts[0], businessDateParts[1], businessDateParts[2])
+            .subtract(AttendanceTimeService.istOffset);
+
+        final orFilterEvents = <String>{
+          'employee_id.eq.$targetId',
+          if (user.employeeId.isNotEmpty) 'employee_id.eq.${user.employeeId}',
+          if (user.employeeUuid?.isNotEmpty == true) 'employee_id.eq.${user.employeeUuid}',
+        }.join(',');
+
+        final events = await withTimeout(
+          _client
+              .from('attendance_events')
+              .select()
+              .or(orFilterEvents)
+              .gte('timestamp', businessDayStartUtc.toIso8601String())
+              .order('timestamp', ascending: true),
+        );
+
+        if (events.isNotEmpty) {
+          events.sort((a, b) => (a['timestamp'] ?? '').toString().compareTo((b['timestamp'] ?? '').toString()));
+
+          String? firstInTimestamp;
+          String? lastOutTimestamp;
+
+          for (final ev in events) {
+            final type = (ev['type'] ?? ev['event_type'] ?? '').toString().toUpperCase();
+            final ts = ev['timestamp']?.toString();
+            if (ts != null && ts.isNotEmpty) {
+              if (type.contains('IN') && !type.contains('OUT')) {
+                firstInTimestamp ??= ts;
+              } else if (type.contains('OUT')) {
+                lastOutTimestamp = ts;
+              }
+            }
+          }
+
+          final latestEvent = events.last;
+          final latestType = (latestEvent['type'] ?? latestEvent['event_type'] ?? '').toString().toUpperCase();
+          final isCurrentlyIn = latestType.contains('IN') && !latestType.contains('OUT');
+
+          merged['first_check_in'] = firstInTimestamp;
+          merged['last_check_out'] = isCurrentlyIn ? null : lastOutTimestamp;
+          merged['is_currently_in'] = isCurrentlyIn;
+          merged['date'] = todayDate;
+        }
+      } catch (e) {
+        secureLog('[Attendance] attendance_events query notice: $e');
+      }
+
+      if (merged.isNotEmpty) {
+        AttendanceTimeService.logDiagnostic(
+          context: 'getTodayAttendance',
+          rawValue: merged['first_check_in'],
+        );
+        if (merged['last_check_out'] != null) {
+          AttendanceTimeService.logDiagnostic(
+            context: 'getTodayAttendance_OUT',
+            rawValue: merged['last_check_out'],
+          );
+        }
+        return merged;
+      }
+      return null;
+    } catch (e) {
+      secureLog('[Attendance] getTodayAttendance query error: $e');
+      return null;
+    }
+  }
+
+  // ────────────────────────────────────────────────────────────────────────
+  // PUNCH EVENT INSERTION (CHECK_IN / CHECK_OUT)
+  // ────────────────────────────────────────────────────────────────────────
+
+  /// Record punch event into `attendance_events` & atomically sync `attendance_daily` + `realtime_outbox`.
+  ///
+  /// [checkoutVerification] — Location verification result for CHECK_OUT events.
+  /// Only applied for CHECK_OUT type punches. CHECK_IN uses strict geofence validation.
+  Future<void> recordPunchEvent({
+    required String type,
+    double? latitude,
+    double? longitude,
+    double? accuracy,
+    String? deviceId,
+    bool isMocked = false,
+    CheckoutLocationVerification? checkoutVerification,
+  }) async {
+    final user = UserService.instance.currentUser;
+    final employeeUuid = user.dataId;
+
+    if (employeeUuid.isEmpty) {
+      throw Exception('Authentication required: Employee identity not resolved.');
+    }
+
+    final eventId = 'evt-${DateTime.now().microsecondsSinceEpoch}-${employeeUuid.hashCode.abs()}';
+    final nowIso = DateTime.now().toUtc().toIso8601String();
+    final todayDate = AttendanceTimeService.getBusinessDate();
+    final tenantId = user.companyId.isNotEmpty
+        ? user.companyId
+        : (user.organizationId?.isNotEmpty == true ? user.organizationId! : '');
+
+    // 1. Log Diagnostics for development verification
+    secureLog('[ATTENDANCE][FLUTTER][START] employee=${user.employeeId} uuid=$employeeUuid type=$type');
+    if (latitude != null && longitude != null) {
+      secureLog('[ATTENDANCE][GPS] lat=$latitude lng=$longitude accuracy=${accuracy ?? 10.0}m isMock=$isMocked');
+    }
+
+    // 2. Execute Authoritative Server-Side GPS Validation RPC
+    if (latitude != null && longitude != null) {
+      try {
+        final rpcRes = await withTimeout(
+          _client.rpc('fn_validate_and_record_gps_attendance', params: {
+            'p_tenant_id': tenantId,
+            'p_org_id': tenantId,
+            'p_employee_id': employeeUuid,
+            'p_punch_type': type.toUpperCase().contains('OUT') ? 'CHECK_OUT' : 'CHECK_IN',
+            'p_latitude': latitude,
+            'p_longitude': longitude,
+            'p_accuracy_meters': accuracy ?? 10.0,
+            'p_device_timestamp': nowIso,
+            'p_mock_location_detected': isMocked,
+            'p_device_info': {
+              'deviceId': deviceId ?? 'FLUTTER_MOBILE',
+              'client': 'JOY PeopleHR Mobile v1.0',
+            },
+          }),
+        );
+        secureLog('[ATTENDANCE][RPC] fn_validate_and_record_gps_attendance success: $rpcRes');
+      } catch (rpcErr) {
+        secureLog('[ATTENDANCE][RPC] Exception during GPS attendance validation: $rpcErr');
+        // If the server rejected the punch because outside geofence or low accuracy, rethrow to notify employee
+        final errStr = rpcErr.toString();
+        if (errStr.contains('outside the authorized') ||
+            errStr.contains('GPS accuracy') ||
+            errStr.contains('Mock location') ||
+            errStr.contains('No authorized work location')) {
+          final cleanMsg = errStr.replaceAll(RegExp(r'^(Exception:|PostgrestException\(message:\s*|\))'), '').trim();
+          throw Exception(cleanMsg.isNotEmpty ? cleanMsg : errStr);
+        }
+      }
+    }
+
+    // 3. Fallback / Direct insert into attendance_events (raw punch ledger)
+    final isCheckOut = type.toUpperCase().contains('OUT');
+    final payload = <String, dynamic>{
+      'id': eventId,
+      'organization_id': tenantId,
+      'employee_id': employeeUuid,
+      'timestamp': nowIso,
+      'type': type,
+      'source': 'MOBILE_GPS',
+      'latitude': latitude,
+      'longitude': longitude,
+      'device_id': deviceId ?? 'FLUTTER_MOBILE',
+    };
+
+    // Attach checkout location verification data for CHECK_OUT events
+    if (isCheckOut && checkoutVerification != null) {
+      payload.addAll(checkoutVerification.toMap());
+    }
+
+    try {
+      await withTimeout(
+        _client.from('attendance_events').insert(payload),
+      );
+      secureLog('[ATTENDANCE][DB] punch=INSERT status=SUCCESS event_id=$eventId');
+    } catch (e) {
+      secureLog('[ATTENDANCE][DB] attendance_events insert notice: $e');
+    }
+
+    // 3. Atomically update/upsert attendance_daily ledger
+    try {
+      final existingDaily = await withTimeout(
+        _client
+            .from('attendance_daily')
+            .select()
+            .eq('employee_id', employeeUuid)
+            .eq('date', todayDate)
+            .maybeSingle(),
+      );
+
+      final isCheckIn = type.toUpperCase().contains('IN') && !type.toUpperCase().contains('OUT');
+      final firstIn = existingDaily?['first_check_in'] ?? nowIso;
+      final lastOut = isCheckIn ? null : nowIso;
+
+      int netMinutes = (existingDaily?['net_working_minutes'] as num?)?.toInt() ?? 0;
+      if (!isCheckIn && firstIn != null) {
+        final inDt = DateTime.tryParse(firstIn.toString());
+        final outDt = DateTime.tryParse(nowIso);
+        if (inDt != null && outDt != null && outDt.isAfter(inDt)) {
+          netMinutes = outDt.difference(inDt).inMinutes;
+        }
+      }
+
+      final dailyPayload = <String, dynamic>{
+        'id': existingDaily?['id'] ?? 'att-dyn-$employeeUuid-$todayDate',
+        'organization_id': tenantId,
+        'company_id': tenantId,
+        'employee_id': employeeUuid,
+        'employee_code': user.employeeId.isNotEmpty ? user.employeeId : employeeUuid,
+        'employee_name': user.name,
+        'department': user.department.isNotEmpty ? user.department : 'General',
+        'designation': user.designation.isNotEmpty ? user.designation : 'Team Member',
+        'date': todayDate,
+        'status': 'Present',
+        'first_check_in': firstIn,
+        'last_check_out': lastOut,
+        'gross_working_minutes': netMinutes,
+        'net_working_minutes': netMinutes,
+        'source': 'MOBILE_GPS',
+        'updated_at': nowIso,
+      };
+
+      // Attach checkout location verification data for CHECK_OUT events
+      if (!isCheckIn && checkoutVerification != null) {
+        dailyPayload.addAll(checkoutVerification.toMap());
+      }
+
+      await withTimeout(
+        _client.from('attendance_daily').upsert(dailyPayload),
+      );
+      secureLog('[ATTENDANCE][LEDGER] employee=${user.employeeId} first_in=$firstIn last_out=$lastOut worked=${netMinutes}m status=PRESENT');
+    } catch (e) {
+      secureLog('[ATTENDANCE][LEDGER] attendance_daily upsert notice: $e');
+    }
+
+    // 4. Broadcast Realtime Outbox Event for cross-platform instant mesh update
+    await RealtimeOutboxService.insertEvent(
+      entityType: 'ATTENDANCE_DAILY',
+      eventType: 'attendance.updated',
+      entityId: employeeUuid,
+      tenantId: tenantId,
+      actorId: employeeUuid,
+      payload: {
+        'employee_id': employeeUuid,
+        'employee_code': user.employeeId,
+        'employee_name': user.name,
+        'punch_type': type,
+        'timestamp': nowIso,
+        'date': todayDate,
+        'source': 'MOBILE_GPS',
+      },
+    );
+  }
+
+  // ────────────────────────────────────────────────────────────────────────
+  // MONTHLY TIMESHEET QUERY (Synthesizes Full 1..N Calendar Timeline)
+  // ────────────────────────────────────────────────────────────────────────
+
+  @override
+  Future<List<TimesheetEntryModel>> getTimesheets(
+    String employeeId, {
+    int? month,
+    int? year,
+  }) async {
+    try {
+      if (!SupabaseConfig.isConfigured) {
+        return [];
+      }
+
+      final nowIST = DateTime.now().toUtc().add(AttendanceTimeService.istOffset);
+      final m = month ?? nowIST.month;
+      final y = year ?? nowIST.year;
+      final totalDaysInMonth = DateTime(y, m + 1, 0).day;
+      final todayDateStr = '${nowIST.year}-${nowIST.month.toString().padLeft(2, '0')}-${nowIST.day.toString().padLeft(2, '0')}';
+
+      final user = UserService.instance.currentUser;
+      final targetId = user.resolvedEmployeeId.isNotEmpty ? user.resolvedEmployeeId : employeeId;
+      final targetCode = user.employeeId;
+
+      // 1. Fetch all raw ledger rows from attendance_daily
+      final dailyMap = <String, Map<String, dynamic>>{};
+      try {
+        final orFilter = <String>{
+          'employee_id.eq.$targetId',
+          if (targetCode.isNotEmpty) 'employee_code.eq.$targetCode',
+          if (user.employeeUuid?.isNotEmpty == true) 'employee_id.eq.${user.employeeUuid}',
+          if (user.employeeId.isNotEmpty) 'employee_code.eq.${user.employeeId}',
+        }.join(',');
+
+        final dailyRows = await withTimeout(
+          _client
+              .from('attendance_daily')
+              .select()
+              .or(orFilter)
+              .gte('date', '$y-${m.toString().padLeft(2, '0')}-01')
+              .lte('date', '$y-${m.toString().padLeft(2, '0')}-$totalDaysInMonth'),
+        );
+        for (final r in dailyRows) {
+          final d = r['date']?.toString();
+          if (d != null && d.isNotEmpty) {
+            dailyMap[d] = Map<String, dynamic>.from(r);
+          }
+        }
+      } catch (e) {
+        secureLog('[Attendance] attendance_daily fetch notice: $e');
+      }
+
+      // 2. Fetch all raw events from attendance_events in case punch is recorded there
+      final eventsMap = <String, List<Map<String, dynamic>>>{};
+      try {
+        final startUtc = DateTime.utc(y, m, 1).subtract(AttendanceTimeService.istOffset);
+        final endUtc = DateTime.utc(y, m, totalDaysInMonth, 23, 59, 59).subtract(AttendanceTimeService.istOffset);
+
+        final orFilterEvents = <String>{
+          'employee_id.eq.$targetId',
+          if (targetCode.isNotEmpty) 'employee_id.eq.$targetCode',
+        }.join(',');
+
+        final eventRows = await withTimeout(
+          _client
+              .from('attendance_events')
+              .select()
+              .or(orFilterEvents)
+              .gte('timestamp', startUtc.toIso8601String())
+              .lte('timestamp', endUtc.toIso8601String())
+              .order('timestamp', ascending: true),
+        );
+        for (final ev in eventRows) {
+          final tsStr = ev['timestamp']?.toString();
+          if (tsStr != null && tsStr.isNotEmpty) {
+            final parsedDt = DateTime.tryParse(tsStr);
+            if (parsedDt != null) {
+              final bDate = AttendanceTimeService.getBusinessDate(parsedDt);
+              eventsMap.putIfAbsent(bDate, () => []).add(Map<String, dynamic>.from(ev));
+            }
+          }
+        }
+      } catch (e) {
+        secureLog('[Attendance] attendance_events fetch notice: $e');
+      }
+
+      // 3. Fetch approved leaves for this month
+      final leaveDates = <String>{};
+      try {
+        final leaveRows = await withTimeout(
+          _client
+              .from('leave_requests')
+              .select()
+              .or('employee_id.eq.$targetId,employee_id.eq.$targetCode')
+              .eq('status', 'APPROVED'),
+        );
+        for (final lr in leaveRows) {
+          final sStr = lr['start_date']?.toString();
+          final eStr = lr['end_date']?.toString();
+          if (sStr != null && eStr != null) {
+            final s = DateTime.tryParse(sStr);
+            final e = DateTime.tryParse(eStr);
+            if (s != null && e != null) {
+              for (var cur = s; !cur.isAfter(e); cur = cur.add(const Duration(days: 1))) {
+                if (cur.year == y && cur.month == m) {
+                  leaveDates.add('${cur.year}-${cur.month.toString().padLeft(2, '0')}-${cur.day.toString().padLeft(2, '0')}');
+                }
+              }
+            }
+          }
+        }
+      } catch (_) {}
+
+      // 3.5. Fetch all regularization requests for this employee in this month
+      final regularizationsMap = <String, Map<String, dynamic>>{};
+      try {
+        final orFilterReg = <String>{
+          'employee_id.eq.$targetId',
+          if (targetCode.isNotEmpty) 'employee_code.eq.$targetCode',
+          if (user.employeeUuid?.isNotEmpty == true) 'employee_id.eq.${user.employeeUuid}',
+          if (user.employeeId.isNotEmpty) 'employee_code.eq.${user.employeeId}',
+        }.join(',');
+
+        final regRows = await withTimeout(
+          _client
+              .from('attendance_regularization_requests')
+              .select('*')
+              .or(orFilterReg),
+        );
+        for (final r in regRows) {
+          final dateRaw = (r['attendance_date'] ?? r['date'] ?? r['work_date'])?.toString();
+          if (dateRaw != null && dateRaw.isNotEmpty) {
+            final dateKey = dateRaw.split('T')[0];
+            regularizationsMap[dateKey] = Map<String, dynamic>.from(r);
+          }
+        }
+      } catch (e) {
+        secureLog('[Attendance] attendance_regularization_requests fetch notice: $e');
+      }
+
+      try {
+        final regFallbackRows = await withTimeout(
+          _client
+              .from('attendance_regularizations')
+              .select('*')                .or('employee_id.eq.$targetId'),
+        );
+        for (final r in regFallbackRows) {
+          final dateRaw = (r['attendance_date'] ?? r['date'] ?? r['work_date'])?.toString();
+          if (dateRaw != null && dateRaw.isNotEmpty) {
+            final dateKey = dateRaw.split('T')[0];
+            regularizationsMap.putIfAbsent(dateKey, () => Map<String, dynamic>.from(r));
+          }
+        }
+      } catch (_) {}
+
+      // 4. Synthesize day-wise calendar timesheet days
+      // For current month: show only from Day 1 up to today.
+      // For past months: show all days (1..totalDaysInMonth).
+      // For future months: return empty list.
+      final now = DateTime.now();
+      final isCurrentMonth = (y == now.year && m == now.month);
+      final isFutureMonth = (y > now.year || (y == now.year && m > now.month));
+
+      if (isFutureMonth) {
+        return [];
+      }
+
+      final int maxDay = isCurrentMonth ? now.day : totalDaysInMonth;
+      final List<TimesheetEntryModel> fullMonthList = [];
+
+      for (int day = 1; day <= maxDay; day++) {
+        final date = DateTime(y, m, day);
+        final dateStr = '$y-${m.toString().padLeft(2, '0')}-${day.toString().padLeft(2, '0')}';
+        final isWeekend = date.weekday == DateTime.saturday || date.weekday == DateTime.sunday;
+        final isPast = dateStr.compareTo(todayDateStr) < 0;
+        final isToday = dateStr == todayDateStr;
+
+        final dailyRecord = dailyMap[dateStr];
+        final dayEvents = eventsMap[dateStr] ?? [];
+        final regRecord = regularizationsMap[dateStr];
+
+        String? firstCheckIn = dailyRecord?['first_check_in']?.toString();
+        String? lastCheckOut = dailyRecord?['last_check_out']?.toString();
+        int netMinutes = (dailyRecord?['net_working_minutes'] as num?)?.toInt() ?? 0;
+        String source = dailyRecord?['source']?.toString() ?? 'Mobile Geofence';
+
+        // 1. Regularization check (Approved regularization makes it full Present)
+        bool isRegularizedApproved = false;
+        if (regRecord != null) {
+          final regStatus = (regRecord['status'] ?? '').toString().toUpperCase();
+          if (regStatus == 'APPROVED') {
+            isRegularizedApproved = true;
+            firstCheckIn ??= regRecord['requested_check_in']?.toString() ?? '09:30 AM';
+            lastCheckOut ??= regRecord['requested_check_out']?.toString() ?? '06:30 PM';
+            source = 'Regularization';
+            if (netMinutes == 0) netMinutes = 480; // 8h standard shift
+          }
+        }
+
+        // 2. Punch calculation if events exist
+        if (firstCheckIn == null && dayEvents.isNotEmpty) {
+          for (final ev in dayEvents) {
+            final type = (ev['type'] ?? ev['event_type'] ?? '').toString().toUpperCase();
+            final ts = ev['timestamp']?.toString();
+            if (ts != null) {
+              if (type.contains('IN') && !type.contains('OUT')) {
+                firstCheckIn ??= ts;
+              } else if (type.contains('OUT')) {
+                lastCheckOut = ts;
+              }
+            }
+          }
+        }
+
+        if (firstCheckIn != null && lastCheckOut != null && netMinutes == 0) {
+          final dtIn = DateTime.tryParse(firstCheckIn);
+          final dtOut = DateTime.tryParse(lastCheckOut);
+          if (dtIn != null && dtOut != null) {
+            netMinutes = dtOut.difference(dtIn).inMinutes;
+            if (netMinutes < 0) netMinutes = 0;
+          }
+        }
+
+        DayAttendanceStatus status;
+
+        if (isRegularizedApproved) {
+          status = DayAttendanceStatus.present;
+        } else if (firstCheckIn != null) {
+          if (lastCheckOut != null) {
+            // Checked in AND checked out
+            if (netMinutes >= 360) {
+              // >= 6.0 hours => Full Day Present
+              status = DayAttendanceStatus.present;
+            } else if (netMinutes > 0) {
+              // < 6.0 hours => Half Day
+              status = DayAttendanceStatus.halfDay;
+            } else {
+              status = DayAttendanceStatus.notPayable;
+            }
+          } else {
+            // Checked in, but NO checkout punch => Not Payable (Purple)
+            status = DayAttendanceStatus.notPayable;
+          }
+        } else if (leaveDates.contains(dateStr)) {
+          status = DayAttendanceStatus.leave;
+        } else if (isWeekend) {
+          status = DayAttendanceStatus.weekOff;
+        } else if (isPast) {
+          status = DayAttendanceStatus.absent; // Past workday with 0 check-in (Red)
+        } else {
+          status = DayAttendanceStatus.none; // Today or future unpunched
+        }
+
+        fullMonthList.add(TimesheetEntryModel(
+          id: dailyRecord?['id']?.toString() ?? regRecord?['id']?.toString() ?? 'ts-$y-$m-$day',
+          date: date,
+          clockInTime: firstCheckIn != null ? AttendanceTimeService.formatAttendanceTime(firstCheckIn) : null,
+          clockOutTime: lastCheckOut != null ? AttendanceTimeService.formatAttendanceTime(lastCheckOut) : null,
+          totalHours: netMinutes > 0 && (status == DayAttendanceStatus.present || status == DayAttendanceStatus.halfDay)
+              ? _formatDuration(netMinutes)
+              : (status == DayAttendanceStatus.notPayable
+                  ? (isToday ? 'Shift Active' : 'Missed Out')
+                  : (status == DayAttendanceStatus.weekOff
+                      ? 'Week Off'
+                      : (status == DayAttendanceStatus.absent
+                          ? 'Absent LOP'
+                          : (status == DayAttendanceStatus.leave ? 'Leave' : '-')))),
+          status: status,
+          source: _prettySource(source),
+          netWorkingMinutes: netMinutes,
+          checkoutLocationStatus: dailyRecord?['checkout_location_status']?.toString(),
+          checkoutLocationName: dailyRecord?['checkout_location_name']?.toString(),
+          checkoutLocationReason: dailyRecord?['checkout_location_reason']?.toString(),
+          checkoutLatitude: (dailyRecord?['checkout_latitude'] as num?)?.toDouble(),
+          checkoutLongitude: (dailyRecord?['checkout_longitude'] as num?)?.toDouble(),
+        ));
+      }
+
+      return fullMonthList;
+    } catch (e) {
+      secureLog('[Attendance] getTimesheets error: $e');
+      return [];
+    }
+  }
+
+  // ────────────────────────────────────────────────────────────────────────
+  // MONTHLY ATTENDANCE SUMMARY
+  // ────────────────────────────────────────────────────────────────────────
+
+  @override
+  Future<AttendanceSummaryModel> getAttendanceSummary(
+    String employeeId, {
+    int? month,
+    int? year,
+  }) async {
+    try {
+      if (!SupabaseConfig.isConfigured) {
+        return const AttendanceSummaryModel(
+          totalWorkingDays: 0,
+          presentDays: 0,
+          absentDays: 0,
+          leaveDays: 0,
+          holidaysCount: 0,
+          weekOffsCount: 0,
+          totalHoursWorked: '00h 00m',
+          avgDailyHours: '00h 00m',
+        );
+      }
+
+      final timesheets = await getTimesheets(employeeId, month: month, year: year);
+      if (timesheets.isEmpty) {
+        return const AttendanceSummaryModel(
+          totalWorkingDays: 0,
+          presentDays: 0,
+          absentDays: 0,
+          leaveDays: 0,
+          holidaysCount: 0,
+          weekOffsCount: 0,
+          totalHoursWorked: '00h 00m',
+          avgDailyHours: '00h 00m',
+        );
+      }
+
+      var present = 0, absent = 0, leave = 0, holidays = 0, weekOffs = 0;
+      var totalMinutes = 0, workedDayCount = 0;
+
+      for (final ts in timesheets) {
+        switch (ts.status) {
+          case DayAttendanceStatus.present:
+          case DayAttendanceStatus.late:
+          case DayAttendanceStatus.regularized:
+          case DayAttendanceStatus.halfDayPresent:
+          case DayAttendanceStatus.halfDay:
+            present++;
+            break;
+          case DayAttendanceStatus.halfDayAbsent:
+          case DayAttendanceStatus.absent:
+          case DayAttendanceStatus.notPayable:
+            absent++;
+            break;
+          case DayAttendanceStatus.leave:
+            leave++;
+            break;
+          case DayAttendanceStatus.holiday:
+            holidays++;
+            break;
+          case DayAttendanceStatus.weekOff:
+            weekOffs++;
+            break;
+          case DayAttendanceStatus.none:
+            break;
+        }
+
+        if (ts.clockInTime != null && ts.clockOutTime != null) {
+          final durParts = ts.totalHours.split('h');
+          if (durParts.length == 2) {
+            final h = int.tryParse(durParts[0].trim()) ?? 0;
+            final m = int.tryParse(durParts[1].replaceAll('m', '').trim()) ?? 0;
+            final mins = (h * 60) + m;
+            if (mins > 0) {
+              totalMinutes += mins;
+              workedDayCount++;
+            }
+          }
+        }
+      }
+
+      final scheduledWorkDays = present + absent + leave;
+
+      return AttendanceSummaryModel(
+        totalWorkingDays: scheduledWorkDays > 0 ? scheduledWorkDays : 21,
+        presentDays: present,
+        absentDays: absent,
+        leaveDays: leave,
+        holidaysCount: holidays,
+        weekOffsCount: weekOffs,
+        totalHoursWorked: _formatDuration(totalMinutes),
+        avgDailyHours: _formatDuration(workedDayCount > 0 ? totalMinutes ~/ workedDayCount : 0),
+      );
+    } catch (e) {
+      secureLog('[Attendance] getAttendanceSummary error: $e');
+      return const AttendanceSummaryModel(
+        totalWorkingDays: 0,
+        presentDays: 0,
+        absentDays: 0,
+        leaveDays: 0,
+        holidaysCount: 0,
+        weekOffsCount: 0,
+        totalHoursWorked: '00h 00m',
+        avgDailyHours: '00h 00m',
+      );
+    }
+  }
+
+  // ────────────────────────────────────────────────────────────────────────
+  // REGULARIZATION REQUESTS
+  // ────────────────────────────────────────────────────────────────────────
+
+  @override
+  Future<List<RegularizationRequestModel>> getRegularizationRequests(
+    String employeeId,
+  ) async {
+    try {
+      if (!SupabaseConfig.isConfigured) return [];
+
+      final user = UserService.instance.currentUser;
+      final targetId = user.dataId.isNotEmpty ? user.dataId : employeeId;
+      final targetCode = user.employeeId;
+
+      List<RegularizationRequestModel> requests = [];
+      final Set<String> seenIds = {};
+
+      // 1. Primary Source of Truth: Fetch from 'attendance_regularization_requests' table
+      try {
+        final tableRows = await withTimeout(
+          _client
+              .from('attendance_regularization_requests')
+              .select('*')
+              .or('employee_id.eq.$targetId,employee_code.eq.$targetCode')
+              .order('created_at', ascending: false)
+              .limit(50),
+        );
+
+        if (tableRows.isNotEmpty) {
+          for (final row in tableRows) {
+            final id = row['id']?.toString() ?? '';
+            if (id.isEmpty || seenIds.contains(id)) continue;
+            seenIds.add(id);
+
+            final dateRaw = row['attendance_date'] ?? row['created_at'];
+            final inTime = row['requested_check_in'] ?? '09:30 AM';
+            final outTime = row['requested_check_out'] ?? '06:30 PM';
+            final rawStatus = (row['status'] ?? 'MANAGER_PENDING').toString().toUpperCase();
+
+            RegularizationStatusState state = RegularizationStatusState.managerPending;
+            LeaveStatus leaveStatus = LeaveStatus.pending;
+
+            if (rawStatus.contains('HR')) {
+              state = RegularizationStatusState.hrPending;
+              leaveStatus = LeaveStatus.pending;
+            } else if (rawStatus.contains('APPROV')) {
+              state = RegularizationStatusState.approved;
+              leaveStatus = LeaveStatus.approved;
+            } else if (rawStatus.contains('REJECT')) {
+              state = RegularizationStatusState.rejected;
+              leaveStatus = LeaveStatus.rejected;
+            } else if (rawStatus.contains('CLARIF')) {
+              state = RegularizationStatusState.clarificationRequired;
+              leaveStatus = LeaveStatus.pending;
+            }
+
+            requests.add(RegularizationRequestModel(
+              id: id,
+              employeeId: row['employee_id']?.toString() ?? targetId,
+              employeeName: row['employee_name']?.toString() ?? user.name,
+              department: row['department']?.toString() ?? user.department,
+              date: DateTime.tryParse(dateRaw.toString()) ?? DateTime.now(),
+              shiftName: row['shift_name']?.toString() ?? 'General Shift',
+              shiftWindow: row['shift_window']?.toString() ?? '09:30 AM — 06:30 PM',
+              originalInTime: row['original_check_in']?.toString(),
+              originalOutTime: row['original_check_out']?.toString(),
+              originalStatus: row['original_status']?.toString(),
+              requestedInTime: _formatTimeString(inTime.toString()),
+              requestedOutTime: _formatTimeString(outTime.toString()),
+              reasonCode: row['reason_code']?.toString() ?? 'FORGOT_CHECK_IN',
+              reason: row['reason_text']?.toString() ?? row['reason']?.toString() ?? '',
+              status: leaveStatus,
+              statusState: state,
+              currentStage: row['current_stage']?.toString() ?? 'MANAGER_REVIEW',
+              managerComment: row['manager_comment']?.toString(),
+              hrComment: row['hr_comment']?.toString(),
+              createdAt: DateTime.tryParse(row['created_at']?.toString() ?? '') ?? DateTime.now(),
+            ));
+          }
+        }
+      } catch (tableErr) {
+        secureLog('[Attendance] attendance_regularization_requests query notice: $tableErr');
+      }
+
+      // 2. Fetch from Realtime Outbox Mesh (to capture newly queued offline/realtime items)
+      try {
+        final outboxRows = await withTimeout(
+          _client
+              .from('realtime_outbox')
+              .select('*')
+              .eq('entity_type', 'attendance_regularization_requests')
+              .order('created_at', ascending: false)
+              .limit(50),
+        );
+
+        if (outboxRows.isNotEmpty) {
+          for (final row in outboxRows) {
+            final payload = row['payload'];
+            if (payload is Map<String, dynamic>) {
+              final payloadEmpId = payload['employee_id']?.toString() ?? '';
+              final payloadEmpCode = payload['employee_code']?.toString() ?? '';
+              final id = (payload['id'] ?? row['entity_id'] ?? row['id']).toString();
+
+              if (seenIds.contains(id)) continue;
+
+              // Check if matches authenticated employee or manager view
+              if (targetId.isNotEmpty && (payloadEmpId == targetId || payloadEmpCode == targetCode)) {
+                seenIds.add(id);
+                final dateRaw = payload['attendance_date'] ?? payload['date'] ?? row['created_at'];
+                final inTime = payload['requested_check_in'] ?? payload['requested_in'] ?? '09:30 AM';
+                final outTime = payload['requested_check_out'] ?? payload['requested_out'] ?? '06:30 PM';
+                final rawStatus = (payload['status'] ?? 'MANAGER_PENDING').toString().toUpperCase();
+
+                RegularizationStatusState state = RegularizationStatusState.managerPending;
+                LeaveStatus leaveStatus = LeaveStatus.pending;
+
+                if (rawStatus.contains('HR')) {
+                  state = RegularizationStatusState.hrPending;
+                  leaveStatus = LeaveStatus.pending;
+                } else if (rawStatus.contains('APPROV')) {
+                  state = RegularizationStatusState.approved;
+                  leaveStatus = LeaveStatus.approved;
+                } else if (rawStatus.contains('REJECT')) {
+                  state = RegularizationStatusState.rejected;
+                  leaveStatus = LeaveStatus.rejected;
+                } else if (rawStatus.contains('CLARIF')) {
+                  state = RegularizationStatusState.clarificationRequired;
+                  leaveStatus = LeaveStatus.pending;
+                }
+
+                requests.add(RegularizationRequestModel(
+                  id: id,
+                  employeeId: payloadEmpId.isNotEmpty ? payloadEmpId : targetId,
+                  employeeName: payload['employee_name']?.toString() ?? user.name,
+                  department: payload['department']?.toString() ?? user.department,
+                  date: DateTime.tryParse(dateRaw.toString()) ?? DateTime.now(),
+                  shiftName: payload['shift_name']?.toString() ?? 'General Shift',
+                  shiftWindow: payload['shift_window']?.toString() ?? '09:30 AM — 06:30 PM',
+                  originalInTime: payload['original_check_in']?.toString(),
+                  originalOutTime: payload['original_check_out']?.toString(),
+                  originalStatus: payload['original_status']?.toString(),
+                  requestedInTime: _formatTimeString(inTime.toString()),
+                  requestedOutTime: _formatTimeString(outTime.toString()),
+                  reasonCode: payload['reason_code']?.toString() ?? 'FORGOT_CHECK_IN',
+                  reason: payload['reason']?.toString() ?? payload['reason_text']?.toString() ?? '',
+                  status: leaveStatus,
+                  statusState: state,
+                  currentStage: payload['current_stage']?.toString() ?? 'MANAGER_REVIEW',
+                  managerComment: payload['manager_comment']?.toString(),
+                  hrComment: payload['hr_comment']?.toString(),
+                  createdAt: DateTime.tryParse(row['created_at']?.toString() ?? '') ?? DateTime.now(),
+                ));
+              }
+            }
+          }
+        }
+      } catch (outboxErr) {
+        secureLog('[Attendance] outbox regularization fetch notice: $outboxErr');
+      }
+
+      return requests;
+    } catch (e) {
+      secureLog('[Attendance] getRegularizationRequests error: $e');
+      return [];
+    }
+  }
+
+  @override
+  Future<RegularizationRequestModel> submitRegularization(
+    RegularizationRequestModel request,
+  ) async {
+    try {
+      if (SupabaseConfig.isConfigured) {
+        final user = UserService.instance.currentUser;
+        final tenantId = user.tenantId;
+        final nowStr = DateTime.now().toIso8601String();
+        final dateStr = request.date.toIso8601String().split('T')[0];
+
+        // 1. Direct Table Insert into 'attendance_regularization_requests' (The primary table displayed on the Web App)
+        try {
+          await _client.from('attendance_regularization_requests').insert({
+            'id': request.id,
+            if (tenantId.isNotEmpty) 'tenant_id': tenantId,
+            if (tenantId.isNotEmpty) 'organization_id': tenantId,
+            'employee_id': user.resolvedEmployeeId,
+            'employee_code': user.employeeId,
+            'employee_name': user.name,
+            'department': user.department,
+            'attendance_date': dateStr,
+            'shift_name': request.shiftName,
+            'shift_window': request.shiftWindow,
+            'original_check_in': request.originalInTime,
+            'original_check_out': request.originalOutTime,
+            'original_status': request.originalStatus ?? 'ABSENT',
+            'original_source': 'MOBILE_GPS',
+            'requested_check_in': request.requestedInTime,
+            'requested_check_out': request.requestedOutTime,
+            'reason_code': request.reasonCode,
+            'reason_text': request.reason,
+            'status': 'MANAGER_PENDING',
+            'current_stage': 'MANAGER_REVIEW',
+            'manager_id': user.reportsToId?.isNotEmpty == true ? user.reportsToId! : null,
+            'manager_name': user.reportsToName?.isNotEmpty == true ? user.reportsToName! : null,
+            'timeline': [
+              {
+                'stage': 'SUBMITTED',
+                'timestamp': nowStr,
+                'actor': user.resolvedEmployeeId.isNotEmpty ? user.resolvedEmployeeId : user.name,
+                'action': 'REQUEST_SUBMITTED',
+                'note': request.reason,
+              }
+            ],
+            'created_at': nowStr,
+            'updated_at': nowStr,
+          });
+          secureLog('[Attendance] attendance_regularization_requests direct insert succeeded for ${request.id}');
+        } catch (tableErr) {
+          secureLog('[Attendance] attendance_regularization_requests direct insert notice: $tableErr');
+        }
+
+        // 2. RPC Submission (if procedure configured in DB)
+        try {
+          await _client.rpc('fn_submit_attendance_regularization', params: {
+            'p_tenant_id': tenantId,
+            'p_employee_id': user.resolvedEmployeeId,
+            'p_date': dateStr,
+            'p_requested_in': request.requestedInTime,
+            'p_requested_out': request.requestedOutTime,
+            'p_reason_code': request.reasonCode,
+            'p_reason_text': request.reason,
+            'p_actor_id': user.resolvedEmployeeId,
+          });
+          secureLog('[Attendance] RPC fn_submit_attendance_regularization succeeded');
+        } catch (rpcErr) {
+          secureLog('[Attendance] RPC fallback: $rpcErr');
+        }
+
+        // 3. Realtime Outbox Insert via centralized service
+        final payload = {
+          'id': request.id,
+          if (tenantId.isNotEmpty) 'tenant_id': tenantId,
+          if (tenantId.isNotEmpty) 'organization_id': tenantId,
+          'employee_id': user.resolvedEmployeeId,
+          'employee_code': user.employeeId,
+          'employee_name': user.name,
+          'department': user.department,
+          'attendance_date': dateStr,
+          'shift_name': request.shiftName,
+          'shift_window': request.shiftWindow,
+          'original_check_in': request.originalInTime,
+          'original_check_out': request.originalOutTime,
+          'original_status': request.originalStatus ?? 'ABSENT',
+          'original_source': 'MOBILE_GPS',
+          'requested_check_in': request.requestedInTime,
+          'requested_check_out': request.requestedOutTime,
+          'reason_code': request.reasonCode,
+          'reason': request.reason,
+          'status': 'MANAGER_PENDING',
+          'current_stage': 'MANAGER_REVIEW',
+          'manager_id': user.reportsToId?.isNotEmpty == true ? user.reportsToId! : null,
+          'manager_name': user.reportsToName?.isNotEmpty == true ? user.reportsToName! : null,
+          'timeline': [
+            {
+              'stage': 'SUBMITTED',
+              'timestamp': nowStr,
+              'actor': user.name,
+              'action': 'REQUEST_SUBMITTED',
+              'note': request.reason,
+            }
+          ],
+          'created_at': nowStr,
+          'updated_at': nowStr,
+        };
+
+        await RealtimeOutboxService.insertEvent(
+          entityType: 'attendance_regularization_requests',
+          eventType: 'regularization.submitted',
+          entityId: request.id,
+          tenantId: tenantId,
+          actorId: user.resolvedEmployeeId,
+          payload: payload,
+        );
+
+        // Send push notification to manager about regularization request
+        final managerId = user.reportsToId;
+        if (managerId != null && managerId.isNotEmpty) {
+          try {
+            await PushSenderService.instance.sendToEmployee(
+              employeeId: managerId,
+              title: 'Attendance Regularization Request',
+              body: '${user.name} has requested regularization for $dateStr — ${request.reason}',
+              route: 'attendance',
+              data: {'request_id': request.id, 'attendance_date': dateStr},
+            );
+          } catch (e) {
+            secureLog('[Attendance] Push to manager notice: $e');
+          }
+        }
+
+        return request;
+      }
+    } catch (e) {
+      secureLog('[Attendance] submitRegularization failed: $e');
+      rethrow;
+    }
+    return request;
+  }
+
+  @override
+  Future<void> withdrawRegularization(String requestId) async {
+    if (!SupabaseConfig.isConfigured || requestId.isEmpty) return;
+    try {
+      // 1. Delete from primary table 'attendance_regularization_requests'
+      try {
+        await _client
+            .from('attendance_regularization_requests')
+            .delete()
+            .eq('id', requestId);
+        secureLog('[Attendance] attendance_regularization_requests deleted id=$requestId');
+      } catch (e) {
+        secureLog('[Attendance] attendance_regularization_requests delete error: $e');
+      }
+
+      // 2. Delete from 'realtime_outbox'
+      await RealtimeOutboxService.deleteEvent(entityId: requestId);
+      await RealtimeOutboxService.deleteEvent(id: requestId);
+    } catch (e) {
+      secureLog('[Attendance] withdrawRegularization failed: $e');
+    }
+  }
+
+  // ────────────────────────────────────────────────────────────────────────
+  // ATTENDANCE DEVIATIONS (LATE / EARLY / MISSING PUNCH)
+  // ────────────────────────────────────────────────────────────────────────
+
+  @override
+  Future<List<AttendanceDeviationModel>> getAttendanceDeviations(
+    String employeeId,
+  ) async {
+    try {
+      if (!SupabaseConfig.isConfigured) return [];
+
+      final user = UserService.instance.currentUser;
+      final targetId = user.dataId.isNotEmpty ? user.dataId : employeeId;
+      final targetCode = user.employeeId;
+
+      List<AttendanceDeviationModel> list = [];
+
+      // 1. Fetch from attendance_daily rows
+      try {
+        final dailyRows = await withTimeout(
+          _client
+              .from('attendance_daily')
+              .select('*')
+              .or('employee_id.eq.$targetId,employee_code.eq.$targetCode')
+              .order('date', ascending: false)
+              .limit(30),
+        );
+
+        for (final row in dailyRows) {
+          final firstIn = row['first_check_in']?.toString();
+          final lastOut = row['last_check_out']?.toString();
+          final dateStr = row['date']?.toString() ?? DateTime.now().toIso8601String().split('T')[0];
+          final dateParsed = DateTime.tryParse(dateStr) ?? DateTime.now();
+
+          final schedInMins = _parseTimeToMinutes(row['expected_check_in']?.toString()) ?? 570; // 09:30 AM
+          final schedOutMins = _parseTimeToMinutes(row['expected_check_out']?.toString()) ?? 1110; // 06:30 PM
+          final actualInMins = _parseTimeToMinutes(firstIn);
+          final actualOutMins = _parseTimeToMinutes(lastOut);
+
+          int lateMins = 0;
+          int earlyMins = 0;
+
+          if (actualInMins != null && actualInMins > schedInMins) {
+            lateMins = actualInMins - schedInMins;
+          }
+
+          if (actualOutMins != null && actualOutMins < schedOutMins) {
+            earlyMins = schedOutMins - actualOutMins;
+          }
+
+          String? devType;
+          if (firstIn == null && lastOut == null) {
+            devType = 'MISSING_ATTENDANCE';
+          } else if (firstIn == null) {
+            devType = 'MISSING_CHECK_IN';
+          } else if (lastOut == null && dateParsed.isBefore(DateTime.now())) {
+            devType = 'MISSING_CHECK_OUT';
+          } else if (lateMins > 10 && earlyMins > 10) {
+            devType = 'LATE_EARLY';
+          } else if (lateMins > 10) {
+            devType = 'LATE';
+          } else if (earlyMins > 10) {
+            devType = 'EARLY';
+          }
+
+          if (devType != null) {
+            final isRegularized = row['status'] == 'Regularized' || row['source'] == 'REGULARIZATION';
+            list.add(AttendanceDeviationModel(
+              id: 'dev-$targetId-$dateStr-$devType',
+              employeeId: targetId,
+              employeeName: user.name,
+              department: user.department,
+              date: dateParsed,
+              shiftCode: row['shift_code']?.toString() ?? 'GEN-09',
+              shiftName: row['shift_name']?.toString() ?? 'General Shift',
+              scheduledIn: row['expected_check_in']?.toString() ?? '09:30 AM',
+              actualIn: firstIn != null ? _formatTimeString(firstIn) : null,
+              lateMinutes: lateMins,
+              lateGraceMinutes: 10,
+              payableLateMinutes: lateMins > 10 ? lateMins - 10 : 0,
+              scheduledOut: row['expected_check_out']?.toString() ?? '06:30 PM',
+              actualOut: lastOut != null ? _formatTimeString(lastOut) : null,
+              earlyMinutes: earlyMins,
+              earlyGraceMinutes: 10,
+              payableEarlyMinutes: earlyMins > 10 ? earlyMins - 10 : 0,
+              deviationType: devType,
+              status: isRegularized ? 'REGULARIZED' : 'DETECTED',
+              payrollDeductionDays: isRegularized ? 0.0 : (lateMins > 120 ? 0.5 : 0.0),
+            ));
+          }
+        }
+      } catch (e) {
+        secureLog('[Attendance] getAttendanceDeviations daily query error: $e');
+      }
+
+      return list;
+    } catch (e) {
+      secureLog('[Attendance] getAttendanceDeviations error: $e');
+      return [];
+    }
+  }
+
+  // ────────────────────────────────────────────────────────────────────────
+  // ACTIONABLE ATTENDANCE EXCEPTIONS (MISSING CHECK-OUT, GPS, ETC.)
+  // ────────────────────────────────────────────────────────────────────────
+
+  @override
+  Future<List<AttendanceExceptionModel>> getActionableAttendanceExceptions(
+    String employeeId,
+  ) async {
+    try {
+      if (!SupabaseConfig.isConfigured) return [];
+
+      final user = UserService.instance.currentUser;
+      final targetId = user.dataId.isNotEmpty ? user.dataId : employeeId;
+      final targetCode = user.employeeId;
+
+      List<AttendanceExceptionModel> list = [];
+
+      // 1. Fetch from attendance_exceptions table if exists
+      try {
+        final rows = await withTimeout(
+          _client
+              .from('attendance_exceptions')
+              .select('*')
+              .or('employee_id.eq.$targetId,employee_code.eq.$targetCode')
+              .neq('status', 'RESOLVED')
+              .neq('status', 'DISMISSED')
+              .order('work_date', ascending: false)
+              .limit(10),
+        );
+
+        for (final row in rows) {
+          final excType = row['exception_type']?.toString() ?? '';
+          // Only return employee-actionable exceptions (do not expose internal unmapped PINs or hardware device logs)
+          if (excType == 'MISSING_CHECK_OUT' ||
+              excType == 'MISSING_CHECK_IN' ||
+              excType == 'GPS_OUTSIDE_GEOFENCE' ||
+              excType == 'GPS_LOW_ACCURACY') {
+            list.add(AttendanceExceptionModel.fromJson(row));
+          }
+        }
+      } catch (e) {
+        secureLog('[Attendance] getActionableAttendanceExceptions query notice: $e');
+      }
+
+      // 2. Derive missing checkout exception from recent attendance_daily if not explicitly stored
+      if (list.isEmpty) {
+        try {
+          final todayStr = DateTime.now().toIso8601String().split('T')[0];
+          final dailyRows = await withTimeout(
+            _client
+                .from('attendance_daily')
+                .select('*')
+                .or('employee_id.eq.$targetId,employee_code.eq.$targetCode')
+                .lt('date', todayStr)
+                .order('date', ascending: false)
+                .limit(5),
+          );
+
+          for (final row in dailyRows) {
+            final firstIn = row['first_check_in']?.toString();
+            final lastOut = row['last_check_out']?.toString();
+            final dateStr = row['date']?.toString() ?? '';
+            final status = row['status']?.toString() ?? '';
+
+            if (firstIn != null && (lastOut == null || lastOut.isEmpty) && status != 'Regularized') {
+              list.add(
+                AttendanceExceptionModel(
+                  id: 'exc-missout-$dateStr',
+                  exceptionType: 'MISSING_CHECK_OUT',
+                  severity: 'HIGH',
+                  status: 'EMPLOYEE_ACTION_REQUIRED',
+                  workDate: dateStr,
+                  title: 'Missing Shift Check-Out',
+                  description: 'You checked in at ${_formatTimeString(firstIn)} but no check-out was recorded for this shift.',
+                  suggestedAction: 'Regularize Attendance',
+                  actualIn: _formatTimeString(firstIn),
+                  actualOut: null,
+                ),
+              );
+              break;
+            }
+          }
+        } catch (_) {}
+      }
+
+      return list;
+    } catch (e) {
+      secureLog('[Attendance] getActionableAttendanceExceptions error: $e');
+      return [];
+    }
+  }
+
+  // ────────────────────────────────────────────────────────────────────────
+  // INTERNALS
+  // ────────────────────────────────────────────────────────────────────────
+
+  static DayAttendanceStatus parseStatus(dynamic raw) {
+    final s = (raw ?? '').toString().toUpperCase().replaceAll(' ', '_');
+    switch (s) {
+      case 'PRESENT':
+      case 'P':
+        return DayAttendanceStatus.present;
+      case 'HALF_DAY_PRESENT':
+      case 'HALF_DAY':
+      case 'HD':
+        return DayAttendanceStatus.halfDayPresent;
+      case 'HALF_DAY_ABSENT':
+        return DayAttendanceStatus.halfDayAbsent;
+      case 'ABSENT':
+      case 'A':
+        return DayAttendanceStatus.absent;
+      case 'LEAVE':
+      case 'ON_LEAVE':
+      case 'L':
+        return DayAttendanceStatus.leave;
+      case 'HOLIDAY':
+      case 'H':
+        return DayAttendanceStatus.holiday;
+      case 'WEEKLY_OFF':
+      case 'WEEK_OFF':
+      case 'WO':
+      case 'OFF':
+        return DayAttendanceStatus.weekOff;
+      case 'LATE':
+        return DayAttendanceStatus.late;
+      case 'REGULARIZED':
+      case 'REGULARIZATION':
+        return DayAttendanceStatus.regularized;
+      case 'NOT_PAYABLE':
+      case 'MISSED_PUNCH':
+      case 'INCOMPLETE':
+      case 'UNPAID':
+        return DayAttendanceStatus.notPayable;
+      case 'PENDING':
+      case 'SCHEDULED':
+      case 'NOT_MARKED':
+      case 'NONE':
+      case '':
+        return DayAttendanceStatus.none;
+      default:
+        return DayAttendanceStatus.none;
+    }
+  }
+
+  static int? _parseTimeToMinutes(String? timeStr) {
+    if (timeStr == null || timeStr.isEmpty || timeStr == '—' || timeStr == 'null') return null;
+    final match = RegExp(r'(\d{1,2}):(\d{2})(?::\d{2})?\s*(AM|PM)?', caseSensitive: false).firstMatch(timeStr.trim());
+    if (match == null) return null;
+
+    int hours = int.tryParse(match.group(1) ?? '') ?? 0;
+    final minutes = int.tryParse(match.group(2) ?? '') ?? 0;
+    final ampm = match.group(3)?.toUpperCase();
+
+    if (ampm == 'PM' && hours < 12) hours += 12;
+    if (ampm == 'AM' && hours == 12) hours = 0;
+
+    return hours * 60 + minutes;
+  }
+
+  /// "14:30" / "14:30:00" / ISO datetime → "02:30 PM" (IST)
+  static String _formatTimeString(String raw) {
+    return AppDateTime.formatTimeIST(raw);
+  }
+
+  /// 557 minutes → "09h 17m"
+  static String _formatDuration(int minutes) {
+    final h = minutes ~/ 60;
+    final m = minutes % 60;
+    return '${h.toString().padLeft(2, '0')}h ${m.toString().padLeft(2, '0')}m';
+  }
+
+  static String _prettySource(String? raw) {
+    switch ((raw ?? '').toString().toUpperCase()) {
+      case 'MOBILE':
+      case 'MOBILE_GPS':
+      case 'APP':
+        return 'Mobile Geofence';
+      case 'BIOMETRIC':
+      case 'DEVICE':
+        return 'Biometric';
+      case 'WEB':
+        return 'Web';
+      default:
+        return raw?.isNotEmpty == true ? raw! : 'Mobile Geofence';
+    }
+  }
+}

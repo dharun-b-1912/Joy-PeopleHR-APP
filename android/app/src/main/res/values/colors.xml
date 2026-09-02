@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Primary brand color for Firebase Cloud Messaging notifications -->
+    <color name="notification_accent">#FF1A56DB</color>
+    <color name="primary">#FF1A56DB</color>
+    <color name="primary_dark">#FF0F3D91</color>
+</resources>
