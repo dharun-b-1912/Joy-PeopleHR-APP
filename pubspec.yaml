@@ -1,7 +1,7 @@
 name: workforce_os
 description: "JOY PeopleHR Enterprise HRMS - Klarna Style Mobile Experience"
 # publish_to: "none"  # Remove this line if publishing the package
-version: 1.0.0+5
+version: 1.0.0+6
 
 environment:
   sdk: ">=3.0.0 <4.0.0"
