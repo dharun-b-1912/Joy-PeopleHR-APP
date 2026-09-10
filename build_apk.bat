@@ -5,6 +5,7 @@ echo   Version: 1.0.2+7 (Live Office Production Test)
 echo ===================================================
 echo.
 cd /d "%~dp0"
+set "PATH=%SystemRoot%\System32\WindowsPowerShell\v1.0;%SystemRoot%\System32;%PATH%"
 echo [1/3] Fetching Flutter dependencies...
 call flutter pub get
 echo.
