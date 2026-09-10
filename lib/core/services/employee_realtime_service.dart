@@ -119,18 +119,18 @@ class EmployeeRealtimeService with WidgetsBindingObserver {
         },
       );
 
-      // Scoped Postgres change listener: ALL events on employee_bank_accounts
+      // Scoped Postgres change listener: ALL events on employee_bank_details
       channel.onPostgresChanges(
         event: PostgresChangeEvent.all,
         schema: 'public',
-        table: 'employee_bank_accounts',
+        table: 'employee_bank_details',
         filter: PostgresChangeFilter(
           type: PostgresChangeFilterType.eq,
           column: 'employee_id',
           value: trimmedUuid,
         ),
         callback: (PostgresChangePayload payload) {
-          secureLog('[REALTIME] employee_bank_accounts change event received for employee $trimmedUuid');
+          secureLog('[REALTIME] employee_bank_details change event received for employee $trimmedUuid');
           reconcile();
         },
       );
@@ -151,13 +151,13 @@ class EmployeeRealtimeService with WidgetsBindingObserver {
         },
       );
 
-      // Scoped Postgres change listener: ALL events on employee_work_location_assignments
+      // Scoped Postgres change listener: ALL events on work_locations
       channel.onPostgresChanges(
         event: PostgresChangeEvent.all,
         schema: 'public',
-        table: 'employee_work_location_assignments',
+        table: 'work_locations',
         callback: (PostgresChangePayload payload) {
-          secureLog('[REALTIME] employee_work_location_assignments change event received');
+          secureLog('[REALTIME] work_locations change event received');
           reconcile();
           LocationService.instance.refreshLocationsAndEvaluate();
           LocalNotificationStore.instance.addNotification(
@@ -168,18 +168,18 @@ class EmployeeRealtimeService with WidgetsBindingObserver {
         },
       );
 
-      // Scoped Postgres change listener: ALL events on app_users (role, status, profile mappings)
+      // Scoped Postgres change listener: ALL events on user_profiles (role, status, profile mappings)
       channel.onPostgresChanges(
         event: PostgresChangeEvent.all,
         schema: 'public',
-        table: 'app_users',
+        table: 'user_profiles',
         filter: PostgresChangeFilter(
           type: PostgresChangeFilterType.eq,
-          column: 'employee_id',
+          column: 'id',
           value: trimmedUuid,
         ),
         callback: (PostgresChangePayload payload) {
-          secureLog('[REALTIME] app_users change event received for employee $trimmedUuid');
+          secureLog('[REALTIME] user_profiles change event received for employee $trimmedUuid');
           reconcile();
         },
       );
@@ -242,7 +242,7 @@ class EmployeeRealtimeService with WidgetsBindingObserver {
         },
       );
 
-      // Scoped Postgres change listener: ALL events on leave_requests for instant approval/rejection sync
+      // Scoped Postgres change listener: ALL events on leave_requests for instant approval/rejection/withdrawal sync
       channel.onPostgresChanges(
         event: PostgresChangeEvent.all,
         schema: 'public',
@@ -253,73 +253,77 @@ class EmployeeRealtimeService with WidgetsBindingObserver {
           value: trimmedUuid,
         ),
         callback: (PostgresChangePayload payload) {
-          final status = payload.newRecord['status']?.toString() ?? 'updated';
-          secureLog('[REALTIME] leave_requests change event received for employee $trimmedUuid (status: $status)');
+          secureLog('[REALTIME] leave_requests event received for employee $trimmedUuid (type: ${payload.eventType})');
           LeaveController.instance.refresh();
-          AttendanceService.instance.fetchTodayAttendance();
           AttendanceDetailController.instance.refresh();
-          LocalNotificationStore.instance.addNotification(
-            title: 'Leave Request $status',
-            body: 'Your leave request has been $status by HR.',
-            route: 'leaves',
-          );
+          if (payload.eventType != PostgresChangeEvent.delete) {
+            final status = payload.newRecord['status']?.toString() ?? 'updated';
+            LocalNotificationStore.instance.addNotification(
+              title: 'Leave Request $status',
+              body: 'Your leave request has been $status by HR.',
+              route: 'leaves',
+            );
+          }
         },
       );
 
-      // Scoped Postgres change listener: ALL events on leave_entitlements for live balance updates
+      // Scoped Postgres change listener: ALL events on leave_balances for live balance updates
       channel.onPostgresChanges(
         event: PostgresChangeEvent.all,
         schema: 'public',
-        table: 'leave_entitlements',
+        table: 'leave_balances',
         filter: PostgresChangeFilter(
           type: PostgresChangeFilterType.eq,
           column: 'employee_id',
           value: trimmedUuid,
         ),
         callback: (PostgresChangePayload payload) {
-          secureLog('[REALTIME] leave_entitlements change event received for employee $trimmedUuid');
+          secureLog('[REALTIME] leave_balances change event received for employee $trimmedUuid');
           LeaveController.instance.refresh();
           LocalNotificationStore.instance.addNotification(
             title: 'Leave Balance Updated',
-            body: 'HR has updated your leave entitlements balance.',
+            body: 'HR has updated your leave balance.',
             route: 'leaves',
           );
         },
       );
 
-      // Scoped Postgres change listener: ALL events on attendance_roster_entries for real-time shift sync
+      // Scoped Postgres change listener: ALL events on employee_shift_assignments for real-time shift sync
       channel.onPostgresChanges(
         event: PostgresChangeEvent.all,
         schema: 'public',
-        table: 'attendance_roster_entries',
+        table: 'employee_shift_assignments',
         callback: (PostgresChangePayload payload) {
-          secureLog('[REALTIME] Shift roster change event received');
+          secureLog('[REALTIME] Shift schedule change event received');
           MoreModulesController.instance.loadAllData();
           reconcile();
           LocalNotificationStore.instance.addNotification(
             title: 'Shift Schedule Updated',
-            body: 'HR has updated your shift schedule / roster.',
+            body: 'HR has updated your shift schedule.',
             route: 'attendance',
           );
         },
       );
 
-      // Scoped Postgres change listener: ALL events on attendance_regularization_requests
+      // Scoped Postgres change listener: ALL events on attendance_regularizations
       channel.onPostgresChanges(
         event: PostgresChangeEvent.all,
         schema: 'public',
-        table: 'attendance_regularization_requests',
+        table: 'attendance_regularizations',
         callback: (PostgresChangePayload payload) {
-          final status = payload.newRecord['status']?.toString() ?? 'updated';
-          secureLog('[REALTIME] attendance_regularization_requests change event received');
+          secureLog('[REALTIME] attendance_regularizations event received (type: ${payload.eventType})');
           AttendanceService.instance.fetchTodayAttendance();
           AttendanceDetailController.instance.refresh();
           NotificationController.instance.loadNotifications();
-          LocalNotificationStore.instance.addNotification(
-            title: 'Regularization $status',
-            body: 'HR has $status your attendance regularization request.',
-            route: 'attendance',
-          );
+
+          if (payload.eventType != PostgresChangeEvent.delete) {
+            final status = payload.newRecord['status']?.toString() ?? 'updated';
+            LocalNotificationStore.instance.addNotification(
+              title: 'Regularization $status',
+              body: 'HR has $status your attendance regularization request.',
+              route: 'attendance',
+            );
+          }
         },
       );
 
@@ -335,48 +339,39 @@ class EmployeeRealtimeService with WidgetsBindingObserver {
         },
       );
 
-      // Scoped Postgres change listener: ALL events on attendance_events for raw punch sync
+      // Scoped Postgres change listener: ALL events on attendance_punches for raw punch sync
       channel.onPostgresChanges(
         event: PostgresChangeEvent.all,
         schema: 'public',
-        table: 'attendance_events',
+        table: 'attendance_punches',
         callback: (PostgresChangePayload payload) {
-          secureLog('[REALTIME] attendance_events change event received');
+          secureLog('[REALTIME] attendance_punches change event received');
           AttendanceService.instance.fetchTodayAttendance();
           AttendanceDetailController.instance.refresh();
         },
       );
 
-      // Scoped Postgres change listener: ALL events on company_announcements
+      // Scoped Postgres change listener: ALL events on notification_events (Announcements & Alerts)
       channel.onPostgresChanges(
         event: PostgresChangeEvent.all,
         schema: 'public',
-        table: 'company_announcements',
+        table: 'notification_events',
         callback: (PostgresChangePayload payload) {
-          final title = payload.newRecord['title'] ?? 'Company Announcement';
-          secureLog('[REALTIME] company_announcements event received: $title');
-          NotificationController.instance.loadNotifications();
-          LocalNotificationStore.instance.addNotification(
-            title: '📢 $title',
-            body: payload.newRecord['message'] ?? payload.newRecord['content'] ?? 'New company announcement posted by HR.',
-            route: 'announcements',
-          );
-        },
-      );
+          final isAnnouncement = payload.newRecord['recipient_user_id'] == null;
+          final title = payload.newRecord['title'] ?? (isAnnouncement ? 'Company Announcement' : 'Notification');
+          final message = payload.newRecord['message'] ?? payload.newRecord['content'] ?? 'New notification from HR.';
+          final actionUrl = payload.newRecord['action_url']?.toString();
 
-      // Scoped Postgres change listener: ALL events on communications
-      channel.onPostgresChanges(
-        event: PostgresChangeEvent.all,
-        schema: 'public',
-        table: 'communications',
-        callback: (PostgresChangePayload payload) {
-          final title = payload.newRecord['title'] ?? 'Announcement';
-          secureLog('[REALTIME] communications event received: $title');
+          secureLog('[REALTIME] notification_events event received: $title (isAnnouncement: $isAnnouncement)');
           NotificationController.instance.loadNotifications();
+          if (isAnnouncement) {
+            MoreModulesController.instance.loadAllData();
+          }
+
           LocalNotificationStore.instance.addNotification(
-            title: '📢 $title',
-            body: payload.newRecord['message'] ?? payload.newRecord['content'] ?? 'New communication from HR.',
-            route: 'announcements',
+            title: isAnnouncement ? '📢 $title' : title,
+            body: message,
+            route: isAnnouncement ? 'announcements' : (actionUrl ?? 'home'),
           );
         },
       );
@@ -397,61 +392,37 @@ class EmployeeRealtimeService with WidgetsBindingObserver {
         },
       );
 
-      // Scoped Postgres change listener: ALL events on digital_letters
+      // Scoped Postgres change listener: ALL events on employee_documents (Letters & Docs)
       channel.onPostgresChanges(
         event: PostgresChangeEvent.all,
         schema: 'public',
-        table: 'digital_letters',
+        table: 'employee_documents',
         callback: (PostgresChangePayload payload) {
-          final title = payload.newRecord['title'] ?? payload.newRecord['letter_type'] ?? 'Digital Letter';
-          secureLog('[REALTIME] digital_letters change event received: $title');
+          final title = payload.newRecord['document_name'] ?? 'Document';
+          secureLog('[REALTIME] employee_documents change event received: $title');
           MoreModulesController.instance.loadAllData();
           LocalNotificationStore.instance.addNotification(
-            title: '📄 New Letter: $title',
-            body: 'HR has issued a new letter for you.',
-            route: 'letter',
+            title: '📄 New Document: $title',
+            body: 'HR has updated your employee documents.',
+            route: 'documents',
           );
         },
       );
 
-      // Scoped Postgres change listener: ALL events on expense_claims
+      // Scoped Postgres change listener: ALL events on employee_requests (Expenses & Helpdesk)
       channel.onPostgresChanges(
         event: PostgresChangeEvent.all,
         schema: 'public',
-        table: 'expense_claims',
+        table: 'employee_requests',
         callback: (PostgresChangePayload payload) {
           final status = payload.newRecord['status'] ?? 'updated';
-          secureLog('[REALTIME] expense_claims change event received (status: $status)');
+          secureLog('[REALTIME] employee_requests change event received (status: $status)');
           MoreModulesController.instance.loadAllData();
           LocalNotificationStore.instance.addNotification(
-            title: 'Expense Claim $status',
-            body: 'HR has $status your expense claim.',
-            route: 'expense',
+            title: 'Request $status',
+            body: 'HR has $status your request.',
+            route: 'requests',
           );
-        },
-      );
-
-      // Scoped Postgres change listener: ALL events on realtime_outbox for broadcast events
-      channel.onPostgresChanges(
-        event: PostgresChangeEvent.insert,
-        schema: 'public',
-        table: 'realtime_outbox',
-        callback: (PostgresChangePayload payload) {
-          final eventType = payload.newRecord['event_type']?.toString() ?? '';
-          secureLog('[REALTIME] realtime_outbox event received: $eventType');
-          if (eventType.startsWith('employee.') || eventType.startsWith('profile.')) {
-            reconcile();
-          } else if (eventType.startsWith('roster.') || eventType.startsWith('shift.')) {
-            MoreModulesController.instance.loadAllData();
-            reconcile();
-          } else if (eventType.startsWith('attendance.')) {
-            AttendanceService.instance.fetchTodayAttendance();
-            AttendanceDetailController.instance.refresh();
-          } else if (eventType.startsWith('leave.')) {
-            LeaveController.instance.refresh();
-          } else if (eventType.startsWith('notification.')) {
-            NotificationController.instance.loadNotifications();
-          }
         },
       );
 

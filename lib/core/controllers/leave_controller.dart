@@ -95,14 +95,14 @@ class LeaveController extends ChangeNotifier {
         ..onPostgresChanges(
           event: PostgresChangeEvent.all,
           schema: 'public',
-          table: 'leave_entitlements',
+          table: 'leave_balances',
           filter: PostgresChangeFilter(
             type: PostgresChangeFilterType.eq,
             column: 'employee_id',
             value: employeeId,
           ),
           callback: (payload) {
-            secureLog('[REALTIME] leave_entitlements event for $employeeId');
+            secureLog('[REALTIME] leave_balances event for $employeeId');
             _silentRefresh();
           },
         )

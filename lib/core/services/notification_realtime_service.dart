@@ -66,20 +66,9 @@ class NotificationRealtimeService with WidgetsBindingObserver {
 
       _channel = client.channel(channelName);
 
-      // 1. Listen to document_requirements changes
+      // 1. Listen to notification_events (canonical notifications & announcements)
       _channel?.onPostgresChanges(
         event: PostgresChangeEvent.all,
-        schema: 'public',
-        table: 'document_requirements',
-        callback: (PostgresChangePayload payload) {
-          secureLog('[NOTIFICATION] realtime event on document_requirements: ${payload.eventType}');
-          _reconcile();
-        },
-      );
-
-      // 2. Listen to notification_events inserts
-      _channel?.onPostgresChanges(
-        event: PostgresChangeEvent.insert,
         schema: 'public',
         table: 'notification_events',
         callback: (PostgresChangePayload payload) {
@@ -88,53 +77,39 @@ class NotificationRealtimeService with WidgetsBindingObserver {
         },
       );
 
-      // 3. Listen to notification_deliveries changes
+      // 2. Listen to employee_requests (canonical requests & expenses)
       _channel?.onPostgresChanges(
         event: PostgresChangeEvent.all,
         schema: 'public',
-        table: 'notification_deliveries',
+        table: 'employee_requests',
         callback: (PostgresChangePayload payload) {
-          secureLog('[NOTIFICATION] realtime event on notification_deliveries: ${payload.eventType}');
-          _reconcile();
-        },
-      );
-
-      // 4. Listen to expense_claims changes
-      _channel?.onPostgresChanges(
-        event: PostgresChangeEvent.all,
-        schema: 'public',
-        table: 'expense_claims',
-        callback: (PostgresChangePayload payload) {
-          secureLog('[NOTIFICATION] realtime event on expense_claims: ${payload.eventType}');
+          secureLog('[NOTIFICATION] realtime event on employee_requests: ${payload.eventType}');
           _reconcile();
           MoreModulesController.instance.loadAllData();
         },
       );
 
-      // 5. Listen to digital_letters changes
+      // 3. Listen to employee_documents (canonical documents & letters)
       _channel?.onPostgresChanges(
         event: PostgresChangeEvent.all,
         schema: 'public',
-        table: 'digital_letters',
+        table: 'employee_documents',
         callback: (PostgresChangePayload payload) {
-          secureLog('[NOTIFICATION] realtime event on digital_letters: ${payload.eventType}');
+          secureLog('[NOTIFICATION] realtime event on employee_documents: ${payload.eventType}');
           _reconcile();
           MoreModulesController.instance.loadAllData();
         },
       );
 
-      // 6. Listen to realtime_outbox broadcast
+      // 4. Listen to payslips (canonical payroll)
       _channel?.onPostgresChanges(
-        event: PostgresChangeEvent.insert,
+        event: PostgresChangeEvent.all,
         schema: 'public',
-        table: 'realtime_outbox',
+        table: 'payslips',
         callback: (PostgresChangePayload payload) {
-          final evt = payload.newRecord['event_type']?.toString() ?? payload.newRecord['entity_type']?.toString() ?? '';
-          if (evt.startsWith('document') || evt.startsWith('notification') || evt.startsWith('expense') || evt.startsWith('letter')) {
-            secureLog('[NOTIFICATION] realtime outbox event: $evt');
-            _reconcile();
-            MoreModulesController.instance.loadAllData();
-          }
+          secureLog('[NOTIFICATION] realtime event on payslips: ${payload.eventType}');
+          _reconcile();
+          MoreModulesController.instance.loadAllData();
         },
       );
 

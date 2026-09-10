@@ -603,7 +603,7 @@ BEGIN
 
   _edge_url := current_setting('app.settings.supabase_url', true);
   IF _edge_url IS NULL OR _edge_url = '' THEN
-    _edge_url := 'https://wmqjmyzzamgxyeuotbki.supabase.co';
+    _edge_url := 'https://ysiajemrqakfngasehhi.supabase.co';
   END IF;
   _edge_url := _edge_url || '/functions/v1/send-push';
 
@@ -680,7 +680,7 @@ BEGIN
 
   _edge_url := current_setting('app.settings.supabase_url', true);
   IF _edge_url IS NULL OR _edge_url = '' THEN
-    _edge_url := 'https://wmqjmyzzamgxyeuotbki.supabase.co';
+    _edge_url := 'https://ysiajemrqakfngasehhi.supabase.co';
   END IF;
   _edge_url := _edge_url || '/functions/v1/send-push';
 

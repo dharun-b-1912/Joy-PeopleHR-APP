@@ -89,22 +89,19 @@ class _EmergencyContactDialogState extends State<EmergencyContactDialog> {
       // 1. Optimistically update local UserService
       UserService.instance.updateEmergencyContact(newContact);
 
-      // 2. Persist to Supabase if connected
+      // 2. Persist to canonical employee_profiles table
       final user = UserService.instance.currentUser;
       final empUuid = user.employeeUuid;
       if (empUuid != null && empUuid.isNotEmpty) {
         try {
           final client = Supabase.instance.client;
-          await client.from('employee_emergency_contacts').upsert({
-            'employee_id': empUuid,
-            'name': name,
-            'relationship': _selectedRelationship,
-            'primary_phone': phone,
-            'is_primary': true,
-            'updated_at': DateTime.now().toIso8601String(),
-          });
+          await client.from('employee_profiles').update({
+            'emergency_contact_name': name,
+            'emergency_contact_relationship': _selectedRelationship,
+            'emergency_contact_phone': phone,
+          }).eq('employee_id', empUuid);
         } catch (dbErr) {
-          secureLog('[EmergencyContact] DB update notice: $dbErr');
+          secureLog('[EmergencyContact] employee_profiles update notice: $dbErr');
         }
       }
 

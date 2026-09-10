@@ -56,7 +56,7 @@ begin
   -- Replace <project-ref> with your actual Supabase project reference
   _edge_url := current_setting('app.settings.supabase_url', true);
   if _edge_url is null or _edge_url = '' then
-    _edge_url := 'https://wmqjmyzzamgxyeuotbki.supabase.co';
+    _edge_url := 'https://ysiajemrqakfngasehhi.supabase.co';
   end if;
   _edge_url := _edge_url || '/functions/v1/send-push';
 
@@ -143,7 +143,7 @@ begin
   -- Build the Edge Function URL
   _edge_url := current_setting('app.settings.supabase_url', true);
   if _edge_url is null or _edge_url = '' then
-    _edge_url := 'https://wmqjmyzzamgxyeuotbki.supabase.co';
+    _edge_url := 'https://ysiajemrqakfngasehhi.supabase.co';
   end if;
   _edge_url := _edge_url || '/functions/v1/send-push';
 
@@ -208,7 +208,7 @@ begin
 
   _edge_url := current_setting('app.settings.supabase_url', true);
   if _edge_url is null or _edge_url = '' then
-    _edge_url := 'https://wmqjmyzzamgxyeuotbki.supabase.co';
+    _edge_url := 'https://ysiajemrqakfngasehhi.supabase.co';
   end if;
   _edge_url := _edge_url || '/functions/v1/send-push';
 

@@ -20,7 +20,7 @@
 
 ## 2. Backend & Database Configuration
 
-- **Supabase Production Project URL**: `https://wmqjmyzzamgxyeuotbki.supabase.co`
+- **Supabase Production Project URL**: `https://ysiajemrqakfngasehhi.supabase.co`
 - **Client Key Configuration**: Injected securely via build environment (`SUPABASE_ANON_KEY`); zero secrets or `service_role` keys present in mobile client.
 - **Authentication**: Native Supabase Auth with secure token caching and dynamic employee identity resolution (`UserService` $\rightarrow$ `EmployeeIdentityResolver`).
 - **PostgreSQL Database**:

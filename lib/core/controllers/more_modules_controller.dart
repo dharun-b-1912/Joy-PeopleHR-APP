@@ -249,6 +249,7 @@ class MoreModulesController extends ChangeNotifier {
     required String fileName,
     required String fileExtension,
     required String fileSize,
+    String? documentTypeId,
     Uint8List? fileBytes,
     String? filePath,
   }) async {
@@ -277,6 +278,7 @@ class MoreModulesController extends ChangeNotifier {
       final storageUrl = await DocumentUploadService.instance.uploadEmployeeDocument(
         employeeId: empId,
         documentType: documentType,
+        documentTypeId: documentTypeId,
         fileName: fileName,
         bytes: bytes,
         documentCategory: 'PERSONAL',

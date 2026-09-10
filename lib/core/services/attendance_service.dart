@@ -67,9 +67,9 @@ class AttendanceService extends ChangeNotifier {
         ..onPostgresChanges(
           event: PostgresChangeEvent.all,
           schema: 'public',
-          table: 'attendance_daily_summary',
+          table: 'attendance_daily',
           callback: (payload) {
-            secureLog('[REALTIME] attendance_daily_summary event -> refreshing attendance');
+            secureLog('[REALTIME] attendance_daily event -> refreshing attendance');
             fetchTodayAttendance();
           },
         )
@@ -236,7 +236,15 @@ class AttendanceService extends ChangeNotifier {
       );
     } catch (e) {
       secureLog('[Attendance] Check-in operation failed: $e');
-      final cleanMsg = e.toString().replaceAll('Exception:', '').trim();
+      final errStr = e.toString();
+      if (errStr.toLowerCase().contains('already checked in')) {
+        await fetchTodayAttendance();
+        return const CheckInResult(
+          success: true,
+          message: "You are already checked in for today's shift.",
+        );
+      }
+      final cleanMsg = errStr.replaceAll(RegExp(r'^(Exception:\s*|PostgrestException\(message:\s*|\))'), '').trim();
       return CheckInResult(
         success: false,
         message: cleanMsg.isNotEmpty ? cleanMsg : "Check-in failed. Please check your connection and try again.",
@@ -331,7 +339,8 @@ class AttendanceService extends ChangeNotifier {
       );
     } catch (e) {
       secureLog('[Attendance] Check-out operation failed: $e');
-      final cleanMsg = e.toString().replaceAll('Exception:', '').trim();
+      final errStr = e.toString();
+      final cleanMsg = errStr.replaceAll(RegExp(r'^(Exception:\s*|PostgrestException\(message:\s*|\))'), '').trim();
       return CheckInResult(
         success: false,
         message: cleanMsg.isNotEmpty ? cleanMsg : "Check-out failed. Please check your connection and try again.",

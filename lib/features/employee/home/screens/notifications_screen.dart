@@ -262,6 +262,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                                 )
                               : RefreshIndicator(
                                   color: AppColors.primary,
+                                  backgroundColor: Colors.white,
                                   onRefresh: () async {
                                     await controller.loadNotifications();
                                     await LocalNotificationStore.instance.initialize();

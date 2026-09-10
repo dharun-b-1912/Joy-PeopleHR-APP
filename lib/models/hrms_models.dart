@@ -48,11 +48,17 @@ class ApprovedWorkLocation {
 
   factory ApprovedWorkLocation.fromJson(Map<String, dynamic> json) {
     return ApprovedWorkLocation(
-      id: json['id']?.toString() ?? json['location_id']?.toString(),
-      name: json['name']?.toString() ?? json['location_name']?.toString() ?? 'Assigned Work Location',
+      id: json['id']?.toString() ?? json['location_id']?.toString() ?? json['work_location_id']?.toString(),
+      name: (json['name'] != null && json['name'].toString().trim().isNotEmpty)
+          ? json['name'].toString().trim()
+          : (json['location_name'] != null && json['location_name'].toString().trim().isNotEmpty)
+              ? json['location_name'].toString().trim()
+              : (json['address_line1'] != null && json['address_line1'].toString().trim().isNotEmpty)
+                  ? json['address_line1'].toString().trim()
+                  : 'Work Location',
       code: json['code']?.toString() ?? json['location_code']?.toString(),
       locationType: json['location_type']?.toString() ?? 'OFFICE',
-      address: json['address']?.toString(),
+      address: json['address']?.toString() ?? json['address_line1']?.toString(),
       latitude: ((json['latitude'] ?? 0.0) as num).toDouble(),
       longitude: ((json['longitude'] ?? 0.0) as num).toDouble(),
       allowedRadiusMeters: ((json['allowed_radius_meters'] ??

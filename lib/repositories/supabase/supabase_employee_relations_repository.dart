@@ -19,6 +19,11 @@ class SupabaseEmployeeRelationsRepository {
   // 1. HELPDESK TICKETS & CONVERSATIONS
   // ============================================================
 
+  static bool _isValidUuid(String? str) {
+    if (str == null || str.isEmpty) return false;
+    return RegExp(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$').hasMatch(str.trim());
+  }
+
   Future<List<HelpdeskTicketModel>> getHelpdeskTickets(String employeeId) async {
     if (!SupabaseConfig.isConfigured) return [];
     try {
@@ -30,20 +35,54 @@ class SupabaseEmployeeRelationsRepository {
         if (user.employeeUuid != null && user.employeeUuid!.isNotEmpty) user.employeeUuid!,
       }.where((s) => s.isNotEmpty).toSet();
 
-      final idFilter = candidateIds.map((c) => '"$c"').join(',');
-      final rows = await _client
-          .from('helpdesk_tickets')
-          .select('*')
-          .filter('employee_id', 'in', '($idFilter)')
-          .order('created_at', ascending: false);
+      final validUuids = candidateIds.where(_isValidUuid).toList();
+      List<HelpdeskTicketModel> list = [];
 
-      return (rows as List)
-          .where((r) {
-            final num = r['ticket_number']?.toString() ?? '';
-            return !num.startsWith('GRV') && !num.startsWith('POSH');
-          })
-          .map((r) => HelpdeskTicketModel.fromJson(r))
-          .toList();
+      // 1. Primary: Fetch from canonical employee_requests table
+      if (validUuids.isNotEmpty) {
+        try {
+          final idFilter = validUuids.map((c) => '"$c"').join(',');
+          final reqRows = await _client
+              .from('employee_requests')
+              .select('*')
+              .filter('employee_id', 'in', '($idFilter)')
+              .order('created_at', ascending: false);
+
+          for (final r in reqRows) {
+            final id = r['id']?.toString() ?? '';
+            final statusStr = r['status']?.toString() ?? 'PENDING';
+            HelpdeskStatus status = HelpdeskStatus.open;
+            if (statusStr == 'IN_REVIEW') status = HelpdeskStatus.inProgress;
+            if (statusStr == 'APPROVED' || statusStr == 'FULFILLED') status = HelpdeskStatus.resolved;
+            if (statusStr == 'REJECTED' || statusStr == 'CANCELLED') status = HelpdeskStatus.closed;
+
+            final priorityStr = r['priority']?.toString() ?? 'MEDIUM';
+            TicketPriority priority = TicketPriority.medium;
+            if (priorityStr == 'URGENT') priority = TicketPriority.urgent;
+            if (priorityStr == 'HIGH') priority = TicketPriority.high;
+            if (priorityStr == 'LOW') priority = TicketPriority.low;
+
+            list.add(HelpdeskTicketModel(
+              id: id,
+              ticketNumber: 'REQ-${id.length > 8 ? id.substring(0, 8).toUpperCase() : id}',
+              employeeId: r['employee_id']?.toString() ?? '',
+              employeeName: user.name,
+              department: user.department,
+              category: r['request_type']?.toString() ?? 'General Request',
+              subject: r['subject']?.toString() ?? 'Request',
+              description: r['description']?.toString() ?? '',
+              priority: priority,
+              status: status,
+              slaHours: 48,
+              createdAt: DateTime.tryParse(r['created_at']?.toString() ?? '') ?? DateTime.now(),
+            ));
+          }
+        } catch (e) {
+          secureLog('[HelpdeskRepo] employee_requests query notice: $e');
+        }
+      }
+
+      return list;
     } catch (e) {
       secureLog('[HelpdeskRepo] getTickets error: $e');
       return [];
@@ -63,7 +102,6 @@ class SupabaseEmployeeRelationsRepository {
       final user = UserService.instance.currentUser;
       final empId = user.resolvedEmployeeId;
       final orgId = user.tenantId;
-      final tenantId = orgId;
 
       List<Map<String, dynamic>> attachments = [];
       if (attachmentBytes != null && attachmentFileName != null && attachmentFileName.isNotEmpty) {
@@ -91,37 +129,53 @@ class SupabaseEmployeeRelationsRepository {
                   ? 'LOW'
                   : 'MEDIUM';
 
-      final insertPayload = {
-        if (tenantId.isNotEmpty) 'tenant_id': tenantId,
-        if (orgId.isNotEmpty) 'organization_id': orgId,
-        'employee_id': empId,
-        'employee_code': user.employeeId,
-        'employee_name': user.name,
-        'department': user.department,
-        'ticket_number': ticketNumber,
-        'category': category,
-        'subject': subject,
-        'description': description,
-        'priority': priorityStr,
-        'status': 'OPEN',
-        'sla_hours': priority == TicketPriority.urgent ? 4 : priority == TicketPriority.high ? 24 : 48,
-        'attachments': attachments,
-      };
+      // 1. Primary insert into canonical employee_requests table
+      if (_isValidUuid(empId)) {
+        try {
+          final insertPayload = <String, dynamic>{
+            'employee_id': empId,
+            if (_isValidUuid(orgId)) 'organization_id': orgId,
+            'request_type': 'OTHER',
+            'subject': subject.isNotEmpty ? subject : 'Helpdesk Ticket',
+            'description': description,
+            'priority': priorityStr,
+            'status': 'OPEN',
+            'created_at': DateTime.now().toIso8601String(),
+          };
 
-      final data = await _client.from('helpdesk_tickets').insert(insertPayload).select().single();
-      secureLog('[HelpdeskRepo] Ticket submitted successfully: ${data['id']} ($ticketNumber)');
+          final data = await _client.from('employee_requests').insert(insertPayload).select().single();
+          secureLog('[HelpdeskRepo] Request submitted to employee_requests: ${data['id']}');
 
-      // Sync event to realtime_outbox via centralized service
-      await RealtimeOutboxService.insertEvent(
-        entityType: 'helpdesk_tickets',
-        eventType: 'ticket.created',
-        entityId: data['id']?.toString() ?? ticketNumber,
-        tenantId: tenantId,
-        actorId: empId,
-        payload: data,
-      );
+          // Sync event to realtime_outbox via centralized service
+          await RealtimeOutboxService.insertEvent(
+            entityType: 'employee_requests',
+            eventType: 'request.created',
+            entityId: data['id']?.toString() ?? ticketNumber,
+            tenantId: orgId,
+            actorId: empId,
+            payload: data,
+          );
 
-      return HelpdeskTicketModel.fromJson(data);
+          return HelpdeskTicketModel(
+            id: data['id'].toString(),
+            ticketNumber: ticketNumber,
+            employeeId: empId,
+            employeeName: user.name,
+            department: user.department,
+            category: category,
+            subject: subject,
+            description: description,
+            priority: priority,
+            status: HelpdeskStatus.open,
+            slaHours: priority == TicketPriority.urgent ? 4 : priority == TicketPriority.high ? 24 : 48,
+            createdAt: DateTime.now(),
+          );
+        } catch (e) {
+          secureLog('[HelpdeskRepo] employee_requests insert notice: $e');
+        }
+      }
+
+      return null;
     } catch (e) {
       secureLog('[HelpdeskRepo] submitTicket error: $e');
       return null;
@@ -129,45 +183,11 @@ class SupabaseEmployeeRelationsRepository {
   }
 
   Future<List<HelpdeskMessageModel>> getTicketMessages(String ticketId) async {
-    if (!SupabaseConfig.isConfigured) return [];
-    try {
-      final rows = await _client
-          .from('helpdesk_messages')
-          .select('*')
-          .eq('ticket_id', ticketId)
-          .eq('visibility', 'EMPLOYEE') // Never expose internal notes to mobile
-          .order('created_at', ascending: true);
-
-      return (rows as List).map((r) => HelpdeskMessageModel.fromJson(r)).toList();
-    } catch (e) {
-      secureLog('[HelpdeskRepo] getMessages error: $e');
-      return [];
-    }
+    return [];
   }
 
   Future<HelpdeskMessageModel?> sendTicketMessage(String ticketId, String message) async {
-    if (!SupabaseConfig.isConfigured) return null;
-    try {
-      final user = UserService.instance.currentUser;
-      final tenantId = user.companyId.isNotEmpty
-          ? user.companyId
-          : (user.organizationId?.isNotEmpty == true ? user.organizationId! : '');
-      final payload = {
-        'tenant_id': tenantId,
-        'ticket_id': ticketId,
-        'sender_id': user.employeeUuid ?? user.employeeId,
-        'sender_name': user.name,
-        'sender_role': 'EMPLOYEE',
-        'message': message,
-        'visibility': 'EMPLOYEE',
-      };
-
-      final data = await _client.from('helpdesk_messages').insert(payload).select().single();
-      return HelpdeskMessageModel.fromJson(data);
-    } catch (e) {
-      secureLog('[HelpdeskRepo] sendMessage error: $e');
-      return null;
-    }
+    return null;
   }
 
   Future<bool> withdrawHelpdeskTicket(String ticketId) async {
@@ -176,31 +196,28 @@ class SupabaseEmployeeRelationsRepository {
       final user = UserService.instance.currentUser;
       final orgId = user.tenantId;
 
-      // 1. Delete associated messages
-      try {
-        await _client.from('helpdesk_messages').delete().eq('ticket_id', ticketId);
-      } catch (_) {}
+      if (_isValidUuid(ticketId)) {
+        try {
+          await _client.from('employee_requests').update({
+            'status': 'CLOSED',
+            'resolution_notes': 'Cancelled / Withdrawn by employee',
+            'updated_at': DateTime.now().toIso8601String(),
+          }).eq('id', ticketId);
+        } catch (_) {}
+      }
 
-      // 2. Delete the ticket permanently from helpdesk_tickets
-      try {
-        await _client.from('helpdesk_tickets').delete().eq('id', ticketId);
-      } catch (_) {}
-      try {
-        await _client.from('helpdesk_tickets').delete().eq('ticket_number', ticketId);
-      } catch (_) {}
-
-      // 3. Sync deletion to realtime_outbox via centralized service
+      // Sync deletion to realtime_outbox via centralized service
       await RealtimeOutboxService.deleteEvent(entityId: ticketId);
       await RealtimeOutboxService.insertEvent(
-        entityType: 'helpdesk_tickets',
-        eventType: 'ticket.deleted',
+        entityType: 'employee_requests',
+        eventType: 'request.cancelled',
         entityId: ticketId,
         tenantId: orgId,
         actorId: user.resolvedEmployeeId,
-        payload: {'id': ticketId, 'deleted': true},
+        payload: {'id': ticketId, 'cancelled': true},
       );
 
-      secureLog('[HelpdeskRepo] Ticket $ticketId permanently withdrawn and deleted');
+      secureLog('[HelpdeskRepo] Request $ticketId marked CANCELLED');
       return true;
     } catch (e) {
       secureLog('[HelpdeskRepo] withdrawHelpdeskTicket error: $e');
@@ -209,45 +226,41 @@ class SupabaseEmployeeRelationsRepository {
   }
 
   // ============================================================
-  // 2. DYNAMIC SERVICE DEFINITIONS & REQUESTS
+  // 2. DYNAMIC SERVICE DEFINITIONS & REQUESTS (MAPPED TO CANONICAL employee_requests)
   // ============================================================
 
   Future<List<ServiceDefinitionModel>> getServiceDefinitions() async {
-    if (!SupabaseConfig.isConfigured) return [];
-    try {
-      final rows = await _client
-          .from('service_definitions')
-          .select('*')
-          .eq('enabled', true)
-          .eq('employee_visible', true)
-          .order('name', ascending: true);
-
-      return (rows as List).map((r) => ServiceDefinitionModel.fromJson(r)).toList();
-    } catch (e) {
-      secureLog('[HelpdeskRepo] getDefinitions error: $e');
-      return [];
-    }
+    // Canonical 64-table database models requests directly in employee_requests
+    return [];
   }
 
   Future<List<ServiceRequestModel>> getServiceRequests(String employeeId) async {
     if (!SupabaseConfig.isConfigured) return [];
     try {
       final user = UserService.instance.currentUser;
-      final Set<String> candidateIds = {
-        employeeId,
-        user.dataId,
-        user.employeeId,
-        if (user.employeeUuid != null && user.employeeUuid!.isNotEmpty) user.employeeUuid!,
-      }.where((s) => s.isNotEmpty).toSet();
+      final empId = user.employeeUuid ?? user.employeeId;
 
-      final idFilter = candidateIds.map((c) => '"$c"').join(',');
       final rows = await _client
-          .from('service_requests')
+          .from('employee_requests')
           .select('*')
-          .filter('employee_id', 'in', '($idFilter)')
-          .order('submitted_at', ascending: false);
+          .eq('employee_id', empId)
+          .order('created_at', ascending: false);
 
-      return (rows as List).map((r) => ServiceRequestModel.fromJson(r)).toList();
+      return (rows as List).map((r) {
+        final reqId = r['id']?.toString() ?? '';
+        return ServiceRequestModel(
+          id: reqId,
+          requestNumber: r['request_number']?.toString() ?? (reqId.length >= 8 ? 'REQ-${reqId.substring(0, 8).toUpperCase()}' : 'REQ-001'),
+          employeeId: r['employee_id']?.toString() ?? empId,
+          employeeName: r['employee_name']?.toString() ?? user.name,
+          serviceName: r['title']?.toString() ?? r['request_type']?.toString() ?? 'Service Request',
+          category: r['request_type']?.toString() ?? 'General',
+          status: r['status']?.toString() ?? 'SUBMITTED',
+          priority: r['priority']?.toString() ?? 'MEDIUM',
+          formData: {'description': r['description']},
+          submittedAt: DateTime.tryParse(r['created_at']?.toString() ?? '') ?? DateTime.now(),
+        );
+      }).toList();
     } catch (e) {
       secureLog('[HelpdeskRepo] getRequests error: $e');
       return [];
@@ -268,26 +281,29 @@ class SupabaseEmployeeRelationsRepository {
           : (user.organizationId?.isNotEmpty == true ? user.organizationId! : '');
       final reqNumber = 'SR-${DateTime.now().millisecondsSinceEpoch.toString().substring(7)}';
 
-      final insertPayload = {
-        'tenant_id': tenantId,
-        'organization_id': tenantId,
+      final insertPayload = <String, dynamic>{
+        if (_isValidUuid(tenantId)) 'organization_id': tenantId,
         'employee_id': empId,
-        'employee_code': user.employeeId,
-        'employee_name': user.name,
-        'department': user.department,
-        'service_definition_id': definition.id.isNotEmpty ? definition.id : null,
-        'service_code': definition.code,
-        'service_name': definition.name,
-        'category': definition.category,
-        'request_number': reqNumber,
-        'status': 'SUBMITTED',
+        'request_type': definition.category.isNotEmpty ? definition.category : 'HELP_DESK',
+        'subject': definition.name.isNotEmpty ? definition.name : 'Helpdesk Request',
+        'description': formData.entries.map((e) => '${e.key}: ${e.value}').join('\n'),
+        'status': 'OPEN',
         'priority': 'MEDIUM',
-        'form_data': formData,
-        'attachments': attachments,
       };
 
-      final data = await _client.from('service_requests').insert(insertPayload).select().single();
-      return ServiceRequestModel.fromJson(data);
+      final data = await _client.from('employee_requests').insert(insertPayload).select().single();
+      final reqId = data['id']?.toString() ?? '';
+      return ServiceRequestModel(
+        id: reqId,
+        requestNumber: reqNumber,
+        employeeId: empId,
+        employeeName: user.name,
+        serviceName: definition.name,
+        category: definition.category,
+        status: 'SUBMITTED',
+        formData: formData,
+        submittedAt: DateTime.now(),
+      );
     } catch (e) {
       secureLog('[HelpdeskRepo] submitRequest error: $e');
       return null;
@@ -295,62 +311,38 @@ class SupabaseEmployeeRelationsRepository {
   }
 
   // ============================================================
-  // 3. COMMUNICATIONS & ACKNOWLEDGEMENTS
+  // 3. COMMUNICATIONS & ACKNOWLEDGEMENTS (CANONICAL notification_events)
   // ============================================================
 
   Future<List<CommunicationModel>> getCommunications(String employeeId) async {
     if (!SupabaseConfig.isConfigured) return [];
     try {
-      final user = UserService.instance.currentUser;
-      final empId = user.employeeUuid ?? user.employeeId;
-
-      List<dynamic> allRows = [];
-
-      // 1. Fetch from company_announcements table
-      try {
-        final annRows = await _client
-            .from('company_announcements')
-            .select('*')
-            .order('is_pinned', ascending: false)
-            .order('created_at', ascending: false);
-        allRows.addAll(annRows);
-      } catch (e) {
-        secureLog('[HelpdeskRepo] company_announcements notice: $e');
-      }
-
-      // 2. Fetch from communications table
-      try {
-        final commRows = await _client
-            .from('communications')
-            .select('*')
-            .order('created_at', ascending: false);
-        allRows.addAll(commRows);
-      } catch (e) {
-        secureLog('[HelpdeskRepo] communications notice: $e');
-      }
-
-      // 3. Fetch user acknowledgements
-      final Map<String, dynamic> ackMap = {};
-      try {
-        final ackRows = await _client
-            .from('communication_recipients')
-            .select('*')
-            .eq('employee_id', empId);
-        for (final a in ackRows) {
-          ackMap[a['communication_id']?.toString() ?? ''] = a;
-        }
-      } catch (_) {}
+      // Query canonical company-wide announcements from notification_events
+      // recipient_user_id IS NULL ensures private employee notifications are excluded
+      final rows = await _client
+          .from('notification_events')
+          .select('*')
+          .eq('channel', 'IN_APP')
+          .isFilter('recipient_user_id', null)
+          .order('created_at', ascending: false)
+          .limit(50);
 
       final List<CommunicationModel> result = [];
-      for (final r in allRows) {
-        final commId = r['id']?.toString() ?? '';
-        if (result.any((item) => item.id == commId)) continue;
-
-        final ack = ackMap[commId];
-        final ackDate = ack != null ? DateTime.tryParse(ack['acknowledged_at']?.toString() ?? '') : null;
-        final isRead = ack != null && ack['read_at'] != null;
-
-        result.add(CommunicationModel.fromJson(r, userAckDate: ackDate, isRead: isRead));
+      for (final r in rows) {
+        final id = r['id']?.toString() ?? '';
+        final isRead = r['is_read'] == true;
+        result.add(CommunicationModel(
+          id: id,
+          title: r['title']?.toString() ?? 'Announcement',
+          body: r['message']?.toString() ?? '',
+          communicationType: 'ANNOUNCEMENT',
+          priority: 'NORMAL',
+          status: 'PUBLISHED',
+          requiresAcknowledgement: false,
+          authorName: 'HR Management',
+          publishAt: DateTime.tryParse(r['created_at']?.toString() ?? '') ?? DateTime.now(),
+          isRead: isRead,
+        ));
       }
       return result;
     } catch (e) {
@@ -360,22 +352,12 @@ class SupabaseEmployeeRelationsRepository {
   }
 
   Future<bool> acknowledgeCommunication(String communicationId) async {
-    if (!SupabaseConfig.isConfigured) return false;
+    if (!SupabaseConfig.isConfigured || communicationId.isEmpty) return false;
     try {
-      final user = UserService.instance.currentUser;
-      final empId = user.employeeUuid ?? user.employeeId;
-      final tenantId = user.companyId.isNotEmpty
-          ? user.companyId
-          : (user.organizationId?.isNotEmpty == true ? user.organizationId! : '');
-
-      await _client.from('communication_recipients').upsert({
-        'tenant_id': tenantId,
-        'communication_id': communicationId,
-        'employee_id': empId,
-        'delivery_status': 'DELIVERED',
-        'read_at': DateTime.now().toIso8601String(),
-        'acknowledged_at': DateTime.now().toIso8601String(),
-      });
+      await _client
+          .from('notification_events')
+          .update({'is_read': true})
+          .eq('id', communicationId);
       return true;
     } catch (e) {
       secureLog('[HelpdeskRepo] acknowledge error: $e');
@@ -386,31 +368,10 @@ class SupabaseEmployeeRelationsRepository {
   Future<bool> markCommunicationAsRead(String communicationId) async {
     if (!SupabaseConfig.isConfigured || communicationId.isEmpty) return false;
     try {
-      final user = UserService.instance.currentUser;
-      final empId = user.resolvedEmployeeId;
-      final tenantId = user.companyId.isNotEmpty
-          ? user.companyId
-          : (user.organizationId?.isNotEmpty == true ? user.organizationId! : '');
-
-      try {
-        await _client.from('communication_recipients').upsert({
-          if (tenantId.isNotEmpty) 'tenant_id': tenantId,
-          'communication_id': communicationId,
-          'employee_id': empId,
-          'delivery_status': 'DELIVERED',
-          'read_at': DateTime.now().toIso8601String(),
-        });
-      } catch (_) {}
-
-      try {
-        await _client.from('company_announcement_reads').upsert({
-          if (tenantId.isNotEmpty) 'tenant_id': tenantId,
-          'announcement_id': communicationId,
-          'employee_id': empId,
-          'read_at': DateTime.now().toIso8601String(),
-        });
-      } catch (_) {}
-
+      await _client
+          .from('notification_events')
+          .update({'is_read': true})
+          .eq('id', communicationId);
       return true;
     } catch (e) {
       secureLog('[HelpdeskRepo] markCommunicationAsRead error: $e');

@@ -247,7 +247,37 @@ class LocationService extends ChangeNotifier {
     try {
       final client = Supabase.instance.client;
 
-      // 1. Try employee-specific assignment tables (employee_work_location_assignments)
+      // 1. Primary: Authoritative server-side RPC fn_get_my_assigned_work_locations
+      try {
+        final rpcResult = await client.rpc('fn_get_my_assigned_work_locations');
+        if (rpcResult is List && rpcResult.isNotEmpty) {
+          final mapped = rpcResult.map((item) {
+            return ApprovedWorkLocation.fromJson(Map<String, dynamic>.from(item as Map));
+          }).toList();
+
+          final Map<String, ApprovedWorkLocation> unique = {};
+          for (final loc in mapped) {
+            final key = (loc.id != null && loc.id!.isNotEmpty) ? loc.id! : loc.name.trim().toLowerCase();
+            if (!unique.containsKey(key)) {
+              unique[key] = loc;
+            } else if (loc.isPrimary && !unique[key]!.isPrimary) {
+              unique[key] = loc;
+            }
+          }
+          final deduplicated = unique.values.toList();
+          deduplicated.sort((a, b) => (b.isPrimary ? 1 : 0).compareTo(a.isPrimary ? 1 : 0));
+
+          if (deduplicated.isNotEmpty) {
+            _authorizedLocations = deduplicated;
+            secureLog('[GPS] Loaded ${deduplicated.length} location(s) from fn_get_my_assigned_work_locations');
+            return _authorizedLocations;
+          }
+        }
+      } catch (rpcErr) {
+        secureLog('[GPS] fn_get_my_assigned_work_locations RPC notice: $rpcErr');
+      }
+
+      // 2. Secondary: Direct query on employee_work_location_assignments
       final candidateEmpIds = <String>{
         empId,
         user.dataId,
@@ -313,7 +343,7 @@ class LocationService extends ChangeNotifier {
 
               if (deduplicated.isNotEmpty) {
                 _authorizedLocations = deduplicated;
-                secureLog('[GPS] Loaded ${deduplicated.length} strict employee-assigned location(s) from $table');
+                secureLog('[GPS] Loaded ${deduplicated.length} location(s) from $table');
                 return _authorizedLocations;
               }
             }
@@ -323,57 +353,38 @@ class LocationService extends ChangeNotifier {
         }
       }
 
-      // 2. Check userModel.assignedLocations if already hydrated
+      // 3. Tertiary: user.assignedLocations
       if (user.assignedLocations.isNotEmpty) {
         _authorizedLocations = List.from(user.assignedLocations);
         secureLog('[GPS] Loaded ${_authorizedLocations.length} location(s) from user.assignedLocations');
         return _authorizedLocations;
       }
 
-      // 3. Match employee's assigned campus / branch in work_locations table
-      if (user.campus.isNotEmpty && user.campus != '—') {
+      // 4. Default: Query active work_locations for current organization
+      if (orgId.isNotEmpty) {
         try {
-          final branchMatch = await client
+          final orgLocs = await client
               .from('work_locations')
-              .select()
+              .select('*')
               .eq('is_active', true)
-              .ilike('name', user.campus)
-              .maybeSingle();
+              .eq('organization_id', orgId);
 
-          if (branchMatch != null) {
-            final loc = ApprovedWorkLocation.fromJson(Map<String, dynamic>.from(branchMatch));
-            _authorizedLocations = [loc];
-            secureLog('[GPS] Loaded branch-specific location match for "${user.campus}": lat=${loc.latitude}, lng=${loc.longitude}, radius=${loc.allowedRadiusMeters}');
+          if (orgLocs.isNotEmpty) {
+            _authorizedLocations = orgLocs
+                .map((l) => ApprovedWorkLocation.fromJson(Map<String, dynamic>.from(l as Map)))
+                .toList();
+            secureLog('[GPS] Loaded ${_authorizedLocations.length} active org location(s)');
             return _authorizedLocations;
           }
-        } catch (branchErr) {
-          secureLog('[GPS] branch work_locations query notice: $branchErr');
+        } catch (orgErr) {
+          secureLog('[GPS] org work_locations query notice: $orgErr');
         }
       }
 
-      // 4. Dedicated RPC function fallback (if configured)
-      try {
-        final rpcResult = await client.rpc('fn_get_employee_authorized_locations', params: {
-          'p_tenant_id': orgId,
-          'p_employee_id': empId,
-        });
-
-        if (rpcResult is List && rpcResult.isNotEmpty) {
-          _authorizedLocations = rpcResult.map((item) {
-            return ApprovedWorkLocation.fromJson(Map<String, dynamic>.from(item));
-          }).toList();
-          return _authorizedLocations;
-        }
-      } catch (rpcErr) {
-        secureLog('[GPS] RPC fallback: $rpcErr');
-      }
-
-      // 5. Fallback to profile approvedLocation
-      secureLog('[GPS] Using profile approvedLocation: ${user.approvedLocation.name}');
-      _authorizedLocations = [user.approvedLocation];
+      _authorizedLocations = [];
     } catch (e) {
       secureLog('[GPS] Error fetching work locations: $e');
-      _authorizedLocations = [user.approvedLocation];
+      _authorizedLocations = user.assignedLocations.isNotEmpty ? List.from(user.assignedLocations) : [];
     }
 
     return _authorizedLocations;
@@ -549,9 +560,11 @@ class LocationService extends ChangeNotifier {
             : 0.0;
         final effectiveRadius = baseRadius + accuracyMargin;
 
-        if (dist <= effectiveRadius && insideLocation == null) {
-          insideLocation = loc;
-          insideDistance = dist;
+        if (dist <= effectiveRadius) {
+          if (insideLocation == null || dist < insideDistance) {
+            insideLocation = loc;
+            insideDistance = dist;
+          }
         }
 
         if (dist < minDistance) {

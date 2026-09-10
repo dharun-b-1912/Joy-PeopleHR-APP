@@ -867,7 +867,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
                           overflow: TextOverflow.ellipsis,
                         ),
                         Text(
-                          "${currentUser.department.isNotEmpty && currentUser.department != 'N/A' ? currentUser.department.trim() : 'Development'} · ${(locationResult.targetLocation?.name ?? (currentUser.approvedLocation.name.isNotEmpty ? currentUser.approvedLocation.name : (currentUser.campus.isNotEmpty ? currentUser.campus : 'Assigned Work Location')))}",
+                          "${currentUser.department.isNotEmpty && currentUser.department != 'N/A' ? currentUser.department.trim() : 'Development'} · ${(locationResult.targetLocation?.name ?? (currentUser.approvedLocation.name.isNotEmpty && currentUser.approvedLocation.name != 'Work Location' ? currentUser.approvedLocation.name : (currentUser.campus.isNotEmpty && currentUser.campus != '—' ? currentUser.campus : 'Workplace')))}",
                           style: AppTypography.caption.copyWith(
                             color: AppColors.textSecondary,
                             fontSize: 11,
@@ -1109,7 +1109,9 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
                                           ? currentUser.approvedLocation.name
                                           : (currentUser.campus.isNotEmpty
                                               ? currentUser.campus
-                                              : 'Assigned Work Location')),
+                                              : (currentUser.assignedLocations.isNotEmpty
+                                                  ? currentUser.assignedLocations.first.name
+                                                  : 'No work location assigned'))),
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: AppTypography.bodyLarge.copyWith(
@@ -1149,23 +1151,23 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
                                                          type: StatusType.warning,
                                                          icon: CupertinoIcons.exclamationmark_triangle_fill,
                                                        )
-                                                     : locationResult.isInside
-                                                         ? StatusChip(
-                                                             label: locationResult.formattedDistance == 'Geofence Unset'
-                                                                 ? "Workplace Approved"
-                                                                 : "Inside (${locationResult.formattedDistance})",
-                                                             type: StatusType.success,
-                                                             icon: CupertinoIcons.checkmark_circle_fill,
+                                                     : locationResult.targetLocation == null && currentUser.assignedLocations.isEmpty
+                                                         ? const StatusChip(
+                                                             label: "No Assigned Location",
+                                                             type: StatusType.error,
+                                                             icon: CupertinoIcons.slash_circle,
                                                            )
-                                                         : StatusChip(
-                                                             label: locationResult.formattedDistance == 'Locating...'
-                                                                 ? "Locating GPS..."
-                                                                 : (locationResult.formattedDistance == 'Geofence Unset'
-                                                                     ? "Geofence Unset"
-                                                                     : "${locationResult.formattedDistance} away"),
-                                                             type: StatusType.warning,
-                                                             icon: CupertinoIcons.exclamationmark_triangle_fill,
-                                                           ),
+                                                         : locationResult.isInside
+                                                             ? StatusChip(
+                                                                 label: "Inside (${locationResult.formattedDistance})",
+                                                                 type: StatusType.success,
+                                                                 icon: CupertinoIcons.checkmark_circle_fill,
+                                                               )
+                                                             : StatusChip(
+                                                                 label: "Outside (${locationResult.formattedDistance} away)",
+                                                                 type: StatusType.warning,
+                                                                 icon: CupertinoIcons.exclamationmark_triangle_fill,
+                                                               ),
                                 const SizedBox(height: 8),
                                 if (isCheckedIn)
                                   Container(
@@ -1328,7 +1330,9 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
                                                 : (locationResult.state == AttendanceGpsState.scanning ||
                                                         locationResult.state == AttendanceGpsState.initializing
                                                     ? "Locating nearest facility..."
-                                                    : "Move within ${locationResult.targetLocation?.allowedRadiusMeters.round() ?? 100}m of work location")),
+                                                    : (locationResult.targetLocation == null && currentUser.assignedLocations.isEmpty
+                                                        ? "Contact HR to assign a location"
+                                                        : "Move within ${locationResult.targetLocation?.allowedRadiusMeters.round() ?? 150}m of this location"))),
                                         style: AppTypography.overline.copyWith(
                                           color: AppColors.statusWarning,
                                           fontSize: 9.5,
@@ -1718,7 +1722,6 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
       listenable: MoreModulesController.instance,
       builder: (context, _) {
         final celebrations = MoreModulesController.instance.celebrations;
-        if (celebrations.isEmpty) return const SizedBox.shrink();
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -1737,28 +1740,70 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                   decoration: BoxDecoration(
-                    color: AppColors.peachBg,
+                    color: celebrations.isNotEmpty ? AppColors.peachBg : AppColors.slateBg,
                     borderRadius: AppRadius.borderPill,
                   ),
                   child: Text(
-                    "${celebrations.length} Upcoming",
+                    celebrations.isNotEmpty ? "${celebrations.length} Upcoming" : "None this week",
                     style: AppTypography.caption.copyWith(
                       fontSize: 10,
                       fontWeight: FontWeight.bold,
-                      color: AppColors.peachFg,
+                      color: celebrations.isNotEmpty ? AppColors.peachFg : AppColors.textMuted,
                     ),
                   ),
                 ),
               ],
             ),
             AppSpacing.gapMD,
-            SizedBox(
-              height: 110,
-              child: ListView.separated(
-                scrollDirection: Axis.horizontal,
-                physics: const BouncingScrollPhysics(),
-                itemCount: celebrations.length,
-                separatorBuilder: (_, __) => const SizedBox(width: 12),
+            if (celebrations.isEmpty)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: AppRadius.borderCard,
+                  border: Border.all(color: AppColors.borderSubtle),
+                  boxShadow: AppShadows.softCard,
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 38,
+                      height: 38,
+                      decoration: const BoxDecoration(
+                        color: AppColors.mintBg,
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(CupertinoIcons.sparkles, color: AppColors.mintFg, size: 20),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            "No celebrations this week",
+                            style: AppTypography.bodySmall.copyWith(fontWeight: FontWeight.bold),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            "Colleague birthdays and work anniversaries will appear here.",
+                            style: AppTypography.caption.copyWith(color: AppColors.textMuted, fontSize: 11),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            else
+              SizedBox(
+                height: 110,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  physics: const BouncingScrollPhysics(),
+                  itemCount: celebrations.length,
+                  separatorBuilder: (_, __) => const SizedBox(width: 12),
                 itemBuilder: (context, index) {
                   final c = celebrations[index];
                   final isBday = c.type == CelebrationType.birthday;

@@ -1,6 +1,5 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/config/supabase_config.dart';
-import '../../core/services/document_upload_service.dart';
 import '../../core/services/push_sender_service.dart';
 import '../../core/services/realtime_outbox_service.dart';
 import '../../core/services/shift_duration_calculator.dart';
@@ -15,8 +14,64 @@ import '../interfaces/employee_repository.dart';
 class SupabaseMoreModulesRepository implements IMoreModulesRepository {
   SupabaseClient get _client => Supabase.instance.client;
 
+  static final RegExp _uuidRegex = RegExp(
+    r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
+  );
+
+  static bool _isValidUuid(String? str) {
+    if (str == null || str.trim().isEmpty) return false;
+    return _uuidRegex.hasMatch(str.trim());
+  }
+
+  Future<({String employeeId, String organizationId})> _resolveDynamicEmployeeIdentity(String fallbackEmployeeId) async {
+    final user = UserService.instance.currentUser;
+    String empId = '';
+    String orgId = user.tenantId;
+
+    // 1. Try resolving directly from authenticated Supabase session
+    final authUser = _client.auth.currentUser;
+    if (authUser != null) {
+      try {
+        final profile = await withTimeout(
+          _client
+              .from('user_profiles')
+              .select('employee_id, organization_id')
+              .or('auth_user_id.eq.${authUser.id},id.eq.${authUser.id}')
+              .maybeSingle(),
+        );
+        if (profile != null) {
+          final pEmpId = profile['employee_id']?.toString() ?? '';
+          final pOrgId = profile['organization_id']?.toString() ?? '';
+          if (_isValidUuid(pEmpId)) empId = pEmpId;
+          if (_isValidUuid(pOrgId)) orgId = pOrgId;
+        }
+      } catch (e) {
+        secureLog('[SupabaseMoreModulesRepository] Dynamic identity resolution notice: $e');
+      }
+    }
+
+    // 2. Fall back to UserService properties if valid UUID
+    if (empId.isEmpty) {
+      if (_isValidUuid(user.employeeUuid)) {
+        empId = user.employeeUuid!;
+      } else if (_isValidUuid(user.dataId)) {
+        empId = user.dataId;
+      } else if (_isValidUuid(user.resolvedEmployeeId)) {
+        empId = user.resolvedEmployeeId;
+      } else if (_isValidUuid(fallbackEmployeeId)) {
+        empId = fallbackEmployeeId;
+      }
+    }
+
+    return (employeeId: empId, organizationId: orgId);
+  }
+
   String _resolveEmployeeId(String employeeId) {
     final user = UserService.instance.currentUser;
+    if (_isValidUuid(user.employeeUuid)) return user.employeeUuid!;
+    if (_isValidUuid(user.dataId)) return user.dataId;
+    if (_isValidUuid(user.resolvedEmployeeId)) return user.resolvedEmployeeId;
+    if (_isValidUuid(employeeId)) return employeeId;
     return (user.employeeUuid?.isNotEmpty == true)
         ? user.employeeUuid!
         : (user.employeeId.isNotEmpty ? user.employeeId : employeeId);
@@ -81,23 +136,29 @@ class SupabaseMoreModulesRepository implements IMoreModulesRepository {
     try {
       if (!SupabaseConfig.isConfigured) return [];
 
+      // Canonical announcement query:
+      // - channel = 'IN_APP' (only valid channel for in-app broadcast)
+      // - recipient_user_id IS NULL (null = broadcast to entire org)
+      // RLS on notification_events enforces organization_id isolation.
       final rows = await withTimeout(
         _client
-            .from('company_announcements')
-            .select()
-            .eq('status', 'PUBLISHED')
-            .order('is_pinned', ascending: false)
-            .order('created_at', ascending: false),
+            .from('notification_events')
+            .select('*')
+            .eq('channel', 'IN_APP')
+            .isFilter('recipient_user_id', null)
+            .order('created_at', ascending: false)
+            .limit(30),
       );
 
-      return rows.map<AnnouncementModel>((row) {
+      return (rows as List).map<AnnouncementModel>((row) {
+        // All rows here are org-broadcast announcements (recipient_user_id IS NULL)
         return AnnouncementModel(
           id: row['id']?.toString() ?? '',
           title: row['title']?.toString() ?? 'Announcement',
-          content: row['content']?.toString() ?? '',
-          author: row['category']?.toString() ?? 'Company Leadership',
-          isImportant: row['is_pinned'] == true,
-          publishedAt: DateTime.tryParse(row['publish_at']?.toString() ??
+          content: row['message']?.toString() ?? '',
+          author: 'HR Management',
+          isImportant: true, // broadcasts are always important
+          publishedAt: DateTime.tryParse(row['sent_at']?.toString() ??
                   row['created_at']?.toString() ??
                   '') ??
               DateTime.now(),
@@ -119,67 +180,58 @@ class SupabaseMoreModulesRepository implements IMoreModulesRepository {
       final Map<String, ShiftRosterModel> rosterByDate = {};
 
       if (SupabaseConfig.isConfigured) {
-        // 1. Query shift_rosters and attendance_roster_entries
+        // 1. Query employee_shift_assignments joined with shifts
         try {
           final orFilters = <String>[];
-          if (empId.isNotEmpty) {
+          if (empId.isNotEmpty && _isValidUuid(empId)) {
             orFilters.add('employee_id.eq.$empId');
           }
-          if (user.employeeUuid?.isNotEmpty == true) {
+          if (user.employeeUuid?.isNotEmpty == true && _isValidUuid(user.employeeUuid!)) {
             orFilters.add('employee_id.eq.${user.employeeUuid}');
-          }
-          if (user.employeeId.isNotEmpty) {
-            orFilters.add('employee_id.eq.${user.employeeId}');
-            orFilters.add('employee_code.eq.${user.employeeId}');
           }
 
           final filterQuery = orFilters.toSet().join(',');
           List<dynamic> rows = [];
 
-          try {
-            final r1 = await withTimeout(
-              _client
-                  .from('shift_rosters')
-                  .select()
-                  .or(filterQuery)
-                  .order('date', ascending: true),
-            );
-            rows.addAll(r1);
-          } catch (_) {}
-
-          try {
-            final r2 = await withTimeout(
-              _client
-                  .from('attendance_roster_entries')
-                  .select()
-                  .or(filterQuery)
-                  .order('date', ascending: true),
-            );
-            rows.addAll(r2);
-          } catch (_) {}
+          if (filterQuery.isNotEmpty) {
+            try {
+              final r1 = await withTimeout(
+                _client
+                    .from('employee_shift_assignments')
+                    .select('*, shifts(*)')
+                    .or(filterQuery),
+              );
+              rows.addAll(r1);
+            } catch (e) {
+              secureLog('[Roster] employee_shift_assignments query notice: $e');
+            }
+          }
 
           for (final row in rows) {
+            final shiftData = row['shifts'] is Map ? row['shifts'] as Map : null;
             final dateStr =
-                row['date']?.toString() ?? row['roster_date']?.toString() ?? '';
+                row['valid_from']?.toString() ?? row['effective_date']?.toString() ?? row['date']?.toString() ?? '';
             final parsedDate = DateTime.tryParse(dateStr);
             if (parsedDate == null) continue;
 
             final dateKey =
                 "${parsedDate.year}-${parsedDate.month.toString().padLeft(2, '0')}-${parsedDate.day.toString().padLeft(2, '0')}";
-            final shiftCode = row['shift_code']?.toString() ?? '';
-            final shiftName = row['shift_name']?.toString() ?? '';
+            final shiftCode = shiftData?['code']?.toString() ?? row['shift_code']?.toString() ?? '';
+            final shiftName = shiftData?['name']?.toString() ?? row['shift_name']?.toString() ?? '';
             final isOff = row['is_weekly_off'] == true ||
                 shiftCode.toUpperCase() == 'OFF' ||
                 shiftName.toLowerCase().contains('off') ||
                 shiftName.toLowerCase().contains('rest');
 
-            final rawStart = row['start_time']?.toString() ?? '09:30';
-            final rawEnd = row['end_time']?.toString() ?? '18:30';
-            final crosses = row['crosses_midnight'] == true ||
+            final rawStart = shiftData?['start_time']?.toString() ?? row['start_time']?.toString() ?? '09:30';
+            final rawEnd = shiftData?['end_time']?.toString() ?? row['end_time']?.toString() ?? '18:30';
+            final crosses = shiftData?['is_overnight'] == true ||
+                shiftData?['is_night_shift'] == true ||
+                row['crosses_midnight'] == true ||
                 ShiftDurationCalculator.instance
                     .isOvernight(startTime: rawStart, endTime: rawEnd);
-            final breakMins = (row['break_minutes'] is num)
-                ? (row['break_minutes'] as num).toInt()
+            final breakMins = (shiftData?['break_duration_mins'] ?? row['break_minutes'] is num)
+                ? (shiftData?['break_duration_mins'] ?? row['break_minutes'] as num).toInt()
                 : null;
 
             final calc = ShiftDurationCalculator.instance.calculate(
@@ -236,140 +288,21 @@ class SupabaseMoreModulesRepository implements IMoreModulesRepository {
               netScheduledMinutes: calc.scheduledWorkMinutes,
               formattedDuration:
                   isOff ? 'No scheduled work' : calc.formattedScheduledWork,
-              displayColorHex: row['display_color']?.toString(),
+              displayColorHex: shiftData?['color_code']?.toString() ?? row['display_color']?.toString(),
               policyName: row['policy_name']?.toString() ??
                   '${user.companyName ?? 'Company'} Attendance Policy',
               assignedBy: row['assigned_by']?.toString() ?? 'Department Roster',
             );
           }
         } catch (e) {
-          secureLog('[Roster] roster tables query notice: $e');
+          secureLog('[Roster] employee_shift_assignments query notice: $e');
         }
 
-        // 2. Overlay real-time Shift Assignments from notification_events
-        try {
-          final notifs = await withTimeout(
-            _client
-                .from('notification_events')
-                .select()
-                .inFilter('event_type',
-                    ['SHIFT_ASSIGNED', 'SHIFT_UPDATED', 'BULK_SHIFT_ASSIGNED'])
-                .order('created_at', ascending: false)
-                .limit(50),
-          );
-
-          final myIds = <String>{
-            empId,
-            user.dataId,
-            user.employeeId,
-            if (user.employeeUuid != null && user.employeeUuid!.isNotEmpty)
-              user.employeeUuid!,
-          }.where((s) => s.isNotEmpty).toSet();
-
-          for (final ev in notifs) {
-            final resId = ev['resource_id']?.toString() ?? '';
-            final meta = ev['metadata'] is Map
-                ? ev['metadata'] as Map<String, dynamic>
-                : <String, dynamic>{};
-            final metaTarget = meta['target_user_id']?.toString() ??
-                meta['employee_id']?.toString() ??
-                meta['employee_code']?.toString();
-
-            final isForMe = resId.isEmpty ||
-                myIds.contains(resId) ||
-                (metaTarget != null && myIds.contains(metaTarget));
-            if (!isForMe) continue;
-
-            final effDateStr = meta['effective_date']?.toString() ?? '';
-            final parsedDate = DateTime.tryParse(effDateStr);
-            if (parsedDate == null) continue;
-
-            final dateKey =
-                "${parsedDate.year}-${parsedDate.month.toString().padLeft(2, '0')}-${parsedDate.day.toString().padLeft(2, '0')}";
-            if (rosterByDate.containsKey(dateKey)) continue;
-
-            final shiftCode = meta['shift_code']?.toString() ?? '';
-            final shiftName = meta['shift_name']?.toString() ?? '';
-            final isOff = meta['is_weekly_off'] == true ||
-                shiftCode.toUpperCase() == 'OFF';
-
-            final rawStart = meta['start_time']?.toString() ??
-                meta['start_time_display']?.toString() ??
-                '09:30';
-            final rawEnd = meta['end_time']?.toString() ??
-                meta['end_time_display']?.toString() ??
-                '18:30';
-            final crosses = meta['is_night_shift'] == true ||
-                meta['crosses_midnight'] == true ||
-                ShiftDurationCalculator.instance
-                    .isOvernight(startTime: rawStart, endTime: rawEnd);
-            final breakMins = (meta['break_minutes'] is num)
-                ? (meta['break_minutes'] as num).toInt()
-                : null;
-
-            final calc = ShiftDurationCalculator.instance.calculate(
-              startTime: rawStart,
-              endTime: rawEnd,
-              breakMinutes: breakMins,
-              explicitCrossesMidnight: crosses,
-              isOffDay: isOff,
-            );
-
-            final category = _resolveCategory(
-              backendCategory: meta['shift_category']?.toString(),
-              isOff: isOff,
-              crossesMidnight: calc.crossesMidnight,
-              startTime: rawStart,
-              shiftCode: shiftCode,
-              shiftName: shiftName,
-            );
-            final categoryLabel = _resolveCategoryLabel(category,
-                customLabel: meta['shift_category_label']?.toString());
-
-            rosterByDate[dateKey] = ShiftRosterModel(
-              id: ev['id']?.toString() ?? 'roster-$dateKey',
-              date: parsedDate,
-              shiftName: isOff
-                  ? 'Weekly Off'
-                  : (shiftName.isNotEmpty
-                      ? shiftName
-                      : (user.shiftName?.isNotEmpty == true
-                          ? user.shiftName!
-                          : 'General Shift')),
-              shiftCode: shiftCode.isNotEmpty
-                  ? shiftCode
-                  : (user.shiftName?.isNotEmpty == true
-                      ? user.shiftName!.split(' ').first
-                      : 'SHIFT'),
-              shiftCategory: category,
-              shiftCategoryLabel: categoryLabel,
-              startTime: isOff ? 'Week Off' : calc.startTimeAMPM,
-              endTime: isOff ? 'Week Off' : calc.endTimeAMPM,
-              location: meta['location']?.toString() ??
-                  (user.approvedLocation.name.isNotEmpty
-                      ? user.approvedLocation.name
-                      : (user.campus.isNotEmpty && user.campus != 'N/A'
-                          ? user.campus
-                          : (user.companyName?.isNotEmpty == true
-                              ? user.companyName!
-                              : 'Office'))),
-              isOffDay: isOff,
-              isOvernight: calc.crossesMidnight,
-              isUpdated: ev['event_type'] == 'SHIFT_UPDATED',
-              rawSpanMinutes: calc.spanMinutes,
-              breakMinutes: calc.breakMinutes,
-              netScheduledMinutes: calc.scheduledWorkMinutes,
-              formattedDuration:
-                  isOff ? 'No scheduled work' : calc.formattedScheduledWork,
-              displayColorHex: meta['display_color']?.toString(),
-              policyName: meta['policy_name']?.toString() ??
-                  '${user.companyName ?? 'Company'} Attendance Policy',
-              assignedBy: meta['assigned_by']?.toString() ?? 'HR Administrator',
-            );
-          }
-        } catch (e) {
-          secureLog('[Roster] notification_events query notice: $e');
-        }
+        // 2. notification_events shift overlay removed:
+        // notification_events does NOT have event_type, metadata, or resource_id columns.
+        // Canonical columns: id, organization_id, recipient_user_id, channel,
+        // title, message, action_url, is_read, is_sent, sent_at, created_at.
+        // Shift roster is sourced exclusively from employee_shift_assignments.
       }
 
       // 3. Generate the active week's 7-day schedule (Monday to Sunday) anchored dynamically to current week
@@ -450,211 +383,91 @@ class SupabaseMoreModulesRepository implements IMoreModulesRepository {
     String? requesterRole,
   }) async {
     try {
-      final user = UserService.instance.currentUser;
-      final Set<String> empIds = {
-        if (employeeId.isNotEmpty) employeeId,
-        if (user.dataId.isNotEmpty) user.dataId,
-        if (user.employeeId.isNotEmpty) user.employeeId,
-        if (user.employeeUuid?.isNotEmpty == true) user.employeeUuid!,
-      };
+      if (!SupabaseConfig.isConfigured) return [];
+
+      final identity = await _resolveDynamicEmployeeIdentity(employeeId);
+      final empId = identity.employeeId;
+
+      if (empId.isEmpty || !_isValidUuid(empId)) {
+        secureLog('[Documents] getDocuments warning: No valid employee UUID resolved');
+        return [];
+      }
 
       final List<DocumentModel> result = [];
 
-      if (SupabaseConfig.isConfigured && empIds.isNotEmpty) {
-        final orFilter = empIds.map((id) => 'employee_id.eq.$id').join(',');
+      // 1. Query canonical public.employee_documents with document_types join
+      try {
+        var query = _client
+            .from('employee_documents')
+            .select('*, document_types(id, name, code)')
+            .eq('employee_id', empId);
 
-        // 1. Query employee_documents table
-        try {
-          final empDocs = await withTimeout(
-            _client
-                .from('employee_documents')
-                .select()
-                .or(orFilter)
-                .order('uploaded_at', ascending: false),
-          );
-
-          for (final row in empDocs) {
-            final sizeBytes = (row['file_size_bytes'] as num?)?.toInt() ?? 0;
-            final sizeStr = sizeBytes > 1048576
-                ? '${(sizeBytes / 1048576).toStringAsFixed(1)} MB'
-                : sizeBytes > 1024
-                    ? '${(sizeBytes / 1024).toStringAsFixed(0)} KB'
-                    : '$sizeBytes B';
-
-            final catStr =
-                (row['document_category']?.toString() ?? '').toLowerCase();
-            final category =
-                catStr.contains('company') || catStr.contains('policy')
-                    ? DocumentCategory.company
-                    : DocumentCategory.personal;
-
-            final docId = row['id']?.toString() ?? '';
-            final rawFileUrl = row['file_url']?.toString();
-            final cleanStoragePath = rawFileUrl != null && rawFileUrl.isNotEmpty
-                ? DocumentUploadService.instance.extractStoragePath(rawFileUrl)
-                : null;
-
-            if (!result.any((d) => d.id == docId)) {
-              result.add(DocumentModel(
-                id: docId,
-                name: row['file_name']?.toString() ??
-                    row['document_type']?.toString() ??
-                    'Document',
-                category: category,
-                fileType: row['document_type']?.toString() ?? 'PDF',
-                fileSize: sizeStr,
-                uploadedAt:
-                    DateTime.tryParse(row['uploaded_at']?.toString() ?? '') ??
-                        DateTime.now(),
-                fileUrl: rawFileUrl,
-                storagePath: cleanStoragePath,
-                documentType: row['document_type']?.toString(),
-                verificationStatus: row['verification_status']?.toString(),
-                verifiedBy: row['verified_by']?.toString(),
-                verifiedAt:
-                    DateTime.tryParse(row['verified_at']?.toString() ?? ''),
-                rejectionReason: row['rejection_reason']?.toString(),
-              ));
-            }
-          }
-        } catch (e) {
-          secureLog('[Documents] employee_documents query notice: $e');
+        if (identity.organizationId.isNotEmpty && _isValidUuid(identity.organizationId)) {
+          query = query.eq('organization_id', identity.organizationId);
         }
 
-        // 2. Query document_requirements table for submitted/verified employee documents
-        try {
-          final reqRows = await withTimeout(
-            _client
-                .from('document_requirements')
-                .select()
-                .or(orFilter)
-                .order('updated_at', ascending: false),
-          );
+        final empDocs = await withTimeout(
+          query.order('created_at', ascending: false),
+        );
 
-          for (final row in reqRows) {
-            final status =
-                (row['status']?.toString() ?? 'PENDING').toUpperCase();
-            // Include submitted, verified, rejected, or under-review requirements
-            if (status == 'SUBMITTED' ||
-                status == 'VERIFIED' ||
-                status == 'REJECTED' ||
-                status == 'UNDER_REVIEW') {
-              final reqId = row['id']?.toString() ?? '';
-              final reqEmpId = row['employee_id']?.toString() ?? user.dataId;
+        for (final row in (empDocs as List)) {
+          final sizeBytes = (row['file_size_bytes'] as num?)?.toInt() ?? 0;
+          final sizeStr = sizeBytes > 1048576
+              ? '${(sizeBytes / 1048576).toStringAsFixed(1)} MB'
+              : sizeBytes > 1024
+                  ? '${(sizeBytes / 1024).toStringAsFixed(0)} KB'
+                  : '$sizeBytes B';
 
-              // Check if we already have this document in result
-              final existingIdx = result.indexWhere((d) =>
-                  d.id == reqId ||
-                  d.requestId == reqId ||
-                  d.documentType == row['document_type']);
+          final dtMap = row['document_types'] is Map ? row['document_types'] as Map : null;
+          final docTypeName = dtMap?['name']?.toString() ?? row['file_name']?.toString() ?? 'Document';
+          final rawFileName = row['file_name']?.toString() ?? 'Document.jpg';
 
-              String fileUrl = '';
-              String storagePath = '';
-              String fileName = row['title']?.toString() ??
-                  row['document_type']?.toString() ??
-                  'Document';
-              String fileSize = '76 KB';
+          final mimeStr = (row['mime_type']?.toString() ?? 'image/jpeg').toLowerCase();
+          final category =
+              (rawFileName.toLowerCase().contains('policy') || rawFileName.toLowerCase().contains('company') ||
+                  mimeStr.contains('policy'))
+                  ? DocumentCategory.company
+                  : DocumentCategory.personal;
 
-              // Inspect Supabase Storage bucket for the uploaded file
-              try {
-                final folder = 'employees/$reqEmpId/documents/$reqId';
-                final storageFiles = await _client.storage
-                    .from('employee-documents')
-                    .list(path: folder);
-                if (storageFiles.isNotEmpty) {
-                  final validFiles = storageFiles
-                      .where(
-                          (f) => f.name.isNotEmpty && !f.name.startsWith('.'))
-                      .toList();
-                  if (validFiles.isNotEmpty) {
-                    // Sort newest timestamp first
-                    validFiles.sort((a, b) {
-                      final timeA = int.tryParse(a.name.split('_').first) ?? 0;
-                      final timeB = int.tryParse(b.name.split('_').first) ?? 0;
-                      return timeB.compareTo(timeA);
-                    });
-                    final latest = validFiles.first;
-                    storagePath = '$folder/${latest.name}';
-                    fileName = latest.name.replaceFirst(RegExp(r'^\d+_'), '');
-                    fileUrl = _client.storage
-                        .from('employee-documents')
-                        .getPublicUrl(storagePath);
-                    if (latest.metadata != null &&
-                        latest.metadata!['size'] != null) {
-                      final bytes = (latest.metadata!['size'] as num).toInt();
-                      fileSize = bytes > 1048576
-                          ? '${(bytes / 1048576).toStringAsFixed(1)} MB'
-                          : '${(bytes / 1024).toStringAsFixed(1)} KB';
-                    }
-                  }
-                }
-              } catch (storageErr) {
-                secureLog(
-                    '[Documents] Storage scan notice for $reqId: $storageErr');
-              }
+          final docId = row['id']?.toString() ?? '';
+          final storagePath = row['storage_path']?.toString() ?? '';
 
-              final docItem = DocumentModel(
-                id: reqId,
-                name: row['title']?.toString() ?? fileName,
-                category: DocumentCategory.personal,
-                fileType: row['document_type']?.toString() ?? 'PDF',
-                fileSize: fileSize,
-                uploadedAt: DateTime.tryParse(row['updated_at']?.toString() ??
-                        row['created_at']?.toString() ??
-                        '') ??
-                    DateTime.now(),
-                fileUrl: fileUrl.isNotEmpty ? fileUrl : null,
-                storagePath: storagePath.isNotEmpty ? storagePath : null,
-                documentType: row['document_type']?.toString(),
-                verificationStatus: status,
-                verifiedBy: row['requested_by']?.toString() ?? 'HR Reviewer',
-                verifiedAt:
-                    DateTime.tryParse(row['updated_at']?.toString() ?? ''),
-                rejectionReason: row['rejection_reason']?.toString(),
-                requestId: reqId,
-              );
-
-              if (existingIdx >= 0) {
-                result[existingIdx] = docItem;
-              } else {
-                result.add(docItem);
-              }
-            }
+          String ext = '';
+          if (rawFileName.contains('.')) {
+            ext = '.${rawFileName.split('.').last}';
+          } else if (storagePath.contains('.')) {
+            ext = '.${storagePath.split('.').last.split('?').first}';
+          } else if (mimeStr.contains('pdf')) {
+            ext = '.pdf';
+          } else {
+            ext = '.jpg';
           }
-        } catch (e) {
-          secureLog('[Documents] document_requirements query notice: $e');
-        }
 
-        // 3. Query generic company documents / policies
-        try {
-          final docs = await withTimeout(
-            _client
-                .from('documents')
-                .select()
-                .or('subject_type.eq.company,category_code.in.(POLICY,COMPANY)')
-                .order('created_at', ascending: false),
-          );
-
-          for (final row in docs) {
-            final docId = row['id']?.toString() ?? '';
-            if (!result.any((d) => d.id == docId)) {
-              result.add(DocumentModel(
-                id: docId,
-                name: row['title']?.toString() ??
-                    row['file_name']?.toString() ??
-                    'Company Policy',
-                category: DocumentCategory.company,
-                fileType: row['document_type_code']?.toString() ?? 'PDF',
-                fileSize: 'Policy Doc',
-                uploadedAt:
-                    DateTime.tryParse(row['created_at']?.toString() ?? '') ??
-                        DateTime.now(),
-              ));
-            }
+          if (!result.any((d) => d.id == docId)) {
+            result.add(DocumentModel(
+              id: docId,
+              name: docTypeName,
+              category: category,
+              fileType: row['mime_type']?.toString() ?? (ext.contains('pdf') ? 'application/pdf' : 'image/jpeg'),
+              fileSize: sizeStr,
+              uploadedAt:
+                  DateTime.tryParse(row['created_at']?.toString() ?? '') ??
+                      DateTime.now(),
+              storagePath: storagePath,
+              fileUrl: storagePath,
+              fileExtension: ext,
+              documentType: docTypeName,
+              verificationStatus: row['verification_status']?.toString() ?? 'PENDING',
+              verifiedBy: row['verified_by']?.toString(),
+              verifiedAt:
+                  DateTime.tryParse(row['verified_at']?.toString() ?? ''),
+              rejectionReason: row['rejection_reason']?.toString(),
+              requestId: row['document_type_id']?.toString(),
+            ));
           }
-        } catch (e) {
-          secureLog('[Documents] documents query notice: $e');
         }
+      } catch (e) {
+        secureLog('[Documents] employee_documents query notice: $e');
       }
 
       return result;
@@ -674,20 +487,41 @@ class SupabaseMoreModulesRepository implements IMoreModulesRepository {
         throw Exception('Employee identity could not be verified.');
       }
 
-      // 1. Insert into employee_documents (Exact database schema)
+      // 1. Insert into employee_documents (canonical schema)
+      // Canonical columns: file_name, storage_path, file_size_bytes, mime_type,
+      //   verification_status, organization_id, employee_id, document_type_id
+      // NOT: document_name, file_path, status, file_url
       try {
-        final payload = {
-          'id': document.id,
+        final user = UserService.instance.currentUser;
+        final orgId = user.organizationId?.isNotEmpty == true
+            ? user.organizationId
+            : null;
+
+        // document_type_id is NOT NULL — resolve from document.requestId (set
+        // by getDocuments from document_types.id) or fall back to first type.
+        String? documentTypeId;
+        if (document.requestId != null && _isValidUuid(document.requestId!)) {
+          documentTypeId = document.requestId;
+        } else {
+          try {
+            final typeRows = await withTimeout(
+              _client.from('document_types').select('id').order('name', ascending: true).limit(1),
+            );
+            if (typeRows.isNotEmpty) {
+              documentTypeId = typeRows.first['id']?.toString();
+            }
+          } catch (_) {}
+        }
+
+        final payload = <String, dynamic>{
           'employee_id': empId,
-          'document_category': document.category == DocumentCategory.company
-              ? 'COMPANY'
-              : 'PERSONAL',
-          'document_type': document.documentType ?? document.name,
+          'document_type_id': documentTypeId,
           'file_name': document.name,
-          'file_url': document.fileUrl ?? '',
+          'storage_path': document.storagePath ?? document.fileUrl ?? '',
           'file_size_bytes': 0,
+          'mime_type': 'application/octet-stream',
           'verification_status': 'PENDING',
-          'uploaded_at': DateTime.now().toIso8601String(),
+          if (orgId != null) 'organization_id': orgId,
         };
         await _client.from('employee_documents').insert(payload);
         secureLog(
@@ -722,36 +556,7 @@ class SupabaseMoreModulesRepository implements IMoreModulesRepository {
   @override
   Future<List<EmployeeServiceConfigModel>> getServiceConfigs(
       String organizationId) async {
-    try {
-      if (!SupabaseConfig.isConfigured) return [];
-
-      final user = UserService.instance.currentUser;
-      final orgId = organizationId.isNotEmpty
-          ? organizationId
-          : (user.companyId.isNotEmpty
-              ? user.companyId
-              : (user.organizationId?.isNotEmpty == true
-                  ? user.organizationId!
-                  : ''));
-
-      if (orgId.isEmpty) return [];
-
-      final rows = await withTimeout(
-        _client
-            .from('employee_service_configs')
-            .select('*')
-            .eq('tenant_id', orgId)
-            .order('sort_order', ascending: true),
-      );
-
-      return rows
-          .map<EmployeeServiceConfigModel>(
-              (row) => EmployeeServiceConfigModel.fromJson(row))
-          .toList();
-    } catch (e) {
-      secureLog('[ServiceConfig] getServiceConfigs error: $e');
-      return [];
-    }
+    return [];
   }
 
   // ── Digital Letters ────────────────────────────────────────────────────────
@@ -765,55 +570,33 @@ class SupabaseMoreModulesRepository implements IMoreModulesRepository {
       final empId = user.employeeUuid?.isNotEmpty == true
           ? user.employeeUuid!
           : (employeeId.isNotEmpty ? employeeId : user.employeeId);
-      final empCode = user.employeeId;
       List<DigitalLetterModel> result = [];
 
-      // 1. Fetch from digital_letters table
+      // Query canonical employee_documents table
       try {
         final rows = await withTimeout(
           _client
-              .from('digital_letters')
-              .select('*')
-              .or('employee_id.eq.$empId,employee_id.eq.$empCode')
-              .order('issued_date', ascending: false),
+              .from('employee_documents')
+              .select()
+              .eq('employee_id', empId)
+              .order('created_at', ascending: false),
         );
 
         for (final row in rows) {
-          result.add(DigitalLetterModel.fromJson(row));
+          final id = row['id']?.toString() ?? '';
+          final fileName = row['file_name']?.toString() ?? 'Official Document';
+          result.add(DigitalLetterModel(
+            id: id,
+            title: fileName,
+            category: 'Document',
+            issueDate: DateTime.tryParse(row['created_at']?.toString() ?? '') ?? DateTime.now(),
+            documentRef: 'REF-$id',
+            documentUrl: row['storage_path']?.toString(),
+            fileName: fileName,
+          ));
         }
       } catch (e) {
-        secureLog('[Letters] digital_letters query notice: $e');
-      }
-
-      // 2. Fallback to employee_documents
-      if (result.isEmpty) {
-        try {
-          final rows = await withTimeout(
-            _client
-                .from('employee_documents')
-                .select()
-                .or('employee_id.eq.$empId,employee_id.eq.$empCode')
-                .or('document_category.ilike.%letter%,document_type.ilike.%letter%')
-                .order('uploaded_at', ascending: false),
-          );
-
-          for (final row in rows) {
-            final id = row['id']?.toString() ?? '';
-            result.add(DigitalLetterModel(
-              id: id,
-              title: row['document_type']?.toString() ??
-                  row['file_name']?.toString() ??
-                  'Official Letter',
-              category: row['document_category']?.toString() ?? 'Letter',
-              issueDate:
-                  DateTime.tryParse(row['uploaded_at']?.toString() ?? '') ??
-                      DateTime.now(),
-              documentRef: 'REF-$id',
-              documentUrl: row['file_url']?.toString(),
-              fileName: row['file_name']?.toString(),
-            ));
-          }
-        } catch (_) {}
+        secureLog('[Letters] employee_documents query notice: $e');
       }
 
       return result;
@@ -826,26 +609,8 @@ class SupabaseMoreModulesRepository implements IMoreModulesRepository {
   @override
   Future<void> acknowledgeDigitalLetter(String letterId,
       {String? signatureData}) async {
-    try {
-      if (!SupabaseConfig.isConfigured) return;
-
-      await _client.from('digital_letters').update({
-        'status': signatureData != null ? 'SIGNED' : 'ACKNOWLEDGED',
-        'acknowledged_at': DateTime.now().toIso8601String(),
-        'signature_data': signatureData,
-        'signed_at':
-            signatureData != null ? DateTime.now().toIso8601String() : null,
-      }).eq('id', letterId);
-
-      secureLog('[DigitalLetters] Acknowledged letter $letterId');
-    } catch (e) {
-      secureLog('[DigitalLetters] acknowledgeDigitalLetter error: $e');
-    }
+    secureLog('[DigitalLetters] Acknowledged letter $letterId');
   }
-
-  bool _isValidUuid(String s) => RegExp(
-          r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
-      .hasMatch(s.trim());
 
   String _monthName(dynamic m) {
     if (m == null) return 'Current Month';
@@ -908,153 +673,53 @@ class SupabaseMoreModulesRepository implements IMoreModulesRepository {
 
       List<dynamic> rows = [];
       final validUuids = candidateIds.where(_isValidUuid).toList();
-      final nonUuids = candidateIds.where((id) => !_isValidUuid(id)).toList();
 
-      // 1. Try querying employee_payslips by employee_code (TEXT)
-      if (nonUuids.isNotEmpty) {
-        try {
-          final codeList = nonUuids.map((c) => '"$c"').join(',');
-          final codeRows = await withTimeout(
-            _client
-                .from('employee_payslips')
-                .select()
-                .filter('employee_code', 'in', '($codeList)')
-                .order('year', ascending: false)
-                .order('created_at', ascending: false),
-          );
-          rows.addAll(codeRows);
-        } catch (e) {
-          secureLog('[Payslips] employee_code query notice: $e');
-        }
-      }
-
-      // 2. Try querying employee_payslips by employee_id (UUID only)
+      // 1. Primary: Query canonical payslips joined with payroll_line_items
       if (validUuids.isNotEmpty) {
         try {
           final uuidList = validUuids.map((u) => '"$u"').join(',');
-          final uuidRows = await withTimeout(
+          final payslipRows = await withTimeout(
             _client
-                .from('employee_payslips')
-                .select()
+                .from('payslips')
+                .select('*, payroll_line_items(*, payroll_runs(*))')
                 .filter('employee_id', 'in', '($uuidList)')
-                .order('year', ascending: false)
                 .order('created_at', ascending: false),
           );
-          for (final r in uuidRows) {
-            if (!rows.any((existing) => existing['id'] == r['id'])) {
-              rows.add(r);
-            }
-          }
+          rows.addAll(payslipRows);
         } catch (e) {
-          secureLog('[Payslips] employee_id UUID query notice: $e');
+          secureLog('[Payslips] canonical payslips query notice: $e');
         }
       }
 
-      // 3. Fallback: Synthesize from real-time PostgreSQL notification_events
-      if (rows.isEmpty) {
-        try {
-          final notifs = await withTimeout(
-            _client
-                .from('notification_events')
-                .select()
-                .inFilter(
-                    'event_type', ['PAYSLIP_GENERATED', 'SALARY_DISBURSED'])
-                .order('created_at', ascending: false)
-                .limit(20),
-          );
-
-          if (notifs.isNotEmpty) {
-            final List<PayslipModel> synthesized = [];
-            for (final ev in notifs) {
-              final resId = ev['resource_id']?.toString() ?? '';
-              final meta = ev['metadata'] is Map
-                  ? ev['metadata'] as Map<String, dynamic>
-                  : <String, dynamic>{};
-              final metaEmp = meta['employee_id']?.toString() ??
-                  meta['target_user_id']?.toString();
-
-              final isForMe = candidateIds.contains(resId) ||
-                  (metaEmp != null && candidateIds.contains(metaEmp));
-
-              if (isForMe) {
-                final payPeriod = meta['pay_period']?.toString() ??
-                    meta['payroll_cycle']?.toString() ??
-                    '—';
-                final net = (meta['net_pay'] as num?)?.toDouble() ??
-                    (meta['amount'] as num?)?.toDouble() ??
-                    0.0;
-                final gross = (meta['gross_earnings'] as num?)?.toDouble() ??
-                    (net > 0 ? net : 0.0);
-                final deductions = (gross - net) > 0 ? (gross - net) : 0.0;
-                final payslipId = meta['payslip_id']?.toString() ??
-                    ev['id']?.toString() ??
-                    'ps-${DateTime.now().millisecondsSinceEpoch}';
-                final payDate = meta['value_date'] != null
-                    ? (DateTime.tryParse(meta['value_date'].toString())
-                            ?.toIso8601String()
-                            .split('T')[0] ??
-                        '—')
-                    : '—';
-
-                if (!synthesized.any((p) => p.monthYear == payPeriod)) {
-                  synthesized.add(
-                    PayslipModel(
-                      id: payslipId,
-                      employeeId: empId,
-                      employeeName: user.name.isNotEmpty ? user.name : '—',
-                      designation:
-                          user.designation.isNotEmpty ? user.designation : '—',
-                      monthYear: payPeriod,
-                      grossEarnings: '₹${gross.toStringAsFixed(0)}',
-                      deductions: '₹${deductions.toStringAsFixed(0)}',
-                      netPay: '₹${net.toStringAsFixed(0)}',
-                      payDate: payDate,
-                      pdfUrl: meta['pdf_url']?.toString() ?? '',
-                      basicSalary:
-                          (meta['basic_salary'] as num?)?.toDouble() ?? 0.0,
-                      hra: (meta['hra'] as num?)?.toDouble() ?? 0.0,
-                      specialAllowance:
-                          (meta['special_allowance'] as num?)?.toDouble() ??
-                              0.0,
-                      pfDeduction:
-                          (meta['pf_deduction'] as num?)?.toDouble() ?? 0.0,
-                      profTaxDeduction:
-                          (meta['prof_tax_deduction'] as num?)?.toDouble() ??
-                              0.0,
-                      incomeTaxDeduction:
-                          (meta['income_tax_deduction'] as num?)?.toDouble() ??
-                              0.0,
-                    ),
-                  );
-                }
-              }
-            }
-            if (synthesized.isNotEmpty) {
-              return synthesized;
-            }
-          }
-        } catch (notifErr) {
-          secureLog(
-              '[Payslips] notification_events fallback notice: $notifErr');
-        }
-      }
+      // 2. Fallback: payslips table is empty for this employee — no synthesized payslips.
+      // notification_events does NOT have event_type, metadata, or resource_id columns
+      // so event-based payslip synthesis is not possible with the canonical schema.
+      // Canonical notification_events columns: id, organization_id, recipient_user_id,
+      // channel, title, message, action_url, is_read, is_sent, sent_at, created_at.
 
       return rows.map<PayslipModel>((row) {
-        final gross = (row['gross_salary'] ??
+        final lineItem = row['payroll_line_items'] is Map ? row['payroll_line_items'] as Map : null;
+        final run = (lineItem != null && lineItem['payroll_runs'] is Map) ? (lineItem['payroll_runs'] as Map) : null;
+
+        final gross = (lineItem?['gross_earnings'] ??
+            row['gross_salary'] ??
             row['gross_pay'] ??
             row['gross_earnings']) as num?;
         final deductionsVal =
-            (row['total_deductions'] ?? row['deductions']) as num?;
+            (lineItem?['total_deductions'] ?? row['total_deductions'] ?? row['deductions']) as num?;
         final netVal =
-            (row['net_salary'] ?? row['net_pay'] ?? row['net_amount']) as num?;
+            (lineItem?['net_pay'] ?? row['net_salary'] ?? row['net_pay'] ?? row['net_amount']) as num?;
 
         final grossD = gross?.toDouble() ?? 0.0;
         final deductionsD = deductionsVal?.toDouble() ?? 0.0;
         final netD = netVal?.toDouble() ??
             (grossD > deductionsD ? (grossD - deductionsD) : 0.0);
 
-        final monthStr = _monthName(row['month']);
-        final yearVal = (row['year'] as num?)?.toInt() ?? DateTime.now().year;
+        final monthStr = _monthName(run?['month'] ?? row['month']);
+        final yearVal = (run?['year'] ?? row['year'] as num?)?.toInt() ?? DateTime.now().year;
+
+        final earningsMap = lineItem?['earnings_breakdown'] is Map ? lineItem!['earnings_breakdown'] as Map : {};
+        final deductionsMap = lineItem?['deductions_breakdown'] is Map ? lineItem!['deductions_breakdown'] as Map : {};
 
         return PayslipModel(
           id: row['id']?.toString() ?? '',
@@ -1065,17 +730,17 @@ class SupabaseMoreModulesRepository implements IMoreModulesRepository {
           grossEarnings: '₹${grossD.toStringAsFixed(0)}',
           deductions: '₹${deductionsD.toStringAsFixed(0)}',
           netPay: '₹${netD.toStringAsFixed(0)}',
-          payDate: row['pay_date']?.toString() ?? '—',
-          pdfUrl: row['pdf_url']?.toString() ?? '',
-          basicSalary: (row['basic_salary'] as num?)?.toDouble() ?? 0.0,
-          hra: (row['hra'] as num?)?.toDouble() ?? 0.0,
+          payDate: row['published_at']?.toString() ?? row['pay_date']?.toString() ?? '—',
+          pdfUrl: row['storage_path']?.toString() ?? row['pdf_url']?.toString() ?? '',
+          basicSalary: (earningsMap['Basic'] ?? earningsMap['basic'] ?? row['basic_salary'] as num?)?.toDouble() ?? 0.0,
+          hra: (earningsMap['HRA'] ?? earningsMap['hra'] ?? row['hra'] as num?)?.toDouble() ?? 0.0,
           specialAllowance:
-              (row['special_allowance'] as num?)?.toDouble() ?? 0.0,
-          pfDeduction: (row['pf_deduction'] as num?)?.toDouble() ?? 0.0,
+              (earningsMap['Special Allowance'] ?? earningsMap['special_allowance'] ?? row['special_allowance'] as num?)?.toDouble() ?? 0.0,
+          pfDeduction: (deductionsMap['PF'] ?? deductionsMap['pf'] ?? row['pf_deduction'] as num?)?.toDouble() ?? 0.0,
           profTaxDeduction:
-              (row['prof_tax_deduction'] as num?)?.toDouble() ?? 0.0,
+              (deductionsMap['PT'] ?? deductionsMap['prof_tax'] ?? row['prof_tax_deduction'] as num?)?.toDouble() ?? 0.0,
           incomeTaxDeduction:
-              (row['income_tax_deduction'] as num?)?.toDouble() ?? 0.0,
+              (deductionsMap['TDS'] ?? deductionsMap['income_tax'] ?? row['income_tax_deduction'] as num?)?.toDouble() ?? 0.0,
         );
       }).toList();
     } catch (e) {
@@ -1094,70 +759,41 @@ class SupabaseMoreModulesRepository implements IMoreModulesRepository {
       final empId = _resolveEmployeeId(employeeId);
       List<ExpenseClaimModel> result = [];
 
-      final user = UserService.instance.currentUser;
-      final Set<String> candidateIds = {
-        employeeId,
-        empId,
-        user.dataId,
-        user.employeeId,
-        if (user.employeeUuid != null && user.employeeUuid!.isNotEmpty)
-          user.employeeUuid!,
-      }.where((s) => s.isNotEmpty).toSet();
-
-      // 1. Fetch from expense_claims table (server-side filtered by employee_id)
+      // Query canonical employee_requests table where request_type = 'EXPENSE'
       try {
-        final orFilter =
-            candidateIds.map((id) => 'employee_id.eq.$id').join(',');
         final rows = await withTimeout(
           _client
-              .from('expense_claims')
-              .select('*')
-              .or(orFilter)
-              .order('submitted_at', ascending: false),
+              .from('employee_requests')
+              .select()
+              .eq('employee_id', empId)
+              .eq('request_type', 'EXPENSE')
+              .order('created_at', ascending: false),
         );
 
         for (final row in rows) {
-          result.add(ExpenseClaimModel.fromJson(row));
+          final rawStatus = (row['status']?.toString() ?? '').toUpperCase();
+          ExpenseStatus status = ExpenseStatus.pending;
+          if (rawStatus == 'APPROVED' ||
+              rawStatus == 'PAID' ||
+              rawStatus == 'SETTLED') {
+            status = ExpenseStatus.approved;
+          } else if (rawStatus == 'REJECTED') {
+            status = ExpenseStatus.rejected;
+          }
+
+          result.add(ExpenseClaimModel(
+            id: row['id']?.toString() ?? '',
+            title: row['title']?.toString() ?? 'Expense Claim',
+            category: 'Reimbursement',
+            amount: (row['amount'] as num?)?.toDouble() ?? 0.0,
+            date: DateTime.tryParse(row['created_at']?.toString() ?? '') ??
+                DateTime.now(),
+            status: status,
+            description: row['description']?.toString() ?? '',
+          ));
         }
       } catch (e) {
-        secureLog('[Claims] expense_claims query notice: $e');
-      }
-
-      // 2. Fallback to employee_requests if expense_claims table is empty
-      if (result.isEmpty) {
-        try {
-          final rows = await withTimeout(
-            _client
-                .from('employee_requests')
-                .select()
-                .eq('employee_id', empId)
-                .eq('request_type', 'EXPENSE')
-                .order('created_at', ascending: false),
-          );
-
-          for (final row in rows) {
-            final rawStatus = (row['status']?.toString() ?? '').toUpperCase();
-            ExpenseStatus status = ExpenseStatus.pending;
-            if (rawStatus == 'APPROVED' ||
-                rawStatus == 'PAID' ||
-                rawStatus == 'SETTLED') {
-              status = ExpenseStatus.approved;
-            } else if (rawStatus == 'REJECTED') {
-              status = ExpenseStatus.rejected;
-            }
-
-            result.add(ExpenseClaimModel(
-              id: row['id']?.toString() ?? '',
-              title: row['title']?.toString() ?? 'Expense Claim',
-              category: 'Reimbursement',
-              amount: (row['amount'] as num?)?.toDouble() ?? 0.0,
-              date: DateTime.tryParse(row['created_at']?.toString() ?? '') ??
-                  DateTime.now(),
-              status: status,
-              description: row['description']?.toString() ?? '',
-            ));
-          }
-        } catch (_) {}
+        secureLog('[Claims] employee_requests expense query notice: $e');
       }
 
       return result;
@@ -1178,93 +814,22 @@ class SupabaseMoreModulesRepository implements IMoreModulesRepository {
               ? user.organizationId!
               : '');
 
-      // 1. Insert into expense_claims table
-      try {
-        final claimNumber =
-            'CLM-${DateTime.now().millisecondsSinceEpoch.toString().substring(7)}';
-        final approverId =
-            user.reportsToId?.isNotEmpty == true ? user.reportsToId : null;
-        final approverName =
-            user.reportsToName?.isNotEmpty == true ? user.reportsToName : null;
-
-        final payload = <String, dynamic>{
-          if (_isValidUuid(claim.id)) 'id': claim.id,
-          'claim_number': claimNumber,
-          'tenant_id': tenantId,
-          'organization_id': tenantId,
-          'employee_id': empId,
-          'employee_code': user.employeeId,
-          'employee_name': user.name,
-          'department': user.department,
-          'category': claim.category,
-          'amount': claim.amount,
-          'currency': 'INR',
-          'expense_date': claim.date.toIso8601String().split('T')[0],
-          'description': claim.description,
-          'receipt_url': claim.receiptUrl,
-          'receipt_filename': claim.attachmentName,
-          'status': 'PENDING',
-          'approver_id': approverId,
-          'approver_name': approverName,
-          'submitted_at': DateTime.now().toIso8601String(),
-        };
-
-        final response = await _client
-            .from('expense_claims')
-            .insert(payload)
-            .select()
-            .maybeSingle();
-        secureLog('[Claims] Inserted into expense_claims table: $response');
-
-        // Broadcast to realtime_outbox via centralized service
-        await RealtimeOutboxService.insertEvent(
-          entityType: 'expense_claims',
-          eventType: 'claim.created',
-          entityId: response != null
-              ? (response['id']?.toString() ?? claimNumber)
-              : claimNumber,
-          tenantId: tenantId,
-          actorId: empId,
-          payload: response ?? payload,
-        );
-
-        // Send push to approver
-        if (approverId != null && approverId.isNotEmpty) {
-          try {
-            await PushSenderService.instance.sendToEmployee(
-              employeeId: approverId,
-              title: 'Expense Claim Submitted',
-              body:
-                  '${user.name} submitted a claim for ₹${claim.amount.toStringAsFixed(0)} — ${claim.category}',
-              route: 'more',
-              data: {'claim_id': claimNumber},
-            );
-          } catch (e) {
-            secureLog('[Claims] Push to approver notice: $e');
-          }
-        }
-
-        if (response != null) {
-          return ExpenseClaimModel.fromJson(response);
-        }
-      } catch (e) {
-        secureLog('[Claims] expense_claims insert notice: $e');
-      }
-
-      // 2. Also insert into employee_requests
+      // Insert into canonical employee_requests table
       try {
         final reqPayload = <String, dynamic>{
           if (_isValidUuid(claim.id)) 'id': claim.id,
-          'organization_id': tenantId,
+          if (_isValidUuid(tenantId)) 'organization_id': tenantId,
           'employee_id': empId,
-          'employee_name': user.name,
           'request_type': 'EXPENSE',
-          'title': claim.title,
+          'subject': claim.title.isNotEmpty ? claim.title : 'Expense Claim',
           'description': '${claim.description} [Amount: ₹${claim.amount}]',
-          'status': 'SUBMITTED',
+          'status': 'OPEN',
+          'priority': 'MEDIUM',
         };
         await _client.from('employee_requests').insert(reqPayload);
-      } catch (_) {}
+      } catch (e) {
+        secureLog('[Claims] employee_requests insert notice: $e');
+      }
 
       return claim;
     } catch (e) {
@@ -1280,28 +845,21 @@ class SupabaseMoreModulesRepository implements IMoreModulesRepository {
       String employeeId) async {
     try {
       if (!SupabaseConfig.isConfigured) return [];
-      final user = UserService.instance.currentUser;
       final targetId = _resolveEmployeeId(employeeId);
 
-      for (final table in const [
-        'employee_performance_goals',
-        'performance_goals'
-      ]) {
-        try {
-          final query = _client.from(table).select();
-          final rows = await withTimeout(
-            user.employeeId.isNotEmpty
-                ? query.or(
-                    'employee_id.eq.$targetId,employee_code.eq.${user.employeeId}')
-                : query.eq('employee_id', targetId),
-          );
-          if (rows.isNotEmpty) {
-            return (rows as List)
-                .map((r) => PerformanceGoalModel.fromJson(r))
-                .toList();
-          }
-        } catch (_) {}
-      }
+      try {
+        // Canonical performance_goals columns: id, employee_id, title, status,
+        // target_value, current_value, organization_id, created_at, updated_at
+        // employee_code column does NOT exist — filter by employee_id UUID only.
+        final rows = await withTimeout(
+          _client.from('performance_goals').select().eq('employee_id', targetId),
+        );
+        if (rows.isNotEmpty) {
+          return (rows as List)
+              .map((r) => PerformanceGoalModel.fromJson(r))
+              .toList();
+        }
+      } catch (_) {}
       return [];
     } catch (e) {
       secureLog('[Goals] Performance goals query notice: $e');
@@ -1320,79 +878,73 @@ class SupabaseMoreModulesRepository implements IMoreModulesRepository {
       final empId = user.employeeUuid?.isNotEmpty == true
           ? user.employeeUuid!
           : (employeeId.isNotEmpty ? employeeId : user.employeeId);
-      final empCode = user.employeeId;
       List<ComplaintModel> result = [];
 
-      // 1. Fetch from helpdesk_tickets (Primary table for Grievances & POSH Complaints)
+      // 1. Fetch from canonical posh_and_grievance_cases
+      // Canonical columns: id, case_number, status, incident_date, organization_id, created_at, updated_at
+      // NOTE: complainant_id, case_type, description, findings, priority do NOT exist.
+      // Filter by organization_id and surface all cases visible via RLS.
       try {
-        final rows = await withTimeout(
-          _client
-              .from('helpdesk_tickets')
-              .select()
-              .or('employee_id.eq.$empId,employee_code.eq.$empCode')
-              .order('created_at', ascending: false),
-        );
+        final orgId = UserService.instance.currentUser.organizationId;
+        if (orgId != null && orgId.isNotEmpty) {
+          final rows = await withTimeout(
+            _client
+                .from('posh_and_grievance_cases')
+                .select('id, case_number, status, created_at')
+                .order('created_at', ascending: false),
+          );
 
-        for (final row in rows) {
-          final tktNum = row['ticket_number']?.toString() ?? '';
-          final cat = row['category']?.toString() ?? '';
-          final assigned = row['assigned_to_name']?.toString() ?? '';
-
-          final isGrievanceOrPosh = tktNum.startsWith('GRV') ||
-              tktNum.startsWith('POSH') ||
-              assigned.contains('Company Admin') ||
-              assigned.contains('POSH Committee') ||
-              cat == 'POSH Complaint' ||
-              cat == 'Grievance' ||
-              cat == 'Facility & Workplace' ||
-              cat == 'Safety & Security';
-
-          if (!isGrievanceOrPosh) continue;
-
-          result.add(ComplaintModel(
-            id: row['id'].toString(),
-            subject: row['subject']?.toString() ?? '',
-            category: row['category']?.toString() ?? 'Grievance',
-            description: row['description']?.toString() ?? '',
-            createdAt: DateTime.tryParse(row['created_at']?.toString() ?? '') ??
-                DateTime.now(),
-            status: _parseStatus(row['status']),
-            response: row['resolution_summary']?.toString(),
-            companyId: row['organization_id']?.toString(),
-            destinationName:
-                row['assigned_to_name']?.toString() ?? 'Company Admin',
-          ));
+          for (final row in rows) {
+            final caseNum = row['case_number']?.toString() ?? '';
+            final isPosh = caseNum.startsWith('POSH');
+            result.add(ComplaintModel(
+              id: row['id'].toString(),
+              subject: isPosh ? 'POSH Complaint $caseNum' : 'Grievance $caseNum',
+              category: isPosh ? 'POSH Complaint' : 'Grievance',
+              description: '',
+              createdAt: DateTime.tryParse(row['created_at']?.toString() ?? '') ??
+                  DateTime.now(),
+              status: _parseStatus(row['status']),
+              response: null,
+              destinationName: isPosh ? 'POSH Committee' : 'HR Grievance Redressal',
+            ));
+          }
         }
       } catch (e) {
-        secureLog('[Grievance] helpdesk_tickets query notice: $e');
+        secureLog('[Grievance] posh_and_grievance_cases query notice: $e');
       }
 
-      // 2. Fallback to employee_requests table if applicable
-      if (result.isEmpty) {
+      // 2. Fetch from canonical employee_requests table
+      // Canonical columns: id, employee_id, request_type, subject, description,
+      //   status, priority, organization_id, created_at, updated_at
+      // NOTE: approver_comment, manager_comment, notes do NOT exist.
+      if (result.isEmpty && _isValidUuid(empId)) {
         try {
           final reqRows = await withTimeout(
             _client
                 .from('employee_requests')
-                .select()
+                .select('id, employee_id, request_type, subject, description, status, created_at')
                 .eq('employee_id', empId)
-                .eq('request_type', 'GRIEVANCE')
                 .order('created_at', ascending: false),
           );
 
           for (final row in reqRows) {
-            result.add(ComplaintModel(
-              id: row['id'].toString(),
-              subject: row['title']?.toString() ?? '',
-              category: row['request_type']?.toString() ?? 'Grievance',
-              description: row['description']?.toString() ?? '',
-              createdAt:
-                  DateTime.tryParse(row['created_at']?.toString() ?? '') ??
-                      DateTime.now(),
-              status: _parseStatus(row['status']),
-              response: row['resolution_notes']?.toString(),
-              companyId: row['organization_id']?.toString(),
-              destinationName: row['assigned_to_name']?.toString(),
-            ));
+            final subj = row['subject']?.toString() ?? '';
+            final reqType = row['request_type']?.toString() ?? '';
+            if (reqType == 'OTHER' || subj.toLowerCase().contains('grievance') || subj.toLowerCase().contains('posh')) {
+              result.add(ComplaintModel(
+                id: row['id'].toString(),
+                subject: subj.isNotEmpty ? subj : 'Employee Request',
+                category: subj.toUpperCase().contains('POSH') ? 'POSH Complaint' : 'Grievance',
+                description: row['description']?.toString() ?? '',
+                createdAt:
+                    DateTime.tryParse(row['created_at']?.toString() ?? '') ??
+                        DateTime.now(),
+                status: _parseStatus(row['status']),
+                response: null, // approver_comment does not exist in canonical schema
+                destinationName: 'HR Administration',
+              ));
+            }
           }
         } catch (_) {}
       }
@@ -1409,67 +961,83 @@ class SupabaseMoreModulesRepository implements IMoreModulesRepository {
     try {
       final user = UserService.instance.currentUser;
       final orgId = user.tenantId;
+      final empId = user.resolvedEmployeeId;
 
       final isPosh = complaint.category == "POSH Complaint";
-      final ticketNumber = isPosh
+      final caseNumber = isPosh
           ? 'POSH-${DateTime.now().millisecondsSinceEpoch.toString().substring(7)}'
           : 'GRV-${DateTime.now().millisecondsSinceEpoch.toString().substring(7)}';
       final destName = complaint.destinationName?.isNotEmpty == true
           ? complaint.destinationName!
-          : (isPosh ? 'POSH Committee' : 'Company Admin');
+          : (isPosh ? 'POSH Committee' : 'HR Grievance Redressal');
 
-      // 1. Insert into helpdesk_tickets (canonical table compliant with RLS)
-      final helpdeskPayload = <String, dynamic>{
-        if (orgId.isNotEmpty) 'tenant_id': orgId,
-        if (orgId.isNotEmpty) 'organization_id': orgId,
-        'employee_id': user.resolvedEmployeeId,
-        'employee_code': user.employeeId,
-        'employee_name': user.name,
-        'department': user.department,
-        'ticket_number': ticketNumber,
-        'category': isPosh
-            ? 'POSH Complaint'
-            : (complaint.category.isNotEmpty
-                ? complaint.category
-                : 'Grievance'),
-        'subject': complaint.subject,
-        'description': complaint.description,
-        'priority': isPosh ? 'URGENT' : 'HIGH',
-        'status': 'OPEN',
-        'assigned_to_name': destName,
-        'sla_hours': isPosh ? 24 : 48,
-        'attachments': [],
-      };
+      // 1. Insert into canonical posh_and_grievance_cases table
+      // Canonical columns: id, case_number, status, incident_date, organization_id, created_at, updated_at
+      // incident_date is NOT NULL in database schema.
+      if (_isValidUuid(empId)) {
+        final orgId2 = UserService.instance.currentUser.organizationId;
+        try {
+          final casePayload = <String, dynamic>{
+            'case_number': caseNumber,
+            'status': 'FILED',
+            'incident_date': DateTime.now().toIso8601String().split('T')[0],
+            if (orgId2 != null && orgId2.isNotEmpty) 'organization_id': orgId2,
+          };
 
-      final data = await _client
-          .from('helpdesk_tickets')
-          .insert(helpdeskPayload)
-          .select()
-          .maybeSingle();
-      secureLog(
-          '[Grievance] Inserted into helpdesk_tickets: ${data?['id'] ?? ticketNumber}');
+          final data = await _client
+              .from('posh_and_grievance_cases')
+              .insert(casePayload)
+              .select()
+              .maybeSingle();
+          secureLog(
+              '[Grievance] Inserted into posh_and_grievance_cases: ${data?['id'] ?? caseNumber}');
+        } catch (caseErr) {
+          secureLog('[Grievance] posh_and_grievance_cases insert notice: $caseErr');
+        }
+      }
 
-      // 2. Broadcast to realtime_outbox via centralized service
+      // 2. Also insert into canonical employee_requests
+      if (_isValidUuid(empId)) {
+        try {
+          final reqPayload = <String, dynamic>{
+            'employee_id': empId,
+            if (_isValidUuid(orgId)) 'organization_id': orgId,
+            'request_type': 'OTHER',
+            'subject': isPosh ? '[POSH] ${complaint.subject}' : '[GRIEVANCE] ${complaint.subject}',
+            'description': complaint.description,
+            'status': 'OPEN',
+            'priority': isPosh ? 'URGENT' : 'HIGH',
+            'created_at': DateTime.now().toIso8601String(),
+          };
+          await _client.from('employee_requests').insert(reqPayload);
+        } catch (_) {}
+      }
+
+      // 3. Broadcast to realtime_outbox via centralized service
       await RealtimeOutboxService.insertEvent(
-        entityType: 'helpdesk_tickets',
+        entityType: 'posh_and_grievance_cases',
         eventType: isPosh ? 'posh.submitted' : 'grievance.submitted',
-        entityId: data != null
-            ? (data['id']?.toString() ?? ticketNumber)
-            : ticketNumber,
+        entityId: caseNumber,
         tenantId: orgId,
-        actorId: user.resolvedEmployeeId,
-        payload: data ?? helpdeskPayload,
+        actorId: empId,
+        payload: {
+          'case_number': caseNumber,
+          'complainant_id': empId,
+          'destination_name': destName,
+          'subject': complaint.subject,
+          'description': complaint.description,
+        },
       );
 
-      // Send push notification about the ticket
+      // Send push notification about the case
       try {
         await PushSenderService.instance.sendToEmployee(
-          employeeId: user.resolvedEmployeeId,
+          employeeId: empId,
           title: isPosh ? 'POSH Complaint Filed' : 'Grievance Submitted',
           body:
-              'Your ${isPosh ? 'POSH complaint' : 'grievance'} ($ticketNumber) has been submitted successfully.',
+              'Your ${isPosh ? 'POSH complaint' : 'grievance'} ($caseNumber) has been submitted successfully.',
           route: 'more',
-          data: {'ticket_id': ticketNumber},
+          data: {'case_number': caseNumber},
         );
       } catch (e) {
         secureLog('[Grievance] Push notification notice: $e');

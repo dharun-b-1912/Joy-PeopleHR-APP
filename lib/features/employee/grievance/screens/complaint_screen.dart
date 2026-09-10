@@ -58,6 +58,7 @@ class _ComplaintScreenState extends State<ComplaintScreen> {
           body: RefreshIndicator(
             onRefresh: () => controller.loadAllData(),
             color: AppColors.primary,
+            backgroundColor: Colors.white,
             child: controller.isLoading
                 ? const Center(child: CircularProgressIndicator())
                 : complaints.isEmpty

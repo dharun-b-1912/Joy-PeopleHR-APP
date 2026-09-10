@@ -25,6 +25,7 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
   Uint8List? _fileBytes;
   bool _isLoading = false;
   bool _isDownloading = false;
+  String? _errorMessage;
 
   @override
   void initState() {
@@ -33,25 +34,41 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
   }
 
   Future<void> _resolveDocumentUrl() async {
-    final rawUrl = widget.document.fileUrl ?? widget.document.storagePath;
+    final rawUrl = widget.document.storagePath ?? widget.document.fileUrl;
     if (rawUrl != null && rawUrl.isNotEmpty) {
-      setState(() => _isLoading = true);
+      setState(() {
+        _isLoading = true;
+        _errorMessage = null;
+      });
       try {
-        final signed = await DocumentUploadService.instance.getSignedUrl(rawUrl);
-        Uint8List? bytes;
-        try {
-          bytes = await DocumentUploadService.instance.downloadFileBytes(rawUrl);
-        } catch (_) {}
+        final cleanPath = DocumentUploadService.instance.extractStoragePath(rawUrl);
+        final signed = await DocumentUploadService.instance.getSignedUrl(cleanPath);
+        final bytes = await DocumentUploadService.instance.downloadFileBytes(cleanPath);
 
         if (mounted) {
           setState(() {
-            _resolvedUrl = signed ?? rawUrl;
+            _resolvedUrl = signed;
             _fileBytes = bytes;
             _isLoading = false;
+            if (_fileBytes == null && (_resolvedUrl == null || !_resolvedUrl!.startsWith('http'))) {
+              _errorMessage = "Document file is missing or inaccessible.";
+            }
           });
         }
-      } catch (_) {
-        if (mounted) setState(() => _isLoading = false);
+      } catch (e) {
+        if (mounted) {
+          setState(() {
+            _isLoading = false;
+            _errorMessage = "Document could not be opened.";
+          });
+        }
+      }
+    } else {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _errorMessage = "Document storage path not found.";
+        });
       }
     }
   }
@@ -59,7 +76,7 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
   String _getCleanFileName() {
     String cleanName = widget.document.name.replaceAll(RegExp(r'[^a-zA-Z0-9._ -]'), '_');
     if (!cleanName.toLowerCase().contains('.')) {
-      final ext = _isImageDocument() ? '.png' : '.pdf';
+      final ext = widget.document.fileExtension ?? (_isImageDocument() ? '.jpg' : '.pdf');
       cleanName = '$cleanName$ext';
     }
     return cleanName;
@@ -238,16 +255,48 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
                       Positioned.fill(
                         child: _isLoading
                             ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
-                            : (isImage && imageProvider != null)
-                                ? PhotoView(
-                                    imageProvider: imageProvider,
-                                    minScale: PhotoViewComputedScale.contained,
-                                    maxScale: PhotoViewComputedScale.covered * 3.0,
-                                    backgroundDecoration: const BoxDecoration(color: Colors.white),
-                                    errorBuilder: (_, __, ___) => _buildImageFallback(document),
+                            : _errorMessage != null
+                                ? Center(
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(24),
+                                      child: Column(
+                                        mainAxisAlignment: MainAxisAlignment.center,
+                                        children: [
+                                          Container(
+                                            width: 56,
+                                            height: 56,
+                                            decoration: const BoxDecoration(
+                                              color: AppColors.peachBg,
+                                              shape: BoxShape.circle,
+                                            ),
+                                            child: const Icon(CupertinoIcons.exclamationmark_triangle_fill, size: 28, color: AppColors.peachFg),
+                                          ),
+                                          AppSpacing.gapMD,
+                                          Text(
+                                            _errorMessage!,
+                                            style: AppTypography.bodyRegular.copyWith(fontWeight: FontWeight.w600, color: AppColors.textPrimary),
+                                            textAlign: TextAlign.center,
+                                          ),
+                                          const SizedBox(height: 6),
+                                          Text(
+                                            "Please check your internet or try re-uploading.",
+                                            style: AppTypography.caption.copyWith(color: AppColors.textMuted),
+                                            textAlign: TextAlign.center,
+                                          ),
+                                        ],
+                                      ),
+                                    ),
                                   )
-                                : isImage
-                                    ? _buildImageFallback(document)
+                                : (isImage && imageProvider != null)
+                                    ? PhotoView(
+                                        imageProvider: imageProvider,
+                                        minScale: PhotoViewComputedScale.contained,
+                                        maxScale: PhotoViewComputedScale.covered * 3.0,
+                                        backgroundDecoration: const BoxDecoration(color: Colors.white),
+                                        errorBuilder: (_, __, ___) => _buildImageFallback(document),
+                                      )
+                                    : isImage
+                                        ? _buildImageFallback(document)
                                     : Center(
                                         child: Padding(
                                           padding: const EdgeInsets.all(24),

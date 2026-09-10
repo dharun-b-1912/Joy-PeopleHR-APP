@@ -246,7 +246,7 @@ class EmployeeProfileMapper {
       );
     } else {
       defaultApprovedLocation = ApprovedWorkLocation(
-        name: campus.isNotEmpty ? campus : 'Assigned Work Location',
+        name: (campus.isNotEmpty && campus != '—') ? campus : 'Work Location',
         latitude: _d(_first(profile, emp, ['work_latitude', 'latitude'])) ?? 0.0,
         longitude: _d(_first(profile, emp, ['work_longitude', 'longitude'])) ?? 0.0,
         allowedRadiusMeters: _d(_first(profile, emp, [

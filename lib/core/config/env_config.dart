@@ -12,12 +12,12 @@ class EnvConfig {
   // ── Supabase ────────────────────────────────────────────────────────
   static const String supabaseUrl = String.fromEnvironment(
     'SUPABASE_URL',
-    defaultValue: 'https://wmqjmyzzamgxyeuotbki.supabase.co',
+    defaultValue: 'https://ysiajemrqakfngasehhi.supabase.co',
   );
 
   static const String supabaseAnonKey = String.fromEnvironment(
     'SUPABASE_ANON_KEY',
-    defaultValue: 'sb_publishable_gKFzBDfNlQk5OkjhKAeBvQ_BraH24xv',
+    defaultValue: 'sb_publishable_i_pb_iFcxX0BEJFok_XfZA_gZF3W8mj',
   );
 
   // ── Firebase (injected by FlutterFire CLI via firebase_options.dart) ─
@@ -40,9 +40,25 @@ class EnvConfig {
     defaultValue: true, // Only true in debug; overridden to false in release
   );
 
+  // ── Development Auth Auto-Login (Debug Only) ──────────────────────────
+  static const bool devAutoLogin = bool.fromEnvironment(
+    'DEV_AUTO_LOGIN',
+    defaultValue: true,
+  );
+
+  static const String devAuthEmail = String.fromEnvironment(
+    'DEV_AUTH_EMAIL',
+    defaultValue: '',
+  );
+
+  static const String devAuthPassword = String.fromEnvironment(
+    'DEV_AUTH_PASSWORD',
+    defaultValue: '',
+  );
+
   // ── App Info ────────────────────────────────────────────────────────
   static const String appName = 'JOY PeopleHR';
-  static const String appVersion = '1.0.0';
+  static const String appVersion = '1.0.1';
 
   /// Validates that required configuration is present.
   static bool get isConfigured =>

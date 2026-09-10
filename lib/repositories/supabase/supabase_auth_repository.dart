@@ -1,5 +1,7 @@
 // supabase_auth_repository.dart — debugPrint is globally available
+import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../../core/config/env_config.dart';
 import '../../core/services/employee_identity_resolver.dart';
 import '../../core/services/user_service.dart';
 import '../../core/utils/query_timeout.dart';
@@ -213,6 +215,28 @@ class SupabaseAuthRepository implements IAuthRepository {
     try {
       final session = _client.auth.currentSession;
       if (session == null) {
+        // Development Auto-Login (Debug only)
+        if (!kReleaseMode &&
+            EnvConfig.devAutoLogin &&
+            EnvConfig.devAuthEmail.isNotEmpty &&
+            EnvConfig.devAuthPassword.isNotEmpty) {
+          secureLog('JOY PeopleHR DEV AUTH MODE ACTIVE');
+          try {
+            final authRes = await authenticateUser(
+              identifier: EnvConfig.devAuthEmail,
+              password: EnvConfig.devAuthPassword,
+            );
+            if (authRes.success && authRes.user != null) {
+              return authRes.user;
+            } else {
+              secureLog(
+                  '[Auth] Dev auto-login notice: ${authRes.errorMessage ?? "DEV AUTH USER NOT READY"}');
+            }
+          } catch (devErr) {
+            secureLog('[Auth] Dev auto-login error: $devErr');
+          }
+        }
+
         secureLog('[Auth] No active session — showing Login');
         return null;
       }
@@ -255,7 +279,13 @@ class SupabaseAuthRepository implements IAuthRepository {
     try {
       final isValid = await verifyPassword(currentPassword);
       if (!isValid) return false;
-      await _client.auth.updateUser(UserAttributes(password: newPassword));
+      await _client.auth.updateUser(UserAttributes(
+        password: newPassword,
+        data: const {
+          'must_change_password': false,
+          'require_password_change': false,
+        },
+      ));
       return true;
     } catch (e) {
       secureLog('[Auth] Change password error: $e');
@@ -343,20 +373,20 @@ class SupabaseAuthRepository implements IAuthRepository {
       try {
         final bankRows = await withTimeout(
           _client
-              .from('employee_bank_accounts')
+              .from('employee_bank_details')
               .select()
               .inFilter('employee_id', lookupIds),
         );
         if (bankRows.isNotEmpty) {
           bankData = Map<String, dynamic>.from(bankRows.first as Map);
           secureLog(
-              '[Statutory] employee_bank_accounts FOUND: bank=${bankData['bank_name']}, acc=${bankData['account_number']}');
+              '[Statutory] employee_bank_details FOUND: bank=${bankData['bank_name']}, acc=${bankData['account_number']}');
         } else {
           secureLog(
-              '[Statutory] employee_bank_accounts EMPTY for IDs: $lookupIds');
+              '[Statutory] employee_bank_details EMPTY for IDs: $lookupIds');
         }
       } catch (e) {
-        secureLog('[Auth] employee_bank_accounts query notice: $e');
+        secureLog('[Auth] employee_bank_details query notice: $e');
       }
 
       // Check employees row fallback if sub-tables had nulls
@@ -484,7 +514,7 @@ class SupabaseAuthRepository implements IAuthRepository {
           if (empCode.isNotEmpty) {
             final bankByCode = await withTimeout(
               _client
-                  .from('employee_bank_accounts')
+                  .from('employee_bank_details')
                   .select('*')
                   .eq('employee_id', empCode)
                   .maybeSingle(),

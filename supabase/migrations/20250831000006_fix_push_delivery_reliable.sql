@@ -77,10 +77,10 @@ BEGIN
   -- The Edge Function uses SUPABASE_SERVICE_ROLE_KEY internally,
   -- so the anon key in the header is just for routing, not auth.
   PERFORM net.http_post(
-    url := 'https://wmqjmyzzamgxyeuotbki.supabase.co/functions/v1/send-push',
+    url := 'https://ysiajemrqakfngasehhi.supabase.co/functions/v1/send-push',
     headers := jsonb_build_object(
       'Content-Type', 'application/json',
-      'Authorization', 'Bearer sb_publishable_gKFzBDfNlQk5OkjhKAeBvQ_BraH24xv'
+      'Authorization', 'Bearer sb_publishable_i_pb_iFcxX0BEJFok_XfZA_gZF3W8mj'
     ),
     body := _payload::text
   );
@@ -144,10 +144,10 @@ BEGIN
   );
 
   PERFORM net.http_post(
-    url := 'https://wmqjmyzzamgxyeuotbki.supabase.co/functions/v1/send-push',
+    url := 'https://ysiajemrqakfngasehhi.supabase.co/functions/v1/send-push',
     headers := jsonb_build_object(
       'Content-Type', 'application/json',
-      'Authorization', 'Bearer sb_publishable_gKFzBDfNlQk5OkjhKAeBvQ_BraH24xv'
+      'Authorization', 'Bearer sb_publishable_i_pb_iFcxX0BEJFok_XfZA_gZF3W8mj'
     ),
     body := _payload::text
   );

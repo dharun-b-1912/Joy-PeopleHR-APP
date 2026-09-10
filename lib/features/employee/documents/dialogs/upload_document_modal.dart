@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../../../core/controllers/employee_controller.dart';
 import '../../../../core/services/file_pick_service.dart';
 import '../../../../core/theme/klarna_tokens.dart';
@@ -15,12 +16,14 @@ class UploadDocumentModal extends StatefulWidget {
 
 class _UploadDocumentModalState extends State<UploadDocumentModal> {
   String _selectedDocType = "Aadhaar Card";
+  String? _selectedDocTypeId;
   SelectedFileResult? _selectedFile;
   String? _validationError;
   bool _isUploading = false;
   double _uploadProgress = 0.0;
+  List<Map<String, String>> _dynamicDocTypes = [];
 
-  final List<String> _docTypes = const [
+  final List<String> _fallbackDocTypes = const [
     "Aadhaar Card",
     "PAN Card",
     "Passport",
@@ -30,6 +33,40 @@ class _UploadDocumentModalState extends State<UploadDocumentModal> {
     "Previous Employment",
     "Other",
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadDocumentTypes();
+  }
+
+  Future<void> _loadDocumentTypes() async {
+    try {
+      final client = Supabase.instance.client;
+      final res = await client.from('document_types').select('id, name, code').order('name');
+      if (res.isNotEmpty) {
+        if (mounted) {
+          setState(() {
+            _dynamicDocTypes = res
+                .map((e) => {
+                      'id': e['id']?.toString() ?? '',
+                      'name': e['name']?.toString() ?? '',
+                      'code': e['code']?.toString() ?? '',
+                    })
+                .where((e) => e['name']!.isNotEmpty)
+                .toList();
+
+            final match = _dynamicDocTypes.firstWhere(
+              (e) => e['name']!.toLowerCase().contains('aadhaar'),
+              orElse: () => _dynamicDocTypes.first,
+            );
+            _selectedDocType = match['name']!;
+            _selectedDocTypeId = match['id'];
+          });
+        }
+      }
+    } catch (_) {}
+  }
 
   Future<void> _pickFile() async {
     final picked = await FilePickService.pickDocumentFile(preferredDocType: _selectedDocType);
@@ -64,6 +101,7 @@ class _UploadDocumentModalState extends State<UploadDocumentModal> {
 
     final success = await MoreModulesController.instance.uploadDocument(
       documentType: _selectedDocType,
+      documentTypeId: _selectedDocTypeId,
       fileName: _selectedFile!.fileName,
       fileExtension: _selectedFile!.fileExtension,
       fileSize: _selectedFile!.formattedSize,
@@ -85,6 +123,14 @@ class _UploadDocumentModalState extends State<UploadDocumentModal> {
 
   @override
   Widget build(BuildContext context) {
+    final availableDocNames = _dynamicDocTypes.isNotEmpty
+        ? _dynamicDocTypes.map((e) => e['name']!).toList()
+        : _fallbackDocTypes;
+
+    if (!availableDocNames.contains(_selectedDocType)) {
+      _selectedDocType = availableDocNames.first;
+    }
+
     return WorkForceOSRequestModal(
       title: "Upload Document",
       subtitle: "Add a personal document to your secure employee records.",
@@ -108,13 +154,20 @@ class _UploadDocumentModalState extends State<UploadDocumentModal> {
                 isExpanded: true,
                 icon: const Icon(CupertinoIcons.chevron_down, size: 16, color: AppColors.textMuted),
                 style: AppTypography.bodyRegular.copyWith(fontWeight: FontWeight.w600, color: AppColors.textPrimary),
-                items: _docTypes.map((t) => DropdownMenuItem(value: t, child: Text(t))).toList(),
+                items: availableDocNames
+                    .map((t) => DropdownMenuItem(value: t, child: Text(t)))
+                    .toList(),
                 onChanged: _isUploading
                     ? null
                     : (val) {
                         if (val != null) {
                           setState(() {
                             _selectedDocType = val;
+                            final matched = _dynamicDocTypes.firstWhere(
+                              (e) => e['name'] == val,
+                              orElse: () => {'id': ''},
+                            );
+                            _selectedDocTypeId = matched['id']?.isNotEmpty == true ? matched['id'] : null;
                             _validationError = null;
                           });
                         }

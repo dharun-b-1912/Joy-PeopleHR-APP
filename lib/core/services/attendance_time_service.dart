@@ -96,6 +96,9 @@ class AttendanceTimeService {
     return '${local.year}-${local.month.toString().padLeft(2, '0')}-${local.day.toString().padLeft(2, '0')}';
   }
 
+  /// Authoritative today date string ('YYYY-MM-DD')
+  static String todayDateString([String? timezone]) => getBusinessDate(null, timezone);
+
   /// Formats any backend timestamp or time string into a clean display time (e.g. "03:12:41 PM" or "03:12 PM").
   static String formatAttendanceTime(
     dynamic raw, {

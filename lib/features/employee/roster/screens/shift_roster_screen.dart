@@ -278,6 +278,7 @@ class _ShiftRosterScreenState extends State<ShiftRosterScreen> {
               ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
               : RefreshIndicator(
                   color: AppColors.primary,
+                  backgroundColor: Colors.white,
                   onRefresh: () => controller.loadAllData(),
                   child: rosters.isEmpty
                       ? ListView(

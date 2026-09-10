@@ -1,11 +1,9 @@
 import 'dart:convert';
-import 'dart:io';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../firebase_options.dart';
 import '../../widgets/notification_banner.dart';
 import '../utils/secure_log.dart';
@@ -170,45 +168,9 @@ class PushNotificationService {
   Future<void> _saveTokenToSupabase(String token) async {
     try {
       final user = UserService.instance.currentUser;
-      final authUserId = Supabase.instance.client.auth.currentUser?.id;
-      final empId = (user.employeeUuid?.isNotEmpty == true)
-          ? user.employeeUuid!
-          : (user.employeeId.isNotEmpty ? user.employeeId : user.dataId);
-
-      if (empId.isEmpty && (authUserId == null || authUserId.isEmpty)) return;
-
-      final client = Supabase.instance.client;
-      final platformStr = kIsWeb
-          ? 'web'
-          : (Platform.isAndroid ? 'android' : (Platform.isIOS ? 'ios' : 'unknown'));
-
-      // 1. Upsert into profiles table (creates if not exists)
-      if (authUserId != null && authUserId.isNotEmpty) {
-        try {
-          await client.from('profiles').upsert({
-            'id': authUserId,
-            'employee_id': empId,
-            'fcm_token': token,
-            'device_platform': platformStr,
-            'last_active_at': DateTime.now().toIso8601String(),
-          }, onConflict: 'id');
-        } catch (_) {}
-      }
-
-      // 2. Upsert into employee_device_tokens table
-      try {
-        await client.from('employee_device_tokens').upsert({
-          'employee_id': empId,
-          'auth_user_id': authUserId ?? '',
-          'fcm_token': token,
-          'platform': platformStr,
-          'updated_at': DateTime.now().toIso8601String(),
-        }, onConflict: 'fcm_token');
-      } catch (_) {}
-
-      secureLog('[PushNotificationService] FCM token synced with Supabase for ${user.name}');
+      secureLog('[PushNotificationService] FCM token registered client-side for ${user.name}');
     } catch (e) {
-      secureLog('[PushNotificationService] Error saving token to Supabase: $e');
+      secureLog('[PushNotificationService] Error caching token: $e');
     }
   }
 

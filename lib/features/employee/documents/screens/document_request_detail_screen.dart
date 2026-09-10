@@ -55,7 +55,7 @@ class _DocumentRequestDetailScreenState
       final client = Supabase.instance.client;
       final data = await withTimeout(
         client
-            .from('document_requirements')
+            .from('document_types')
             .select()
             .eq('id', widget.requestId)
             .maybeSingle(),
@@ -214,27 +214,10 @@ class _DocumentRequestDetailScreenState
               .from('employee-documents')
               .getPublicUrl(storagePath);
           debugPrint(
-              '[DOC_UPLOAD] [1/3] Upload to employee-documents SUCCESS -> $fileUrl');
+              '[DOC_UPLOAD] [1/3] Upload to employee-documents SUCCESS -> $storagePath');
         } catch (storageErr1) {
           debugPrint(
-              '[DOC_UPLOAD] employee-documents notice: $storageErr1, trying fallback bucket workforce-documents');
-          try {
-            await client.storage.from('workforce-documents').uploadBinary(
-                  storagePath,
-                  bytesData,
-                  fileOptions: FileOptions(contentType: mimeType, upsert: true),
-                );
-            fileUrl = client.storage
-                .from('workforce-documents')
-                .getPublicUrl(storagePath);
-            debugPrint(
-                '[DOC_UPLOAD] [1/3] Upload to workforce-documents SUCCESS -> $fileUrl');
-          } catch (storageErr2) {
-            debugPrint('[DOC_UPLOAD] Storage fallback notice: $storageErr2');
-            fileUrl = client.storage
-                .from('employee-documents')
-                .getPublicUrl(storagePath);
-          }
+              '[DOC_UPLOAD] employee-documents upload error: $storageErr1');
         }
       } else {
         debugPrint(
@@ -265,12 +248,12 @@ class _DocumentRequestDetailScreenState
 
       // 3. Guaranteed Direct Database Fallback Updates with RFC-4122 UUID
       try {
-        debugPrint(
-            '[DOC_UPLOAD] [3/3] Updating document_requirements status to SUBMITTED in PostgreSQL...');
-        await client.from('document_requirements').update({
-          'status': 'SUBMITTED',
-          'updated_at': DateTime.now().toIso8601String(),
-        }).eq('id', widget.requestId);
+        try {
+          await client.from('document_types').update({
+            'status': 'SUBMITTED',
+            'updated_at': DateTime.now().toIso8601String(),
+          }).eq('id', widget.requestId);
+        } catch (_) {}
 
         final docId = 'doc-${_generateUuid()}';
         debugPrint(
@@ -282,9 +265,11 @@ class _DocumentRequestDetailScreenState
             'document_category': 'PERSONAL',
             'document_type': _req?.documentType ?? 'Driving Licence',
             'file_name': fileName,
+            'file_path': storagePath,
             'file_url': fileUrl,
+            'storage_path': storagePath,
             'file_size_bytes': _selectedFile!.sizeInBytes,
-            'verification_status': 'Pending',
+            'verification_status': 'PENDING',
             'uploaded_at': DateTime.now().toIso8601String(),
           });
           debugPrint(

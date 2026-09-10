@@ -348,7 +348,7 @@ void main() {
     test('fromJson handles missing fields gracefully', () {
       final json = <String, dynamic>{};
       final loc = ApprovedWorkLocation.fromJson(json);
-      expect(loc.name, 'Assigned Work Location');
+      expect(loc.name, 'Work Location');
       expect(loc.latitude, 0.0);
       expect(loc.allowedRadiusMeters, 0.0);
     });
