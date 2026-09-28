@@ -69,6 +69,8 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
         targetId,
         if (user.employeeUuid?.isNotEmpty == true) user.employeeUuid!,
         if (user.dataId.isNotEmpty) user.dataId,
+        if (user.employeeId.isNotEmpty) user.employeeId,
+        if (user.resolvedEmployeeId.isNotEmpty) user.resolvedEmployeeId,
         if (employeeId.trim().isNotEmpty) employeeId.trim(),
       }.where((id) => id.isNotEmpty).toList();
 
@@ -90,6 +92,9 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
           merged['date'] = row['attendance_date'] ?? todayDate;
           merged['net_working_minutes'] = (row['total_work_minutes'] as num?)?.toInt() ?? (row['net_working_minutes'] as num?)?.toInt() ?? 0;
           merged['location_name'] = row['check_in_location_name'] ?? row['location_name'];
+          merged['source'] = row['active_source'] ?? row['source'] ?? row['punch_source'];
+          merged['verification_type'] = row['verification_type'] ?? row['punch_method'] ?? row['verify_type'];
+          merged['device_id'] = row['device_id'] ?? row['device_serial'];
           if (row['first_check_in'] != null && (row['last_check_out'] == null || row['last_check_out'].toString().isEmpty)) {
             merged['is_currently_in'] = true;
           }
@@ -98,7 +103,7 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
         secureLog('[Attendance] attendance_daily query notice: $e');
       }
 
-      // 2. Query today's attendance_punches to ensure authoritative check-in/out timestamps
+      // 2. Query today's attendance_punches to ensure authoritative check-in/out timestamps and source
       try {
         final businessDateParts = todayDate.split('-').map(int.parse).toList();
         // Start of business day in IST (00:00:00 IST) converted to UTC (-5h30m)
@@ -119,6 +124,9 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
 
           String? firstInTimestamp;
           String? lastOutTimestamp;
+          String? firstSource;
+          String? firstVerifyType;
+          String? firstDeviceId;
 
           for (final ev in events) {
             final type = (ev['punch_type'] ?? '').toString().toUpperCase();
@@ -126,6 +134,9 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
             if (ts != null && ts.isNotEmpty) {
               if (type.contains('IN') && !type.contains('OUT')) {
                 firstInTimestamp ??= ts;
+                firstSource ??= (ev['punch_source'] ?? ev['source'])?.toString();
+                firstVerifyType ??= (ev['verification_type'] ?? ev['verify_type'] ?? ev['punch_method'])?.toString();
+                firstDeviceId ??= (ev['device_id'] ?? ev['device_serial'])?.toString();
               } else if (type.contains('OUT')) {
                 lastOutTimestamp = ts;
               }
@@ -140,6 +151,9 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
           merged['last_check_out'] = isCurrentlyIn ? null : (lastOutTimestamp ?? merged['last_check_out']);
           merged['is_currently_in'] = isCurrentlyIn || (merged['first_check_in'] != null && (merged['last_check_out'] == null || merged['last_check_out'].toString().isEmpty));
           merged['date'] = todayDate;
+          if (firstSource != null) merged['source'] = firstSource;
+          if (firstVerifyType != null) merged['verification_type'] = firstVerifyType;
+          if (firstDeviceId != null) merged['device_id'] = firstDeviceId;
         }
       } catch (e) {
         secureLog('[Attendance] attendance_punches query notice: $e');
@@ -215,6 +229,8 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
             'p_device_info': {
               'deviceId': deviceId ?? 'FLUTTER_MOBILE',
               'client': 'JOY PeopleHR Mobile v1.0',
+              'source': 'MOBILE',
+              'punch_source': 'MOBILE',
               'isMock': isMocked,
             },
           }),
@@ -233,6 +249,7 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
     final isCheckOut = type.toUpperCase().contains('OUT');
     final payload = <String, dynamic>{
       'employee_id': employeeUuid,
+      if (tenantId.isNotEmpty) 'organization_id': tenantId,
       'punch_time': nowIso,
       'punch_type': isCheckOut ? 'OUT' : 'IN',
       'punch_source': 'MOBILE',
@@ -284,6 +301,7 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
         }
       }
 
+      final existingSource = existingDaily?['active_source'] ?? existingDaily?['source'] ?? existingDaily?['punch_source'];
       final dailyPayload = <String, dynamic>{
         'employee_id': employeeUuid,
         'attendance_date': todayDate,
@@ -291,6 +309,11 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
         'first_check_in': firstIn,
         'last_check_out': lastOut,
         'total_work_minutes': netMinutes,
+        'active_source': existingSource ?? 'MOBILE',
+        'source': existingSource ?? 'MOBILE',
+        'punch_source': existingSource ?? 'MOBILE',
+        'verification_type': isCheckIn ? 'GPS_GEOFENCE' : (existingDaily?['verification_type'] ?? 'GPS_GEOFENCE'),
+        'device_id': deviceId ?? 'FLUTTER_MOBILE',
         'updated_at': nowIso,
       };
 
@@ -832,6 +855,25 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
         final checkInIso = rawIn.isNotEmpty ? '${dateStr}T$rawIn.000Z' : null;
         final checkOutIso = rawOut.isNotEmpty ? '${dateStr}T$rawOut.000Z' : null;
 
+        // 0. Safeguard: Prevent duplicate pending regularization requests for same employee & date
+        try {
+          final existingPending = await _client
+              .from('attendance_regularizations')
+              .select('id, status')
+              .eq('employee_id', user.resolvedEmployeeId)
+              .eq('attendance_date', dateStr)
+              .eq('status', 'PENDING')
+              .limit(1)
+              .maybeSingle();
+
+          if (existingPending != null) {
+            secureLog('[Attendance] Regularization request already pending for $dateStr id=${existingPending['id']}');
+            return request;
+          }
+        } catch (dupErr) {
+          secureLog('[Attendance] Pending regularization check notice: $dupErr');
+        }
+
         bool insertedDirectly = false;
 
         // 1. Single Direct Table Insert into 'attendance_regularizations' (Canonical table)
@@ -989,6 +1031,7 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
 
       final candidateEmpIds = <String>{
         targetId,
+        if (targetCode.isNotEmpty) targetCode,
         if (user.employeeUuid?.isNotEmpty == true) user.employeeUuid!,
         if (user.dataId.isNotEmpty) user.dataId,
         if (employeeId.trim().isNotEmpty) employeeId.trim(),
@@ -1103,6 +1146,7 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
         final todayStr = DateTime.now().toIso8601String().split('T')[0];
           final candidateEmpIds = <String>{
             targetId,
+            if (targetCode.isNotEmpty) targetCode,
             if (user.employeeUuid?.isNotEmpty == true) user.employeeUuid!,
             if (user.dataId.isNotEmpty) user.dataId,
             if (employeeId.trim().isNotEmpty) employeeId.trim(),
