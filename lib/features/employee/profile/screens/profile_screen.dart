@@ -1877,7 +1877,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                   border: Border.all(color: AppColors.borderSubtle),
                                 ),
                                 child: Text(
-                                  "v1.0.0 (Build 5)",
+                                  "v1.0.0 (Build 6)",
                                   style: AppTypography.overline.copyWith(
                                     color: AppColors.primary,
                                     fontWeight: FontWeight.bold,
