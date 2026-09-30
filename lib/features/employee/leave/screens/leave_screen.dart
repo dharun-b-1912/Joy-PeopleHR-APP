@@ -17,11 +17,25 @@ class LeaveScreen extends StatefulWidget {
   State<LeaveScreen> createState() => _LeaveScreenState();
 }
 
-class _LeaveScreenState extends State<LeaveScreen> {
+class _LeaveScreenState extends State<LeaveScreen> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     LeaveController.instance.initialize();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      LeaveController.instance.refresh();
+    }
   }
 
   void _showApplyLeaveModal(BuildContext context) {

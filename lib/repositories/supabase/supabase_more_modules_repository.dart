@@ -63,6 +63,34 @@ class SupabaseMoreModulesRepository implements IMoreModulesRepository {
       }
     }
 
+    // 3. Query employees table by employee_code if still not resolved
+    if (empId.isEmpty) {
+      final candidateCodes = [
+        fallbackEmployeeId,
+        user.employeeId,
+        user.dataId,
+      ].where((c) => c.isNotEmpty && !_isValidUuid(c)).toSet().toList();
+
+      for (final code in candidateCodes) {
+        try {
+          final empRow = await withTimeout(
+            _client
+                .from('employees')
+                .select('id, organization_id')
+                .eq('employee_code', code)
+                .maybeSingle(),
+          );
+          if (empRow != null) {
+            final eId = empRow['id']?.toString() ?? '';
+            final oId = empRow['organization_id']?.toString() ?? '';
+            if (_isValidUuid(eId)) empId = eId;
+            if (_isValidUuid(oId)) orgId = oId;
+            if (empId.isNotEmpty) break;
+          }
+        } catch (_) {}
+      }
+    }
+
     return (employeeId: empId, organizationId: orgId);
   }
 
@@ -387,28 +415,48 @@ class SupabaseMoreModulesRepository implements IMoreModulesRepository {
 
       final identity = await _resolveDynamicEmployeeIdentity(employeeId);
       final empId = identity.employeeId;
+      final user = UserService.instance.currentUser;
 
-      if (empId.isEmpty || !_isValidUuid(empId)) {
-        secureLog('[Documents] getDocuments warning: No valid employee UUID resolved');
+      final candidateIds = [
+        empId,
+        employeeId,
+        user.employeeId,
+        user.dataId,
+        if (user.employeeUuid != null) user.employeeUuid!,
+      ].where((s) => _isValidUuid(s)).toSet().toList();
+
+      if (candidateIds.isEmpty) {
+        secureLog('[Documents] getDocuments warning: No valid employee identifier found');
         return [];
       }
 
       final List<DocumentModel> result = [];
 
-      // 1. Query canonical public.employee_documents with document_types join
+      // 1. Query canonical public.employee_documents with document_types join or fallback
       try {
-        var query = _client
-            .from('employee_documents')
-            .select('*, document_types(id, name, code)')
-            .eq('employee_id', empId);
-
-        if (identity.organizationId.isNotEmpty && _isValidUuid(identity.organizationId)) {
-          query = query.eq('organization_id', identity.organizationId);
+        dynamic empDocs;
+        try {
+          var query = _client.from('employee_documents').select('*, document_types(id, name, display_name, code)');
+          if (candidateIds.length > 1) {
+            query = query.inFilter('employee_id', candidateIds);
+          } else {
+            query = query.eq('employee_id', candidateIds.first);
+          }
+          empDocs = await withTimeout(
+            query.order('created_at', ascending: false),
+          );
+        } catch (joinErr) {
+          secureLog('[Documents] Join query failed, falling back to basic select: $joinErr');
+          var fallbackQuery = _client.from('employee_documents').select('*');
+          if (candidateIds.length > 1) {
+            fallbackQuery = fallbackQuery.inFilter('employee_id', candidateIds);
+          } else {
+            fallbackQuery = fallbackQuery.eq('employee_id', candidateIds.first);
+          }
+          empDocs = await withTimeout(
+            fallbackQuery.order('created_at', ascending: false),
+          );
         }
-
-        final empDocs = await withTimeout(
-          query.order('created_at', ascending: false),
-        );
 
         for (final row in (empDocs as List)) {
           final sizeBytes = (row['file_size_bytes'] as num?)?.toInt() ?? 0;
@@ -419,7 +467,10 @@ class SupabaseMoreModulesRepository implements IMoreModulesRepository {
                   : '$sizeBytes B';
 
           final dtMap = row['document_types'] is Map ? row['document_types'] as Map : null;
-          final docTypeName = dtMap?['name']?.toString() ?? row['file_name']?.toString() ?? 'Document';
+          final docTypeName = dtMap?['name']?.toString() ??
+              dtMap?['display_name']?.toString() ??
+              row['file_name']?.toString() ??
+              'Document';
           final rawFileName = row['file_name']?.toString() ?? 'Document.jpg';
 
           final mimeStr = (row['mime_type']?.toString() ?? 'image/jpeg').toLowerCase();
@@ -430,7 +481,9 @@ class SupabaseMoreModulesRepository implements IMoreModulesRepository {
                   : DocumentCategory.personal;
 
           final docId = row['id']?.toString() ?? '';
-          final storagePath = row['storage_path']?.toString() ?? '';
+          final storagePath = row['storage_path']?.toString() ?? row['file_path']?.toString() ?? '';
+          final fileUrlStr = row['file_url']?.toString() ?? '';
+          final effectiveUrl = fileUrlStr.isNotEmpty ? fileUrlStr : storagePath;
 
           String ext = '';
           if (rawFileName.contains('.')) {
@@ -451,10 +504,10 @@ class SupabaseMoreModulesRepository implements IMoreModulesRepository {
               fileType: row['mime_type']?.toString() ?? (ext.contains('pdf') ? 'application/pdf' : 'image/jpeg'),
               fileSize: sizeStr,
               uploadedAt:
-                  DateTime.tryParse(row['created_at']?.toString() ?? '') ??
+                  DateTime.tryParse(row['created_at']?.toString() ?? row['uploaded_at']?.toString() ?? '') ??
                       DateTime.now(),
-              storagePath: storagePath,
-              fileUrl: storagePath,
+              storagePath: storagePath.isNotEmpty ? storagePath : effectiveUrl,
+              fileUrl: effectiveUrl,
               fileExtension: ext,
               documentType: docTypeName,
               verificationStatus: row['verification_status']?.toString() ?? 'PENDING',
@@ -774,6 +827,7 @@ class SupabaseMoreModulesRepository implements IMoreModulesRepository {
           final rawStatus = (row['status']?.toString() ?? '').toUpperCase();
           ExpenseStatus status = ExpenseStatus.pending;
           if (rawStatus == 'APPROVED' ||
+              rawStatus == 'RESOLVED' ||
               rawStatus == 'PAID' ||
               rawStatus == 'SETTLED') {
             status = ExpenseStatus.approved;
@@ -781,15 +835,34 @@ class SupabaseMoreModulesRepository implements IMoreModulesRepository {
             status = ExpenseStatus.rejected;
           }
 
+          final rawDesc = row['description']?.toString() ?? '';
+          double parsedAmount = (row['amount'] as num?)?.toDouble() ?? 0.0;
+          if (parsedAmount == 0.0 && rawDesc.isNotEmpty) {
+            final amtMatch = RegExp(r'\[Amount:\s*₹?([\d,]+(?:\.\d+)?)\]', caseSensitive: false).firstMatch(rawDesc);
+            if (amtMatch != null) {
+              parsedAmount = double.tryParse(amtMatch.group(1)!.replaceAll(',', '')) ?? 0.0;
+            }
+          }
+          String? parsedReceiptUrl;
+          final recMatch = RegExp(r'\[Receipt:\s*([^\]]+)\]', caseSensitive: false).firstMatch(rawDesc);
+          if (recMatch != null) {
+            parsedReceiptUrl = recMatch.group(1)?.trim();
+          }
+          final cleanDesc = rawDesc
+              .replaceAll(RegExp(r'\s*\[Amount:[^\]]*\]'), '')
+              .replaceAll(RegExp(r'\s*\[Receipt:[^\]]*\]'), '')
+              .trim();
+
           result.add(ExpenseClaimModel(
             id: row['id']?.toString() ?? '',
-            title: row['title']?.toString() ?? 'Expense Claim',
+            title: (row['subject'] ?? row['title'])?.toString() ?? 'Expense Claim',
             category: 'Reimbursement',
-            amount: (row['amount'] as num?)?.toDouble() ?? 0.0,
+            amount: parsedAmount,
             date: DateTime.tryParse(row['created_at']?.toString() ?? '') ??
                 DateTime.now(),
             status: status,
-            description: row['description']?.toString() ?? '',
+            description: cleanDesc,
+            receiptUrl: parsedReceiptUrl,
           ));
         }
       } catch (e) {
@@ -806,6 +879,10 @@ class SupabaseMoreModulesRepository implements IMoreModulesRepository {
   @override
   Future<ExpenseClaimModel> submitExpenseClaim(ExpenseClaimModel claim) async {
     try {
+      if (claim.receiptUrl == null || claim.receiptUrl!.isEmpty) {
+        throw Exception("Please attach the bill/receipt before submitting.");
+      }
+
       final user = UserService.instance.currentUser;
       final empId = user.employeeUuid ?? user.employeeId;
       final tenantId = user.companyId.isNotEmpty
@@ -822,7 +899,7 @@ class SupabaseMoreModulesRepository implements IMoreModulesRepository {
           'employee_id': empId,
           'request_type': 'EXPENSE',
           'subject': claim.title.isNotEmpty ? claim.title : 'Expense Claim',
-          'description': '${claim.description} [Amount: ₹${claim.amount}]',
+          'description': '${claim.description} [Amount: ₹${claim.amount}] [Receipt: ${claim.receiptUrl}]',
           'status': 'OPEN',
           'priority': 'MEDIUM',
         };

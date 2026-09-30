@@ -427,8 +427,16 @@ class _RegularizationModalState extends State<RegularizationModal> {
                   onPressed: _isSubmitting
                       ? null
                       : () async {
+                          if (_isSubmitting) return;
+
                           if (_isOffDay) {
                             setState(() => _errorText = "No shift assigned for this date (Week Off)");
+                            return;
+                          }
+
+                          final reason = _reasonController.text.trim();
+                          if (reason.isEmpty) {
+                            setState(() => _errorText = "Please enter a reason for regularization");
                             return;
                           }
 
@@ -444,42 +452,47 @@ class _RegularizationModalState extends State<RegularizationModal> {
                             return;
                           }
 
-                          final reason = _reasonController.text.trim();
-                          if (reason.isEmpty) {
-                            setState(() => _errorText = "Please enter a reason for regularization");
-                            return;
-                          }
-
-                          final inStr = _formatTimeOfDay(_inTime);
-                          final outStr = _formatTimeOfDay(_outTime);
-
+                          // Lock submission immediately to prevent double/rapid taps
                           setState(() {
                             _isSubmitting = true;
                             _errorText = null;
                           });
 
+                          final inStr = _formatTimeOfDay(_inTime);
+                          final outStr = _formatTimeOfDay(_outTime);
                           final nav = Navigator.of(context);
                           final messenger = ScaffoldMessenger.of(context);
 
-                          final success = await AttendanceDetailController.instance.submitRegularization(
-                            date: _selectedDate,
-                            inTime: inStr,
-                            outTime: outStr,
-                            reason: reason,
-                            shiftName: _allocatedShiftName,
-                            shiftWindow: _allocatedShiftWindow,
-                          );
-
-                          if (mounted) {
-                            setState(() => _isSubmitting = false);
-                            nav.pop();
-                            messenger.showSnackBar(
-                              SnackBar(
-                                content: Text(success ? "Regularization request submitted (Pending Approval)" : "Submission failed."),
-                                backgroundColor: success ? AppColors.primary : AppColors.statusError,
-                                behavior: SnackBarBehavior.floating,
-                              ),
+                          try {
+                            final success = await AttendanceDetailController.instance.submitRegularization(
+                              date: _selectedDate,
+                              inTime: inStr,
+                              outTime: outStr,
+                              reason: reason,
+                              shiftName: _allocatedShiftName,
+                              shiftWindow: _allocatedShiftWindow,
                             );
+
+                            if (mounted) {
+                              setState(() => _isSubmitting = false);
+                              nav.pop();
+                              messenger.showSnackBar(
+                                SnackBar(
+                                  content: Text(success
+                                      ? "Regularization request submitted (Pending Approval)"
+                                      : "Submission failed or duplicate request."),
+                                  backgroundColor: success ? AppColors.primary : AppColors.statusError,
+                                  behavior: SnackBarBehavior.floating,
+                                ),
+                              );
+                            }
+                          } catch (e) {
+                            if (mounted) {
+                              setState(() {
+                                _isSubmitting = false;
+                                _errorText = "Submission error: $e";
+                              });
+                            }
                           }
                         },
                 ),

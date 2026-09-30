@@ -36,10 +36,12 @@ class NotificationController extends ChangeNotifier {
   final Set<String> _dismissedIds = {};
   final Set<String> _readIds = {};
 
+  bool _isInitialized = false;
+
   void initialize() {
-    UserService.instance.addListener(() {
-      loadNotifications();
-    });
+    if (_isInitialized) return;
+    _isInitialized = true;
+    UserService.instance.addListener(loadNotifications);
     loadNotifications();
   }
 
@@ -65,9 +67,9 @@ class NotificationController extends ChangeNotifier {
         ..onPostgresChanges(
           event: PostgresChangeEvent.all,
           schema: 'public',
-          table: 'document_requirements',
+          table: 'document_requests',
           callback: (payload) {
-            secureLog('[REALTIME] document_requirements change event -> refreshing notifications');
+            secureLog('[REALTIME] document_requests change event -> refreshing notifications');
             loadNotifications();
           },
         )
@@ -212,5 +214,12 @@ class NotificationController extends ChangeNotifier {
       await _persistState(targetId);
     }
     await LocalNotificationStore.instance.clearAll();
+  }
+
+  @override
+  void dispose() {
+    UserService.instance.removeListener(loadNotifications);
+    _notificationChannel?.unsubscribe();
+    super.dispose();
   }
 }

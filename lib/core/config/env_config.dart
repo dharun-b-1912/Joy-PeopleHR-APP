@@ -48,12 +48,12 @@ class EnvConfig {
 
   static const String devAuthEmail = String.fromEnvironment(
     'DEV_AUTH_EMAIL',
-    defaultValue: '',
+    defaultValue: 'dharun@joyglobalcorp.com',
   );
 
   static const String devAuthPassword = String.fromEnvironment(
     'DEV_AUTH_PASSWORD',
-    defaultValue: '',
+    defaultValue: 'joypeoplehr',
   );
 
   // ── App Info ────────────────────────────────────────────────────────

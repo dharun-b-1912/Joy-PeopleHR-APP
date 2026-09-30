@@ -8,6 +8,7 @@ import 'attendance_service.dart';
 import 'employee_profile_mapper.dart';
 import 'local_notification_store.dart';
 import 'location_service.dart';
+import 'push_notification_service.dart';
 import 'user_service.dart';
 
 /// Connection status states for Employee Realtime Service
@@ -98,7 +99,6 @@ class EmployeeRealtimeService with WidgetsBindingObserver {
           value: trimmedUuid,
         ),
         callback: (PostgresChangePayload payload) {
-          secureLog('[REALTIME] employees table change event received for employee $trimmedUuid');
           _handleEmployeeUpdate(payload.newRecord, trimmedUuid);
         },
       );
@@ -206,38 +206,6 @@ class EmployeeRealtimeService with WidgetsBindingObserver {
         table: 'shifts',
         callback: (PostgresChangePayload payload) {
           secureLog('[REALTIME] shifts table change event received');
-          reconcile();
-        },
-      );
-
-      // Scoped Postgres change listener: ALL events on employee_profile_media for photo versioning & status
-      channel.onPostgresChanges(
-        event: PostgresChangeEvent.all,
-        schema: 'public',
-        table: 'employee_profile_media',
-        filter: PostgresChangeFilter(
-          type: PostgresChangeFilterType.eq,
-          column: 'employee_id',
-          value: trimmedUuid,
-        ),
-        callback: (PostgresChangePayload payload) {
-          secureLog('[REALTIME] Profile media change event received for employee $trimmedUuid');
-          _handleProfileMediaChange(payload.newRecord, trimmedUuid);
-        },
-      );
-
-      // Scoped Postgres change listener: ALL events on employee_avatar_assets for canonical avatar sync
-      channel.onPostgresChanges(
-        event: PostgresChangeEvent.all,
-        schema: 'public',
-        table: 'employee_avatar_assets',
-        filter: PostgresChangeFilter(
-          type: PostgresChangeFilterType.eq,
-          column: 'employee_id',
-          value: trimmedUuid,
-        ),
-        callback: (PostgresChangePayload payload) {
-          secureLog('[REALTIME] Canonical avatar asset change event received for employee $trimmedUuid');
           reconcile();
         },
       );
@@ -368,10 +336,11 @@ class EmployeeRealtimeService with WidgetsBindingObserver {
             MoreModulesController.instance.loadAllData();
           }
 
-          LocalNotificationStore.instance.addNotification(
-            title: isAnnouncement ? '📢 $title' : title,
+          PushNotificationService.instance.triggerTestNotification(
+            title: title,
             body: message,
             route: isAnnouncement ? 'announcements' : (actionUrl ?? 'home'),
+            data: {'type': isAnnouncement ? 'announcement' : 'notification'},
           );
         },
       );
@@ -384,10 +353,11 @@ class EmployeeRealtimeService with WidgetsBindingObserver {
         callback: (PostgresChangePayload payload) {
           secureLog('[REALTIME] payslips change event received');
           MoreModulesController.instance.loadAllData();
-          LocalNotificationStore.instance.addNotification(
+          PushNotificationService.instance.triggerTestNotification(
             title: '💳 Payslip Released',
             body: 'Your latest salary payslip has been published by HR.',
             route: 'payslip',
+            data: {'type': 'payslip'},
           );
         },
       );
@@ -398,14 +368,19 @@ class EmployeeRealtimeService with WidgetsBindingObserver {
         schema: 'public',
         table: 'employee_documents',
         callback: (PostgresChangePayload payload) {
-          final title = payload.newRecord['document_name'] ?? 'Document';
+          final empId = payload.newRecord['employee_id']?.toString() ?? payload.oldRecord['employee_id']?.toString();
+          if (empId != null && empId.isNotEmpty && empId != trimmedUuid) return;
+          final title = payload.newRecord['file_name'] ?? payload.newRecord['document_name'] ?? 'Document';
           secureLog('[REALTIME] employee_documents change event received: $title');
           MoreModulesController.instance.loadAllData();
-          LocalNotificationStore.instance.addNotification(
-            title: '📄 New Document: $title',
-            body: 'HR has updated your employee documents.',
-            route: 'documents',
-          );
+          if (payload.eventType != PostgresChangeEvent.delete) {
+            PushNotificationService.instance.triggerTestNotification(
+              title: '📄 Document Updated: $title',
+              body: 'Your employee documents have been updated.',
+              route: 'documents',
+              data: {'type': 'document'},
+            );
+          }
         },
       );
 
@@ -426,30 +401,14 @@ class EmployeeRealtimeService with WidgetsBindingObserver {
         },
       );
 
-      // Scoped Postgres change listener: ALL events on employee_documents for real-time doc sync
+      // Scoped Postgres change listener: ALL events on document_requests for real-time doc requests from HR
       channel.onPostgresChanges(
         event: PostgresChangeEvent.all,
         schema: 'public',
-        table: 'employee_documents',
-        filter: PostgresChangeFilter(
-          type: PostgresChangeFilterType.eq,
-          column: 'employee_id',
-          value: trimmedUuid,
-        ),
+        table: 'document_requests',
         callback: (PostgresChangePayload payload) {
-          secureLog('[REALTIME] Employee documents change event received for employee $trimmedUuid');
-          MoreModulesController.instance.loadAllData();
-        },
-      );
-
-      // Scoped Postgres change listener: ALL events on document_requirements for real-time doc requests from HR
-      channel.onPostgresChanges(
-        event: PostgresChangeEvent.all,
-        schema: 'public',
-        table: 'document_requirements',
-        callback: (PostgresChangePayload payload) {
-          final title = payload.newRecord['title'] ?? 'Document Request';
-          final dueDate = payload.newRecord['due_date'] ?? '';
+          final title = payload.newRecord['document_title'] ?? payload.newRecord['title'] ?? 'Document Request';
+          final dueDate = payload.newRecord['due_date']?.toString() ?? '';
           secureLog('[FLUTTER][DOC_REQ] New document requested from HR: $title (Due: $dueDate)');
           NotificationController.instance.loadNotifications();
           MoreModulesController.instance.loadAllData();
@@ -460,43 +419,6 @@ class EmployeeRealtimeService with WidgetsBindingObserver {
           );
         },
       );
-
-      // Scoped Postgres change listener: ALL events on notification_events for real-time push events from HR
-      channel.onPostgresChanges(
-        event: PostgresChangeEvent.insert,
-        schema: 'public',
-        table: 'notification_events',
-        callback: (PostgresChangePayload payload) {
-          final title = payload.newRecord['title'] ?? 'Notification';
-          final message = payload.newRecord['message'] ?? payload.newRecord['body'] ?? '';
-          secureLog('[FLUTTER][NOTIFY_EVENT] Realtime notification event received: $title');
-          NotificationController.instance.loadNotifications();
-          LocalNotificationStore.instance.addNotification(
-            title: title.toString(),
-            body: message.toString(),
-            route: payload.newRecord['route']?.toString() ?? 'home',
-          );
-        },
-      );
-
-      // Scoped Postgres change listener: ALL events on notification_deliveries for real-time push inbox
-      final isUuid = RegExp(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$').hasMatch(trimmedUuid);
-      if (isUuid) {
-        channel.onPostgresChanges(
-          event: PostgresChangeEvent.all,
-          schema: 'public',
-          table: 'notification_deliveries',
-          filter: PostgresChangeFilter(
-            type: PostgresChangeFilterType.eq,
-            column: 'recipient_user_id',
-            value: trimmedUuid,
-          ),
-          callback: (PostgresChangePayload payload) {
-            secureLog('[REALTIME] New notification delivery received for employee $trimmedUuid');
-            NotificationController.instance.loadNotifications();
-          },
-        );
-      }
 
       // Subscribe and track status
       channel.subscribe((status, [error]) {
@@ -527,17 +449,38 @@ class EmployeeRealtimeService with WidgetsBindingObserver {
     }
   }
 
+  String? _lastEmployeeFingerprint;
+
   /// Handles incoming UPDATE payload from Supabase Realtime
   Future<void> _handleEmployeeUpdate(Map<String, dynamic> newRecord, String expectedEmployeeUuid) async {
     try {
-      secureLog('[REALTIME] Processing update payload. Keys: ${newRecord.keys.join(', ')}');
-
       // Security validation: verify payload matches authenticated employee UUID
       final recordId = newRecord['id']?.toString();
       if (recordId != null && recordId.isNotEmpty && recordId != expectedEmployeeUuid) {
-        secureLog('[REALTIME] Security check warning: Received update for unexpected ID $recordId');
         return;
       }
+
+      // Deduplicate no-op updates (where only updated_at changed)
+      final fp = [
+        newRecord['id'],
+        newRecord['employee_code'],
+        newRecord['display_name'],
+        newRecord['work_email'],
+        newRecord['phone'],
+        newRecord['department_id'],
+        newRecord['designation_id'],
+        newRecord['branch_id'],
+        newRecord['avatar_url'],
+        newRecord['employment_status'],
+        newRecord['employment_type'],
+        newRecord['reporting_manager_id'],
+      ].join('|');
+      if (_lastEmployeeFingerprint == fp) {
+        return;
+      }
+      _lastEmployeeFingerprint = fp;
+
+      secureLog('[REALTIME] employees table updated for employee $expectedEmployeeUuid');
 
       // Check status: if employee was terminated/inactive, trigger sign-out
       final status = (newRecord['status']?.toString() ?? 'active').toLowerCase().trim();
@@ -573,30 +516,6 @@ class EmployeeRealtimeService with WidgetsBindingObserver {
       AttendanceService.instance.fetchTodayAttendance();
     } catch (e) {
       secureLog('[REALTIME] Error processing employee update payload: $e');
-    }
-  }
-
-  /// Handles incoming change payload from employee_profile_media table
-  Future<void> _handleProfileMediaChange(Map<String, dynamic> record, String expectedEmployeeUuid) async {
-    try {
-      final status = (record['status']?.toString() ?? '').toUpperCase().trim();
-      final mediaVersion = record['media_version'] as int? ?? 1;
-      final mediaUrl = record['media_url']?.toString() ?? record['url']?.toString() ?? record['profile_photo_url']?.toString();
-
-      secureLog('[REALTIME] Profile media update: status=$status, version=$mediaVersion, url=$mediaUrl');
-
-      if (status == 'ACTIVE' && mediaUrl != null && mediaUrl.isNotEmpty) {
-        final versionedUrl = mediaUrl.contains('?')
-            ? '$mediaUrl&v=$mediaVersion'
-            : '$mediaUrl?v=$mediaVersion';
-        UserService.instance.updateProfileImage(versionedUrl);
-      } else if (status == 'DELETED') {
-        UserService.instance.updateProfileImage('');
-      } else {
-        await reconcile();
-      }
-    } catch (e) {
-      secureLog('[REALTIME] Error handling profile media change: $e');
     }
   }
 

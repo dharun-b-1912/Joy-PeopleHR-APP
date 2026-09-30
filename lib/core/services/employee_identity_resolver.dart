@@ -2,6 +2,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../models/hrms_models.dart';
 import '../utils/query_timeout.dart';
 import '../utils/secure_log.dart';
+import '../utils/validators.dart';
 import 'employee_profile_mapper.dart';
 
 /// State machine states for the Canonical Employee Identity Resolver
@@ -121,52 +122,32 @@ class EmployeeIdentityResolver {
         final userProfile = await withTimeout(
           client
               .from('user_profiles')
-              .select('id, organization_id, email, phone_number, first_name, last_name, avatar_url, is_active')
-              .eq('id', authUid)
+              .select('id, auth_user_id, organization_id, employee_id, email, full_name, phone, avatar_url, status, role')
+              .or('auth_user_id.eq.$authUid,id.eq.$authUid')
+              .limit(1)
               .maybeSingle(),
         );
 
         if (userProfile != null) {
           appUserRowId = userProfile['id']?.toString();
-          appUserStatus = userProfile['is_active'] == true ? 'ACTIVE' : 'INACTIVE';
-          resolvedRole = 'EMPLOYEE';
-          secureLog('[Identity] user_profiles (by auth_user_id) found -> id=$appUserRowId, org=${userProfile['organization_id']}');
+          final rawEmpId = userProfile['employee_id']?.toString().trim();
+          if (rawEmpId != null && rawEmpId.isNotEmpty) {
+            appUserEmployeeId = rawEmpId;
+          }
+          appUserStatus = (userProfile['status']?.toString() ?? 'ACTIVE').toUpperCase();
+          resolvedRole = userProfile['role']?.toString() ?? 'EMPLOYEE';
+          secureLog('[Identity] user_profiles found -> id=$appUserRowId, employee_id=$appUserEmployeeId, org=${userProfile['organization_id']}');
         }
       } catch (e) {
         secureLog('[Identity] user_profiles by auth_user_id notice: $e');
       }
 
-      // ── 3. Look up legacy employee_auth_identity ────────────────────────
-      String? legacyEmployeeId;
-      for (final table in const ['employee_auth_identity', 'employee_auth_identities']) {
-        try {
-          final legacy = await withTimeout(
-            client
-                .from(table)
-                .select('employee_id')
-                .eq('auth_user_id', authUid)
-                .maybeSingle(),
-          );
-
-          if (legacy != null && legacy['employee_id'] != null) {
-            final idStr = legacy['employee_id'].toString().trim();
-            if (idStr.isNotEmpty) {
-              legacyEmployeeId = idStr;
-              secureLog('[Identity] $table found -> employee_id=$legacyEmployeeId');
-              break;
-            }
-          }
-        } catch (e) {
-          secureLog('[Identity] $table query notice: $e');
-        }
-      }
-
-      String? candidateEmployeeUuid = appUserEmployeeId ?? legacyEmployeeId;
+      String? candidateEmployeeUuid = appUserEmployeeId;
       Map<String, dynamic>? empRecord;
 
       // ── 5. Query employees table ────────────────────────────────────────
 
-      // Strategy A: By resolved UUID from app_users / legacy table
+      // Strategy A: By resolved UUID from user_profiles / legacy table
       if (candidateEmployeeUuid != null && candidateEmployeeUuid.isNotEmpty) {
         secureLog('[Identity] Querying employees table for id=$candidateEmployeeUuid');
         try {
@@ -182,15 +163,21 @@ class EmployeeIdentityResolver {
         }
       }
 
-      // Strategy B: Direct lookup by user_id = authUid, or id = authUid
+      // Strategy B: Direct lookup by user_id = appUserRowId / authUid, or id = authUid
       if (empRecord == null) {
-        secureLog('[Identity] Querying employees table for user_id=$authUid');
+        secureLog('[Identity] Querying employees table for user_id=$authUid / profile_id=$appUserRowId');
         try {
+          final orParts = <String>[
+            'user_id.eq.$authUid',
+            'id.eq.$authUid',
+            if (appUserRowId != null && appUserRowId.isNotEmpty) 'user_id.eq.$appUserRowId',
+          ];
           empRecord = await withTimeout(
             client
                 .from('employees')
                 .select()
-                .or('user_id.eq.$authUid,id.eq.$authUid')
+                .or(orParts.join(','))
+                .limit(1)
                 .maybeSingle(),
           );
         } catch (e) {
@@ -319,6 +306,7 @@ class EmployeeIdentityResolver {
           'work_email': cleanEmail ?? '',
           'email': cleanEmail ?? '',
           'status': 'ACTIVE',
+          'employment_status': 'ACTIVE',
           'employment_type': 'FULL_TIME',
           'company_name': capitalizedDomain,
           'organization_name': capitalizedDomain,
@@ -346,7 +334,7 @@ class EmployeeIdentityResolver {
       _autoHealAppUsers(client, resolvedEmployeeUuid, authUid, cleanEmail, empRecord);
 
       // ── 7. Validate Employment Status ───────────────────────────────────
-      final empStatus = (empRecord['status']?.toString() ?? 'active').toLowerCase().trim();
+      final empStatus = (empRecord['employment_status']?.toString() ?? empRecord['status']?.toString() ?? 'active').toLowerCase().trim();
       final userAppStatus = (appUserStatus ?? 'active').toLowerCase().trim();
 
       if (_disallowedStatuses.contains(empStatus) || _disallowedStatuses.contains(userAppStatus)) {
@@ -366,194 +354,248 @@ class EmployeeIdentityResolver {
         authUid,
       }.where((s) => s.isNotEmpty).toList();
 
-      // Use ALL candidate IDs (not just UUIDs) — statutory/bank tables may use
-      // employee_id formats like 'EMP-617871' which are not UUIDs.
-      final effectiveLookupIds = candidateEmpIds.where((s) => s.isNotEmpty).toList();
+      // Only pass valid UUIDs — employee_id column in these Postgres tables is of type UUID.
+      // Passing non-UUID employee codes (e.g. 'JCS-017') triggers 22P02 invalid input syntax error.
+      final effectiveLookupIds = candidateEmpIds.where((s) => Validators.isValidUuid(s)).toList();
       secureLog('[Identity] Statutory lookup IDs: $effectiveLookupIds');
 
       Map<String, dynamic>? statutory;
-      try {
-        final statRows = await withTimeout(
-          client
-              .from('employee_statutory_details')
-              .select()
-              .inFilter('employee_id', effectiveLookupIds),
-        );
-        if (statRows.isNotEmpty) {
-          statutory = Map<String, dynamic>.from(statRows.first as Map);
-          secureLog('[Identity] employee_statutory_details found: bank=${statutory['bank_name']}, pan=${statutory['pan_number'] != null}');
-        } else {
-          secureLog('[Identity] employee_statutory_details EMPTY for IDs: $effectiveLookupIds');
-        }
-      } catch (e) {
-        secureLog('[Identity] employee_statutory_details error: $e');
-      }
-
       Map<String, dynamic>? bankAccount;
-      try {
-        final bankRows = await withTimeout(
-          client
-              .from('employee_bank_details')
-              .select()
-              .inFilter('employee_id', effectiveLookupIds),
-        );
-        if (bankRows.isNotEmpty) {
-          bankAccount = Map<String, dynamic>.from(bankRows.first as Map);
-          secureLog('[Identity] employee_bank_details found: bank=${bankAccount['bank_name']}, acc=${bankAccount['account_number']}');
-        } else {
-          secureLog('[Identity] employee_bank_details EMPTY for IDs: $effectiveLookupIds');
-        }
-      } catch (e) {
-        secureLog('[Identity] employee_bank_details error: $e');
-      }
-
       Map<String, dynamic>? emergencyContact;
-      try {
-        final contactRows = await withTimeout(
-          client
-              .from('employee_profiles')
-              .select('emergency_contact_name, emergency_contact_phone, emergency_contact_relationship')
-              .inFilter('employee_id', effectiveLookupIds),
-        );
-        if (contactRows.isNotEmpty) {
-          emergencyContact = Map<String, dynamic>.from(contactRows.first as Map);
-        }
-      } catch (e) {
-        secureLog('[Identity] employee_profiles emergency contact notice: $e');
-      }
-
-      // ── 9. Resolve Authoritative Shift Schedule ─────────────────────────
-      final shiftId = empRecord['shift_id']?.toString() ??
-          (empRecord['employment'] is Map ? empRecord['employment']['shift_id']?.toString() : null);
-      if (shiftId != null && shiftId.isNotEmpty) {
-        try {
-          final shiftRow = await withTimeout(
-            client.from('shifts').select().eq('id', shiftId).maybeSingle(),
-          );
-          if (shiftRow != null) {
-            empRecord['shift_name'] = shiftRow['name'] ?? shiftRow['shift_name'] ?? empRecord['shift_name'];
-            empRecord['shift_start_time'] = shiftRow['start_time'] ?? shiftRow['shift_start_time'] ?? empRecord['shift_start_time'];
-            empRecord['shift_end_time'] = shiftRow['end_time'] ?? shiftRow['shift_end_time'] ?? empRecord['shift_end_time'];
-            empRecord['shift'] = shiftRow;
-            secureLog('[Identity] Resolved shift from shifts table: ${empRecord['shift_name']}');
-          }
-        } catch (e) {
-          secureLog('[Identity] shifts table lookup notice: $e');
-        }
-      }
-
-      try {
-        final nowIST = DateTime.now().toUtc().add(const Duration(hours: 5, minutes: 30));
-        final todayStr = '${nowIST.year}-${nowIST.month.toString().padLeft(2, '0')}-${nowIST.day.toString().padLeft(2, '0')}';
-        final rosterToday = await withTimeout(
-          client
-              .from('employee_shift_assignments')
-              .select('id, shift_id, effective_date, shifts(*)')
-              .eq('employee_id', resolvedEmployeeUuid)
-              .eq('effective_date', todayStr)
-              .maybeSingle(),
-        );
-        if (rosterToday != null && rosterToday['shifts'] is Map) {
-          final s = rosterToday['shifts'] as Map<String, dynamic>;
-          empRecord['shift_name'] = s['name'];
-          empRecord['shift_start_time'] = s['start_time'] ?? empRecord['shift_start_time'];
-          empRecord['shift_end_time'] = s['end_time'] ?? empRecord['shift_end_time'];
-          secureLog('[Identity] Resolved shift from employee_shift_assignments: ${s['name']}');
-        }
-      } catch (_) {}
-
-      // ── 10. Resolve Authoritative Organization Metadata ─────────────────
-      final orgId = empRecord['organization_id']?.toString() ??
-          empRecord['tenant_id']?.toString() ??
-          (empRecord['employment'] is Map ? empRecord['employment']['organization_id']?.toString() : null);
-      if (orgId != null && orgId.isNotEmpty) {
-        try {
-          final orgRow = await withTimeout(
-            client.from('organizations').select().eq('id', orgId).maybeSingle(),
-          );
-          if (orgRow != null) {
-            empRecord['organization_name'] = orgRow['name'] ?? orgRow['display_name'] ?? orgRow['legal_name'];
-            empRecord['company_name'] = orgRow['name'] ?? orgRow['display_name'] ?? empRecord['company_name'];
-            empRecord['organization'] = orgRow;
-            secureLog('[Identity] Resolved organization: ${empRecord['company_name']}');
-          }
-        } catch (e) {
-          secureLog('[Identity] organizations lookup notice: $e');
-        }
-      }
-
-      // ── 10b. Resolve Authoritative Assigned Work Locations ──────────────
       List<ApprovedWorkLocation> assignedLocations = [];
 
-      // 1. Primary: Authoritative Server-Side RPC
-      try {
-        final rpcData = await withTimeout(
-          client.rpc('fn_get_my_assigned_work_locations'),
-        );
-        if (rpcData is List && rpcData.isNotEmpty) {
-          assignedLocations = rpcData.map((item) {
-            final rowMap = Map<String, dynamic>.from(item as Map);
-            return ApprovedWorkLocation.fromJson(rowMap);
-          }).toList();
-          secureLog('[Identity] Resolved ${assignedLocations.length} assigned work location(s) from fn_get_my_assigned_work_locations');
-        }
-      } catch (rpcErr) {
-        secureLog('[Identity] fn_get_my_assigned_work_locations RPC notice: $rpcErr');
-      }
+      final compId = empRecord['company_id']?.toString() ?? empRecord['organization_id']?.toString();
+      final orgId = empRecord['organization_id']?.toString() ??
+          empRecord['tenant_id']?.toString() ??
+          (empRecord['employment'] is Map ? empRecord['employment']['organization_id']?.toString() : null) ??
+          compId;
+      final deptId = empRecord['department_id']?.toString() ??
+          (empRecord['employment'] is Map ? empRecord['employment']['department_id']?.toString() : null);
+      final desigId = empRecord['designation_id']?.toString() ??
+          (empRecord['employment'] is Map ? empRecord['employment']['designation_id']?.toString() : null);
+      final branchId = empRecord['branch_id']?.toString();
+      final shiftId = empRecord['shift_id']?.toString() ??
+          (empRecord['employment'] is Map ? empRecord['employment']['shift_id']?.toString() : null);
 
-      // 2. Secondary: Direct Query on employee_work_location_assignments
-      if (assignedLocations.isEmpty) {
-        for (final table in const ['employee_work_location_assignments', 'employee_work_locations']) {
-          if (assignedLocations.isNotEmpty) break;
-          try {
-            final assignedData = await withTimeout(
-              client
-                  .from(table)
-                  .select('*')
-                  .inFilter('employee_id', effectiveLookupIds),
-            );
-            if (assignedData.isNotEmpty) {
-              final locationIds = assignedData
-                  .map((r) => r['work_location_id']?.toString() ?? r['location_id']?.toString())
-                  .where((id) => id != null && id.isNotEmpty)
-                  .cast<String>()
-                  .toSet()
-                  .toList();
+      const fastTimeout = Duration(milliseconds: 3500);
 
-              final locationMap = <String, Map<String, dynamic>>{};
-              if (locationIds.isNotEmpty) {
-                try {
-                  final locs = await withTimeout(
-                    client.from('work_locations').select('*').inFilter('id', locationIds),
-                  );
-                  for (final l in locs) {
-                    final m = Map<String, dynamic>.from(l as Map);
-                    if (m['id'] != null) {
-                      locationMap[m['id'].toString()] = m;
-                    }
-                  }
-                } catch (e) {
-                  secureLog('[Identity] work_locations by ID fetch notice: $e');
+      // Execute all profile hydration queries concurrently in a single network roundtrip
+      await Future.wait<void>([
+        // 8a. Statutory details
+        if (effectiveLookupIds.isNotEmpty)
+          (() async {
+            try {
+              final statRows = await withTimeout(
+                client.from('employee_statutory_details').select().inFilter('employee_id', effectiveLookupIds),
+                timeout: fastTimeout,
+              );
+              if (statRows.isNotEmpty) {
+                statutory = Map<String, dynamic>.from(statRows.first as Map);
+              }
+            } catch (e) {
+              secureLog('[Identity] employee_statutory_details notice: $e');
+            }
+          })(),
+
+        // 8b. Bank details
+        if (effectiveLookupIds.isNotEmpty)
+          (() async {
+            try {
+              final bankRows = await withTimeout(
+                client.from('employee_bank_details').select().inFilter('employee_id', effectiveLookupIds),
+                timeout: fastTimeout,
+              );
+              if (bankRows.isNotEmpty) {
+                bankAccount = Map<String, dynamic>.from(bankRows.first as Map);
+              }
+            } catch (e) {
+              secureLog('[Identity] employee_bank_details notice: $e');
+            }
+          })(),
+
+        // 8c. Emergency contacts (canonical employee_emergency_contacts table)
+        if (effectiveLookupIds.isNotEmpty)
+          (() async {
+            try {
+              final contactRows = await withTimeout(
+                client
+                    .from('employee_emergency_contacts')
+                    .select('contact_name, phone, relationship')
+                    .inFilter('employee_id', effectiveLookupIds)
+                    .limit(1),
+                timeout: fastTimeout,
+              );
+              if (contactRows.isNotEmpty) {
+                final c = Map<String, dynamic>.from(contactRows.first as Map);
+                emergencyContact = {
+                  'emergency_contact_name': c['contact_name'],
+                  'emergency_contact_phone': c['phone'],
+                  'emergency_contact_relationship': c['relationship'],
+                };
+              }
+            } catch (e) {
+              secureLog('[Identity] employee_emergency_contacts notice: $e');
+            }
+          })(),
+
+        // 8d. Company details
+        if (compId != null && compId.isNotEmpty)
+          (() async {
+            try {
+              final compRow = await withTimeout(
+                client.from('companies').select('id, legal_name, trade_name').eq('id', compId).maybeSingle(),
+                timeout: fastTimeout,
+              );
+              if (compRow != null) {
+                empRecord!['company_name'] = compRow['legal_name'] ?? compRow['trade_name'] ?? empRecord['company_name'];
+              }
+            } catch (_) {}
+          })(),
+
+        // 8e. Organization details
+        if (orgId != null && orgId.isNotEmpty)
+          (() async {
+            try {
+              final orgRow = await withTimeout(
+                client.from('organizations').select('id, name, logo_url').eq('id', orgId).maybeSingle(),
+                timeout: fastTimeout,
+              );
+              if (orgRow != null) {
+                empRecord!['organization_name'] = orgRow['name'] ?? empRecord['organization_name'];
+                empRecord['company_name'] ??= orgRow['name'];
+                empRecord['organization'] = orgRow;
+                if (orgRow['logo_url'] != null && orgRow['logo_url'].toString().isNotEmpty) {
+                  empRecord['company_logo_url'] = orgRow['logo_url'].toString();
                 }
               }
+            } catch (_) {}
+          })(),
 
-              assignedLocations = assignedData.map((r) {
-                final rowMap = Map<String, dynamic>.from(r as Map);
-                final locId = rowMap['work_location_id']?.toString() ??
-                    rowMap['location_id']?.toString() ??
-                    rowMap['id']?.toString();
-                final locData = (locId != null ? locationMap[locId] : null) ?? rowMap;
-                final merged = Map<String, dynamic>.from(locData);
-                merged['is_primary'] = rowMap['is_primary'] ?? false;
-                return ApprovedWorkLocation.fromJson(merged);
-              }).toList();
-              secureLog('[Identity] Resolved ${assignedLocations.length} assigned work location(s) from $table for employee IDs $candidateEmpIds');
-            }
-          } catch (e) {
-            secureLog('[Identity] $table lookup notice: $e');
+        // 8f. Department & Parent Unit
+        if (deptId != null && deptId.isNotEmpty)
+          (() async {
+            try {
+              final deptRow = await withTimeout(
+                client.from('departments').select('id, name, code, parent_department_id').eq('id', deptId).maybeSingle(),
+                timeout: fastTimeout,
+              );
+              if (deptRow != null) {
+                final deptName = deptRow['name']?.toString() ?? deptRow['code']?.toString();
+                if (deptName != null && deptName.isNotEmpty) {
+                  empRecord!['department_name'] = deptName;
+                  empRecord['department'] = deptRow;
+                }
+                final parentDeptId = deptRow['parent_department_id']?.toString();
+                if (parentDeptId != null && parentDeptId.isNotEmpty) {
+                  final parentRow = await withTimeout(
+                    client.from('departments').select('id, name, code').eq('id', parentDeptId).maybeSingle(),
+                    timeout: fastTimeout,
+                  );
+                  if (parentRow != null && parentRow['name'] != null) {
+                    empRecord!['unit_name'] = parentRow['name'].toString();
+                  }
+                }
+              }
+            } catch (_) {}
+          })(),
+
+        // 8g. Designation
+        if (desigId != null && desigId.isNotEmpty)
+          (() async {
+            try {
+              final desigRow = await withTimeout(
+                client.from('designations').select('id, title, code, grade').eq('id', desigId).maybeSingle(),
+                timeout: fastTimeout,
+              );
+              if (desigRow != null) {
+                final desigTitle = desigRow['title']?.toString() ?? desigRow['name']?.toString() ?? desigRow['code']?.toString();
+                if (desigTitle != null && desigTitle.isNotEmpty) {
+                  empRecord!['designation_title'] = desigTitle;
+                  empRecord['designation'] = desigRow;
+                }
+              }
+            } catch (_) {}
+          })(),
+
+        // 8h. Branch
+        if (branchId != null && branchId.isNotEmpty && (empRecord['branch_name'] == null || empRecord['branch_name'].toString().isEmpty))
+          (() async {
+            try {
+              final branchRow = await withTimeout(
+                client.from('branches').select('id, name').eq('id', branchId).maybeSingle(),
+                timeout: fastTimeout,
+              );
+              if (branchRow != null && branchRow['name'] != null) {
+                empRecord!['branch_name'] = branchRow['name'].toString();
+              }
+            } catch (_) {}
+          })(),
+
+        // 9. Shift schedule (direct shift_id + active shift assignment)
+        (() async {
+          if (shiftId != null && shiftId.isNotEmpty) {
+            try {
+              final shiftRow = await withTimeout(
+                client.from('shifts').select().eq('id', shiftId).maybeSingle(),
+                timeout: fastTimeout,
+              );
+              if (shiftRow != null) {
+                empRecord!['shift_name'] = shiftRow['name'] ?? shiftRow['shift_name'] ?? empRecord['shift_name'];
+                empRecord['shift_start_time'] = shiftRow['start_time'] ?? shiftRow['shift_start_time'] ?? empRecord['shift_start_time'];
+                empRecord['shift_end_time'] = shiftRow['end_time'] ?? shiftRow['shift_end_time'] ?? empRecord['shift_end_time'];
+                empRecord['shift'] = shiftRow;
+              }
+            } catch (_) {}
           }
-        }
-      }
+          try {
+            final nowIST = DateTime.now().toUtc().add(const Duration(hours: 5, minutes: 30));
+            final todayStr = '${nowIST.year}-${nowIST.month.toString().padLeft(2, '0')}-${nowIST.day.toString().padLeft(2, '0')}';
+            final rosterToday = await withTimeout(
+              client
+                  .from('employee_shift_assignments')
+                  .select('id, shift_id, valid_from, valid_to, shifts(*)')
+                  .eq('employee_id', resolvedEmployeeUuid)
+                  .lte('valid_from', todayStr)
+                  .order('valid_from', ascending: false)
+                  .limit(1)
+                  .maybeSingle(),
+              timeout: fastTimeout,
+            );
+            if (rosterToday != null && rosterToday['shifts'] is Map) {
+              final s = rosterToday['shifts'] as Map<String, dynamic>;
+              empRecord!['shift_name'] = s['name'];
+              empRecord['shift_start_time'] = s['start_time'] ?? empRecord['shift_start_time'];
+              empRecord['shift_end_time'] = s['end_time'] ?? empRecord['shift_end_time'];
+            }
+          } catch (_) {}
+        })(),
+
+        // 10. Assigned work locations (joined with work_locations in a single query)
+        if (effectiveLookupIds.isNotEmpty)
+          (() async {
+            try {
+              final assignedData = await withTimeout(
+                client
+                    .from('employee_work_location_assignments')
+                    .select('*, work_locations(*)')
+                    .inFilter('employee_id', effectiveLookupIds),
+                timeout: fastTimeout,
+              );
+              if (assignedData.isNotEmpty) {
+                assignedLocations = assignedData.map((r) {
+                  final rowMap = Map<String, dynamic>.from(r as Map);
+                  final nestedLoc = rowMap['work_locations'] is Map
+                      ? Map<String, dynamic>.from(rowMap['work_locations'] as Map)
+                      : rowMap;
+                  nestedLoc['is_primary'] = rowMap['is_primary'] ?? false;
+                  return ApprovedWorkLocation.fromJson(nestedLoc);
+                }).toList();
+              }
+            } catch (e) {
+              secureLog('[Identity] employee_work_location_assignments lookup notice: $e');
+            }
+          })(),
+      ]);
 
       // ── 11. Construct Canonical UserModel ───────────────────────────────
       final userModel = EmployeeProfileMapper.fromEmployeesRow(
@@ -593,8 +635,11 @@ class EmployeeIdentityResolver {
     String? email,
     Map<String, dynamic> empRecord,
   ) {
-    // Canonical auto-heal links user_id on employees table
-    _autoHealEmployeeEmailAndUserId(client, employeeUuid, authUid, email ?? empRecord['work_email']?.toString() ?? '');
+    final existingWorkEmail = (empRecord['work_email']?.toString() ?? '').trim().toLowerCase();
+    final targetEmail = (email ?? '').trim().toLowerCase();
+    if (targetEmail.isNotEmpty && existingWorkEmail != targetEmail) {
+      _autoHealEmployeeEmailAndUserId(client, employeeUuid, authUid, email!);
+    }
   }
 
   static void _tryPersistProvisionedEmployee(

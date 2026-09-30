@@ -60,7 +60,7 @@ class SupabaseEmployeeRepository {
       dynamic query = _client.from('employees').select();
 
       if (orgId.isNotEmpty) {
-        query = query.or('organization_id.eq.$orgId,company_id.eq.$orgId,tenant_id.eq.$orgId');
+        query = query.or('organization_id.eq.$orgId,company_id.eq.$orgId');
       }
 
       final List<dynamic> rows = await query.limit(200);

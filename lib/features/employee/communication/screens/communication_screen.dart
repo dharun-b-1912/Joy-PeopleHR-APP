@@ -47,7 +47,7 @@ class _CommunicationScreenState extends State<CommunicationScreen> {
             backgroundColor: Colors.white,
             onRefresh: () => controller.loadAllData(),
             child: controller.isLoading && communications.isEmpty
-                ? const Center(child: CircularProgressIndicator())
+                ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
                 : communications.isEmpty
                     ? ListView(
                         physics: const AlwaysScrollableScrollPhysics(

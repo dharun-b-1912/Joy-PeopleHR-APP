@@ -8,6 +8,7 @@ import '../../core/services/user_service.dart';
 import '../../core/theme/klarna_tokens.dart';
 import '../../core/utils/query_timeout.dart';
 import '../../core/utils/secure_log.dart';
+import '../../core/utils/validators.dart';
 import '../../models/employee_models.dart';
 import '../interfaces/employee_repository.dart';
 
@@ -100,22 +101,24 @@ class SupabaseLeaveRepository implements ILeaveRepository {
       }
 
       final user = UserService.instance.currentUser;
-      final targetId = (user.employeeUuid?.isNotEmpty == true)
-          ? user.employeeUuid!
-          : (user.employeeId.isNotEmpty ? user.employeeId : employeeId);
+      final candidateIds = <String>{
+        employeeId,
+        user.dataId,
+        if (user.employeeUuid?.isNotEmpty == true) user.employeeUuid!,
+      }.where((id) => Validators.isValidUuid(id)).toList();
 
-      final orFilter = <String>{
-        'employee_id.eq.$targetId',
-        if (user.employeeId.isNotEmpty) 'employee_id.eq.${user.employeeId}',
-        if (user.employeeUuid?.isNotEmpty == true)
-          'employee_id.eq.${user.employeeUuid}',
-      }.join(',');
+      if (candidateIds.isEmpty) {
+        return LeaveBalanceModel.empty();
+      }
+
+      final targetId = candidateIds.first;
+      final orFilter = candidateIds.map((id) => 'employee_id.eq.$id').join(',');
 
       // 1. Fetch balances from canonical leave_balances
       final data = await withTimeout(
         _client
             .from('leave_balances')
-            .select('*, leave_types(id, name, code, is_paid)')
+            .select('*, leave_types(id, name, code, is_paid, annual_quota)')
             .or(orFilter),
       );
 
@@ -125,9 +128,9 @@ class SupabaseLeaveRepository implements ILeaveRepository {
         approvedRequestsData = await withTimeout(
           _client
               .from('leave_requests')
-              .select()
+              .select('*, leave_types(id, name, code)')
               .or(orFilter)
-              .ilike('status', 'approved'),
+              .eq('status', 'APPROVED'),
         );
       } catch (e) {
         secureLog('[Leave] approved requests fetch notice: $e');
@@ -135,8 +138,9 @@ class SupabaseLeaveRepository implements ILeaveRepository {
 
       final approvedDaysByType = <String, double>{};
       for (final req in approvedRequestsData) {
-        final code = (req['leave_type_code'] ?? '').toString().toUpperCase();
-        final name = (req['leave_type_name'] ?? '').toString().toLowerCase();
+        final reqTypeMap = req['leave_types'] is Map ? req['leave_types'] as Map : null;
+        final code = (reqTypeMap?['code'] ?? req['leave_type_code'] ?? '').toString().toUpperCase();
+        final name = (reqTypeMap?['name'] ?? req['leave_type_name'] ?? '').toString().toLowerCase();
         final days = ((req['total_days'] ??
                     req['working_days'] ??
                     req['leave_days_deducted'] ??
@@ -267,24 +271,28 @@ class SupabaseLeaveRepository implements ILeaveRepository {
             approvedDaysByType[code.toUpperCase()] ??
             0.0;
 
-        final rawUsed = (row['used'] as num?)?.toDouble() ?? 0.0;
-        final used =
-            approvedRequestsData.isNotEmpty ? approvedForThisType : rawUsed;
-        final annualQuota = (row['annual_quota'] as num?)?.toDouble() ??
-            (row['granted'] as num?)?.toDouble() ??
-            (row['opening_balance'] as num?)?.toDouble() ??
-            0.0;
-        final opening = (row['carried_forward'] as num?)?.toDouble() ??
-            (row['opening_balance'] as num?)?.toDouble() ??
+        final rawUsed = ((row['consumed'] ?? row['used']) as num?)?.toDouble() ?? 0.0;
+        final used = rawUsed > 0
+            ? rawUsed
+            : (approvedRequestsData.isNotEmpty ? approvedForThisType : rawUsed);
+        final annualQuota = ((typeObj?['annual_quota'] ??
+                    row['annual_quota'] ??
+                    row['granted'] ??
+                    row['opening_balance']) as num?)
+                ?.toDouble() ??
+            12.0;
+        final opening = ((row['carried_forward'] ?? row['opening_balance']) as num?)?.toDouble() ??
             annualQuota;
         final accrued = (row['accrued'] as num?)?.toDouble() ?? 0.0;
         final monthlyRate = double.parse(
             (annualQuota > 0 ? annualQuota / 12 : 0.0).toStringAsFixed(2));
-        final accruedTillDate = (monthlyRate * currentMonth)
+        final accruedTillDate = (accrued > 0 ? accrued : (monthlyRate * currentMonth))
             .clamp(0.0, annualQuota > 0 ? annualQuota : 999.0);
-        final rawBalance = (row['balance'] as num?)?.toDouble();
-        final avail =
-            (rawBalance ?? (annualQuota + accrued - used)).clamp(0.0, 999.0);
+        final rawBalance = ((row['closing_balance'] ?? row['balance']) as num?)?.toDouble();
+        final avail = ((rawBalance != null && rawBalance > 0)
+                ? rawBalance
+                : (annualQuota - used))
+            .clamp(0.0, 999.0);
 
         // Assign aesthetic badge colors based on leave type code/name
         final colorPair = _resolveBadgeColors(name, code, i);
@@ -346,19 +354,25 @@ class SupabaseLeaveRepository implements ILeaveRepository {
       final user = UserService.instance.currentUser;
       final targetId = (user.employeeUuid?.isNotEmpty == true)
           ? user.employeeUuid!
-          : (user.employeeId.isNotEmpty ? user.employeeId : employeeId);
+          : (user.dataId.isNotEmpty ? user.dataId : employeeId);
 
-      final orFilter = <String>{
-        'employee_id.eq.$targetId',
-        if (user.employeeId.isNotEmpty) 'employee_id.eq.${user.employeeId}',
-        if (user.employeeUuid?.isNotEmpty == true)
-          'employee_id.eq.${user.employeeUuid}',
-      }.join(',');
+      final candidateIds = <String>{
+        targetId,
+        employeeId,
+        user.dataId,
+        if (user.employeeUuid?.isNotEmpty == true) user.employeeUuid!,
+      }.where((id) => Validators.isValidUuid(id)).toList();
+
+      if (candidateIds.isEmpty) {
+        return [];
+      }
+
+      final orFilter = candidateIds.map((id) => 'employee_id.eq.$id').join(',');
 
       final data = await withTimeout(
         _client
             .from('leave_requests')
-            .select()
+            .select('*, leave_types(id, name, code, is_paid)')
             .or(orFilter)
             .order('created_at', ascending: false),
       );
@@ -369,31 +383,35 @@ class SupabaseLeaveRepository implements ILeaveRepository {
       }
 
       return data.map<LeaveRequestModel>((map) {
-        final typeStr =
-            (map['leave_type_name'] ?? map['leave_type_code'] ?? 'Leave')
-                .toString();
+        final ltMap = map['leave_types'] is Map ? map['leave_types'] as Map : null;
+        final typeName = (ltMap?['name'] ?? map['leave_type_name'] ?? map['leave_type_code'] ?? 'Casual Leave').toString();
+        final typeCode = (ltMap?['code'] ?? map['leave_type_code'] ?? 'CL').toString();
+        final startRaw = (map['start_date'] ?? map['from_date'] ?? '').toString();
+        final endRaw = (map['end_date'] ?? map['to_date'] ?? startRaw).toString();
         return LeaveRequestModel(
           id: map['id'].toString(),
           employeeId: map['employee_id']?.toString() ?? targetId,
-          type: parseLeaveType(typeStr),
-          leaveTypeId: map['leave_type_id']?.toString(),
-          leaveTypeCode: map['leave_type_code']?.toString(),
-          leaveTypeName: map['leave_type_name']?.toString() ?? typeStr,
+          type: parseLeaveType('$typeName $typeCode'),
+          leaveTypeId: (ltMap?['id'] ?? map['leave_type_id'])?.toString(),
+          leaveTypeCode: typeCode,
+          leaveTypeName: typeName,
           startDate:
-              DateTime.tryParse(map['from_date'].toString()) ?? DateTime.now(),
+              DateTime.tryParse(startRaw) ?? DateTime.now(),
           endDate:
-              DateTime.tryParse(map['to_date'].toString()) ?? DateTime.now(),
-          daysCount: (map['leave_days_deducted'] as num?)?.toDouble() ??
-              (map['working_days'] as num?)?.toDouble() ??
+              DateTime.tryParse(endRaw) ?? DateTime.now(),
+          daysCount: ((map['total_days'] ??
+                      map['leave_days_deducted'] ??
+                      map['working_days']) as num?)
+                  ?.toDouble() ??
               1.0,
           reason: map['reason']?.toString() ?? '',
           status: _parseStatus(map['status']),
           createdAt: DateTime.tryParse(map['created_at']?.toString() ?? '') ??
               DateTime.tryParse(map['submitted_at']?.toString() ?? '') ??
               DateTime.now(),
-          approverId: map['manager_id']?.toString(),
+          approverId: (map['approved_by'] ?? map['manager_id'])?.toString(),
           approverName: map['manager_name']?.toString(),
-          managerId: map['manager_id']?.toString(),
+          managerId: (map['approved_by'] ?? map['manager_id'])?.toString(),
           managerName: map['manager_name']?.toString(),
           currentApproverName: map['current_approver_name']?.toString(),
           rejectionReason: map['rejection_reason']?.toString() ??

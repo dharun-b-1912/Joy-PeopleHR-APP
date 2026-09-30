@@ -293,6 +293,7 @@ class UserModel {
   final String? companyUuid;
   final String designation;
   final String department;
+  final String? unit;
   final String role;
   final String machinePin;
   final String campus;
@@ -305,6 +306,7 @@ class UserModel {
   final String? reportsToName;
   final String companyId;
   final String? companyName;
+  final String? companyLogoUrl;
 
   final String employmentType;
   final String? status; // active | inactive | on_leave
@@ -327,6 +329,7 @@ class UserModel {
     this.companyUuid,
     required this.designation,
     required this.department,
+    this.unit,
     required this.role,
     required this.machinePin,
     required this.campus,
@@ -339,6 +342,7 @@ class UserModel {
     this.reportsToName,
     this.companyId = "",
     this.companyName,
+    this.companyLogoUrl,
     this.employmentType = "Full Time",
     this.status,
     this.joiningDate,
@@ -395,6 +399,7 @@ class UserModel {
     String? reportsToName,
     String? companyId,
     String? companyName,
+    String? companyLogoUrl,
     String? employmentType,
     String? status,
     String? joiningDate,
@@ -428,6 +433,7 @@ class UserModel {
       reportsToName: reportsToName ?? this.reportsToName,
       companyId: companyId ?? this.companyId,
       companyName: companyName ?? this.companyName,
+      companyLogoUrl: companyLogoUrl ?? this.companyLogoUrl,
       employmentType: employmentType ?? this.employmentType,
       status: status ?? this.status,
       joiningDate: joiningDate ?? this.joiningDate,
@@ -580,6 +586,44 @@ class TeamMemberModel {
 
 enum AttendanceStatus { notCheckedIn, checkedIn, checkedOut }
 
+enum AttendanceSource {
+  biometric,
+  mobile,
+  manual,
+  unassigned;
+
+  static AttendanceSource fromValue(String? raw) {
+    if (raw == null) return AttendanceSource.unassigned;
+    final s = raw.trim().toUpperCase();
+    if (s.contains('BIO') || s.contains('DEVICE') || s.contains('ADMS') || s.contains('FACE') || s.contains('FINGER')) {
+      return AttendanceSource.biometric;
+    }
+    if (s.contains('MOB') || s.contains('APP') || s.contains('GPS') || s.contains('GEOFENCE')) {
+      return AttendanceSource.mobile;
+    }
+    if (s.contains('MANUAL') || s.contains('ADMIN')) {
+      return AttendanceSource.manual;
+    }
+    return AttendanceSource.unassigned;
+  }
+
+  String get label {
+    switch (this) {
+      case AttendanceSource.biometric:
+        return 'Biometric Terminal';
+      case AttendanceSource.mobile:
+        return 'Mobile GPS';
+      case AttendanceSource.manual:
+        return 'Manual / Admin';
+      case AttendanceSource.unassigned:
+        return 'Unassigned';
+    }
+  }
+
+  bool get isBiometric => this == AttendanceSource.biometric;
+  bool get isMobile => this == AttendanceSource.mobile;
+}
+
 class AttendanceSession {
   final AttendanceStatus status;
   final DateTime? checkInTime;
@@ -587,6 +631,12 @@ class AttendanceSession {
   final int? netWorkingMinutes;
   final String? checkInLocationName;
   final double? checkInDistanceMeters;
+  final AttendanceSource source;
+  final String? sourceLabel;
+  final String? verificationMethod; // e.g., "Face Recognition", "Fingerprint", "Card", "GPS"
+  final String? deviceId; // e.g., "TDBD253600550", "FLUTTER_MOBILE"
+  final String? deviceSerial;
+  final bool isSourceLocked;
 
   const AttendanceSession({
     required this.status,
@@ -595,10 +645,18 @@ class AttendanceSession {
     this.netWorkingMinutes,
     this.checkInLocationName,
     this.checkInDistanceMeters,
+    this.source = AttendanceSource.unassigned,
+    this.sourceLabel,
+    this.verificationMethod,
+    this.deviceId,
+    this.deviceSerial,
+    this.isSourceLocked = false,
   });
 
   bool get isCheckedIn => status == AttendanceStatus.checkedIn;
   bool get isCheckedOut => status == AttendanceStatus.checkedOut;
+  bool get isBiometricLocked => source == AttendanceSource.biometric;
+  bool get isMobileLocked => source == AttendanceSource.mobile;
 }
 
 enum CelebrationType { birthday, workAnniversary }

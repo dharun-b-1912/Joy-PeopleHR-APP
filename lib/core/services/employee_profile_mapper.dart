@@ -126,6 +126,16 @@ class EmployeeProfileMapper {
         ]) ??
         '';
 
+    final unit = _first(employment, emp, [
+          'unit_name',
+          'unit',
+          'business_unit',
+        ]) ??
+        _first(profile, emp, [
+          'unit_name',
+          'unit',
+        ]);
+
     // ── Bank & Statutory (Map authentic records or fallback fields) ────────────
     final rawBank = bankAccount ??
         (_asMap(emp['bank']).isNotEmpty
@@ -269,6 +279,7 @@ class EmployeeProfileMapper {
       companyUuid: _s(emp['company_id']),
       designation: designation,
       department: department,
+      unit: unit,
       role: role ?? 'EMPLOYEE',
       machinePin: _first(profile, emp, ['machine_pin', 'pin', 'biometric_pin']) ?? '',
       campus: campus.isNotEmpty ? campus : defaultApprovedLocation.name,
@@ -283,6 +294,7 @@ class EmployeeProfileMapper {
       companyId: _s(emp['organization_id']) ?? _s(emp['company_id']) ?? '',
       companyName: _first(emp, profile, ['organization_name', 'company_name', 'display_name', 'legal_name']) ??
           (_s(emp['company_name'])?.isNotEmpty == true ? _s(emp['company_name'])! : ''),
+      companyLogoUrl: _first(emp, profile, ['organization_logo_url', 'company_logo_url', 'logo_url']),
       employmentType:
           _s(emp['employment_type'])?.replaceAll('_', ' ').toUpperCase() ??
               '',
@@ -382,8 +394,15 @@ class EmployeeProfileMapper {
   ) {
     for (final k in keys) {
       final v = primary[k] ?? fallback[k];
-      if (v != null && v.toString().trim().isNotEmpty) {
-        return v.toString();
+      if (v != null) {
+        if (v is Map) {
+          final extracted = v['name'] ?? v['title'] ?? v['department_name'] ?? v['designation_title'];
+          if (extracted != null && extracted.toString().trim().isNotEmpty) {
+            return extracted.toString().trim();
+          }
+        } else if (v.toString().trim().isNotEmpty) {
+          return v.toString().trim();
+        }
       }
     }
     return null;

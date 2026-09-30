@@ -20,6 +20,7 @@ import '../../../../core/services/avatar_service.dart';
 import '../dialogs/emergency_contact_dialog.dart';
 import '../dialogs/documents_summary_dialog.dart';
 import '../dialogs/assets_summary_dialog.dart';
+import '../../../../repositories/supabase/supabase_employee_repository.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -36,6 +37,67 @@ class _ProfileScreenState extends State<ProfileScreen> {
   };
   final Map<String, Timer?> _revealTimers = {};
   bool _isUploadingPhoto = false;
+  bool _isRefreshing = false;
+
+  Future<void> _handleRefresh() async {
+    if (_isRefreshing) return;
+    setState(() => _isRefreshing = true);
+    try {
+      final updated = await SupabaseEmployeeRepository().getCurrentEmployee();
+      if (mounted) {
+        if (updated != null) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Profile synchronized with database'),
+              duration: Duration(seconds: 1),
+              backgroundColor: AppColors.primary,
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Could not refresh profile. Showing current data.'),
+              duration: Duration(seconds: 2),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Network error. Retaining displayed profile.'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isRefreshing = false);
+      }
+    }
+  }
+
+  Widget _buildRefreshButton() {
+    return IconButton(
+      tooltip: 'Refresh Profile',
+      icon: _isRefreshing
+          ? const SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                valueColor: AlwaysStoppedAnimation<Color>(AppColors.primary),
+              ),
+            )
+          : const Icon(
+              CupertinoIcons.arrow_clockwise,
+              color: AppColors.textPrimary,
+              size: 20,
+            ),
+      onPressed: _isRefreshing ? null : _handleRefresh,
+    );
+  }
 
   @override
   void initState() {
@@ -421,9 +483,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
   Future<void> _uploadAndSavePhoto(Uint8List imageBytes, {String? fileName}) async {
     setState(() => _isUploadingPhoto = true);
     try {
-      await AvatarService.instance
+      final signedUrl = await AvatarService.instance
           .uploadAndActivateAvatarBytes(imageBytes, fileName: fileName);
+      if (signedUrl == null || signedUrl.isEmpty) {
+        throw Exception("Storage returned empty signed URL");
+      }
+      UserService.instance.updateProfileImage(signedUrl);
       if (mounted) {
+        setState(() {}); // Re-render profile avatar immediately
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Row(
@@ -645,7 +712,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
         final empIdDisplay = user.employeeId.isNotEmpty ? user.employeeId : '—';
 
-        final deptDisplay = user.department.isNotEmpty ? user.department : '—';
+        final deptDisplay = user.department.isNotEmpty
+            ? (user.unit?.isNotEmpty == true ? '${user.department} / ${user.unit}' : user.department)
+            : (user.unit?.isNotEmpty == true ? user.unit! : '—');
 
         final desigDisplay =
             user.designation.isNotEmpty ? user.designation : '—';
@@ -670,13 +739,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
         return Scaffold(
           backgroundColor: AppColors.scaffoldBg,
           body: SafeArea(
+            top: false,
             bottom: true,
             child: RefreshIndicator(
               color: AppColors.primary,
               backgroundColor: Colors.white,
-              onRefresh: () async {
-                await EmployeeRealtimeService.instance.reconcile();
-              },
+              edgeOffset: MediaQuery.paddingOf(context).top,
+              displacement: 40,
+              onRefresh: _handleRefresh,
               child: SingleChildScrollView(
                 physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
               padding: const EdgeInsets.only(
@@ -692,6 +762,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             ? user.companyName!
                             : 'Employee Profile'),
                     title: "Profile",
+                    rightAction: _buildRefreshButton(),
                   ),
                   Padding(
                     padding: const EdgeInsets.symmetric(
@@ -1791,7 +1862,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           child: Column(
                             children: [
                               Text(
-                                "JOY PeopleHR Enterprise",
+                                "JOY PeopleHR • People & Culture",
                                 style: AppTypography.caption.copyWith(
                                   color: AppColors.textMuted,
                                   fontWeight: FontWeight.w600,

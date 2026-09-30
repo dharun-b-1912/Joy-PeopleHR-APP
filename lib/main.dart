@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart' show kIsWeb, kDebugMode, PlatformDispatcher;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -22,10 +23,43 @@ import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
 import 'package:workforce_os/core/services/push_notification_service.dart';
 import 'package:workforce_os/core/services/crash_reporting_service.dart';
+import 'package:workforce_os/core/config/app_env.dart';
 import 'package:workforce_os/features/auth/screens/permission_gatekeeper_screen.dart';
+import 'package:geolocator/geolocator.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  logBootHeader();
+  logProcess('BOOT', 'Starting JOY PeopleHR Flutter App (Web=$kIsWeb, Debug=$kDebugMode)');
+
+  // Global Flutter framework error & crash handler
+  FlutterError.onError = (FlutterErrorDetails details) {
+    logCrash(
+      'FlutterError.onError',
+      details.exception,
+      details.stack,
+      reason: details.context?.toString(),
+    );
+    FlutterError.presentError(details);
+    CrashReportingService.instance.recordError(
+      details.exception,
+      details.stack,
+      reason: details.context?.toString(),
+    );
+  };
+
+  // Global PlatformDispatcher uncaught async error & crash handler
+  PlatformDispatcher.instance.onError = (Object error, StackTrace stack) {
+    logCrash('PlatformDispatcher.onError', error, stack);
+    CrashReportingService.instance.recordError(
+      error,
+      stack,
+      reason: 'Uncaught asynchronous platform error',
+    );
+    return true;
+  };
+
+  AppEnv.verifyConfiguration();
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
@@ -35,49 +69,44 @@ void main() async {
 
   // Initialize Supabase — always runs with real credentials.
   try {
+    logProcess('SUPABASE', 'Initializing Supabase client → ${SupabaseConfig.url}');
     await Supabase.initialize(
       url: SupabaseConfig.url,
       publishableKey: SupabaseConfig.anonKey,
     );
-    secureLog('[Supabase] Initialized → ${SupabaseConfig.url}');
-  } catch (e) {
-    secureLog('[Supabase] Initialization failed: $e');
+    logProcess('SUPABASE', 'Initialized successfully → ${SupabaseConfig.url}');
+  } catch (e, st) {
+    logError('SUPABASE', e, st, 'Supabase.initialize failed');
   }
 
-  // Initialize Firebase & Crashlytics
+  // Launch UI immediately after Supabase init; initialize telemetry & push non-blockingly
+  unawaited(_initializePlatformServices());
+
+  logProcess('BOOT', 'Launching JoyPeopleHRApp root widget');
+  runApp(const JoyPeopleHRApp());
+}
+
+Future<void> _initializePlatformServices() async {
   try {
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
     );
     await CrashReportingService.instance.initialize();
-    secureLog('[Firebase] Initialized with Crashlytics');
+    logProcess('FIREBASE', 'Initialized with Crashlytics');
   } catch (e) {
-    secureLog('[Firebase] Initialization notice: $e');
+    secureLog('[Firebase] Initialization notice (expected on Web if unconfigured): $e');
   }
 
-  // Initialize Push Notifications (after Crashlytics so errors are captured)
   try {
     await PushNotificationService.instance.initialize();
-    secureLog('[Push] Notifications initialized');
+    logProcess('PUSH', 'PushNotificationService initialized');
   } catch (e) {
     secureLog('[Push] Initialization notice: $e');
   }
 
-  // Global error handler — record ALL uncaught errors to Crashlytics
-  FlutterError.onError = (FlutterErrorDetails details) {
-    FlutterError.presentError(details);
-    CrashReportingService.instance.recordError(
-      details.exception,
-      details.stack,
-      reason: details.context?.toString(),
-    );
-  };
-
-  // Catch async errors not handled by try/catch
-  WidgetsFlutterBinding.ensureInitialized();
+  logProcess('SERVICES', 'Initializing AttendanceService & LocationService');
   AttendanceService.instance.initializeSession();
   LocationService.instance.initialize();
-  runApp(const JoyPeopleHRApp());
 }
 
 class JoyPeopleHRApp extends StatelessWidget {
@@ -202,6 +231,10 @@ class _AuthGatekeeperState extends State<AuthGatekeeper> {
     _authSubscription = Supabase.instance.client.auth.onAuthStateChange.listen(
       (data) {
         final event = data.event;
+        logProcess('AUTH', 'Supabase AuthChangeEvent: ${event.name}', data: {
+          'hasSession': data.session != null,
+          'email': data.session?.user.email ?? 'none',
+        });
         if (!mounted) return;
 
         if (event == AuthChangeEvent.signedOut) {
@@ -223,11 +256,42 @@ class _AuthGatekeeperState extends State<AuthGatekeeper> {
   }
 
   Future<void> _checkSession() async {
-    final user = await SupabaseAuthRepository().restoreSession();
+    logProcess('AUTH', 'Checking existing Supabase session...');
+    bool hasPermissions = kIsWeb;
+
+    final results = await Future.wait<dynamic>([
+      SupabaseAuthRepository().restoreSession(),
+      if (!kIsWeb)
+        (() async {
+          try {
+            final locPerm = await Geolocator.checkPermission();
+            final isServiceEnabled = await Geolocator.isLocationServiceEnabled();
+            return isServiceEnabled &&
+                (locPerm == LocationPermission.always || locPerm == LocationPermission.whileInUse);
+          } catch (e) {
+            secureLog('[AuthGatekeeper] Permission check notice: $e');
+            return false;
+          }
+        })(),
+    ]);
+
+    final user = results[0];
+    if (!kIsWeb && results.length > 1) {
+      hasPermissions = results[1] == true;
+    }
+
+    logProcess('AUTH', 'Session restore complete', data: {
+      'isAuthenticated': user != null || UserService.instance.isLoggedIn,
+      'name': user?.name ?? UserService.instance.currentUser.name,
+      'employeeId': user?.employeeId ?? UserService.instance.currentUser.employeeId,
+      'permissionsGranted': hasPermissions,
+    });
+
     if (mounted) {
       setState(() {
         _isCheckingSession = false;
         _isAuthenticated = user != null || UserService.instance.isLoggedIn;
+        _permissionsGranted = hasPermissions;
       });
     }
   }
@@ -235,7 +299,7 @@ class _AuthGatekeeperState extends State<AuthGatekeeper> {
   @override
   Widget build(BuildContext context) {
     return AnimatedSwitcher(
-      duration: const Duration(milliseconds: 260),
+      duration: const Duration(milliseconds: 180),
       switchInCurve: Curves.easeOutCubic,
       switchOutCurve: Curves.easeInCubic,
       child: _isCheckingSession
@@ -243,17 +307,36 @@ class _AuthGatekeeperState extends State<AuthGatekeeper> {
           : (!_isAuthenticated
               ? LoginScreen(
                   key: const ValueKey('login'),
-                  onLoginSuccess: () {
-                    setState(() {
-                      _isAuthenticated = true;
-                      _permissionsGranted = false;
+                  onLoginSuccess: () async {
+                    bool hasPerms = kIsWeb;
+                    if (!kIsWeb) {
+                      try {
+                        final locPerm = await Geolocator.checkPermission();
+                        final isServiceEnabled = await Geolocator.isLocationServiceEnabled();
+                        hasPerms = isServiceEnabled &&
+                            (locPerm == LocationPermission.always || locPerm == LocationPermission.whileInUse);
+                      } catch (_) {}
+                    }
+                    final curUser = UserService.instance.currentUser;
+                    logProcess('AUTH', 'Login succeeded → entering app shell', data: {
+                      'name': curUser.name,
+                      'employeeId': curUser.employeeId,
+                      'companyId': curUser.companyId,
+                      'permissionsGranted': hasPerms,
                     });
+                    if (mounted) {
+                      setState(() {
+                        _isAuthenticated = true;
+                        _permissionsGranted = hasPerms;
+                      });
+                    }
                   },
                 )
               : (!_permissionsGranted
                   ? PermissionGatekeeperScreen(
                       key: const ValueKey('permissions'),
                       onPermissionsGranted: () {
+                        logProcess('PERMISSIONS', 'All required permissions granted');
                         setState(() {
                           _permissionsGranted = true;
                         });
@@ -264,7 +347,7 @@ class _AuthGatekeeperState extends State<AuthGatekeeper> {
   }
 }
 
-/// Lightweight, calm Enterprise Startup Splash Screen
+/// Lightweight, fast Startup Splash Screen
 class _StartupSplashScreen extends StatefulWidget {
   const _StartupSplashScreen({super.key});
 
@@ -282,9 +365,9 @@ class _StartupSplashScreenState extends State<_StartupSplashScreen> with SingleT
     super.initState();
     _animController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 380),
+      duration: const Duration(milliseconds: 180),
     );
-    _scaleAnimation = Tween<double>(begin: 0.96, end: 1.0).animate(
+    _scaleAnimation = Tween<double>(begin: 0.97, end: 1.0).animate(
       CurvedAnimation(parent: _animController, curve: Curves.easeOutCubic),
     );
     _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
@@ -312,26 +395,29 @@ class _StartupSplashScreenState extends State<_StartupSplashScreen> with SingleT
               mainAxisSize: MainAxisSize.min,
               children: [
                 Container(
-                  width: 80,
-                  height: 80,
+                  width: 84,
+                  height: 84,
                   decoration: BoxDecoration(
-                    color: Colors.transparent,
-                    borderRadius: BorderRadius.circular(20),
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(24),
                     boxShadow: [
                       BoxShadow(
-                        color: AppColors.primary.withValues(alpha: 0.15),
-                        blurRadius: 20,
-                        offset: const Offset(0, 8),
+                        color: AppColors.primary.withValues(alpha: 0.14),
+                        blurRadius: 24,
+                        offset: const Offset(0, 10),
                       ),
                     ],
                   ),
                   child: ClipRRect(
-                    borderRadius: BorderRadius.circular(20),
-                    child: Image.asset(
-                      'assets/images/app_logo.png',
-                      width: 80,
-                      height: 80,
-                      fit: BoxFit.contain,
+                    borderRadius: BorderRadius.circular(24),
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Image.asset(
+                        'assets/images/app_logo.png',
+                        width: 60,
+                        height: 60,
+                        fit: BoxFit.contain,
+                      ),
                     ),
                   ),
                 ),
@@ -339,19 +425,39 @@ class _StartupSplashScreenState extends State<_StartupSplashScreen> with SingleT
                 const Text(
                   "JOY PeopleHR",
                   style: TextStyle(
-                    fontSize: 20,
+                    fontSize: 21,
                     fontWeight: FontWeight.w800,
                     color: AppColors.textPrimary,
-                    letterSpacing: -0.3,
+                    letterSpacing: -0.4,
                   ),
                 ),
-                const SizedBox(height: 6),
-                const Text(
-                  "Enterprise HRMS",
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
-                    color: AppColors.textMuted,
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: AppColors.primary.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(99),
+                  ),
+                  child: const Text(
+                    "People • Culture • Workspace",
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.primary,
+                      letterSpacing: 0.2,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 22),
+                SizedBox(
+                  width: 96,
+                  height: 3,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(99),
+                    child: LinearProgressIndicator(
+                      backgroundColor: AppColors.primary.withValues(alpha: 0.10),
+                      valueColor: const AlwaysStoppedAnimation<Color>(AppColors.primary),
+                    ),
                   ),
                 ),
               ],
@@ -490,6 +596,9 @@ class _MainTabShellState extends State<MainTabShell> {
                         })
                     .toList(),
                 onTap: (index) {
+                  if (index >= 0 && index < tabs.length) {
+                    logProcess('NAVIGATION', 'Switched tab → ${tabs[index].label} (index=$index)');
+                  }
                   setState(() => _currentIndex = index);
                 },
               ),

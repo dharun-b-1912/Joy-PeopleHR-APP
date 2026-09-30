@@ -69,7 +69,7 @@ class AttendanceService extends ChangeNotifier {
           schema: 'public',
           table: 'attendance_daily',
           callback: (payload) {
-            secureLog('[REALTIME] attendance_daily event -> refreshing attendance');
+            secureLog('[REALTIME] attendance_daily event (${payload.eventType.name}) -> refreshing attendance');
             fetchTodayAttendance();
           },
         )
@@ -78,20 +78,27 @@ class AttendanceService extends ChangeNotifier {
           schema: 'public',
           table: 'attendance_punches',
           callback: (payload) {
-            secureLog('[REALTIME] attendance_punches event -> refreshing attendance');
+            secureLog('[REALTIME] attendance_punches event (${payload.eventType.name}) -> refreshing attendance');
             fetchTodayAttendance();
           },
         )
-        ..subscribe();
+        ..subscribe((status, [error]) {
+          if (status == RealtimeSubscribeStatus.subscribed) {
+            secureLog('[REALTIME] Subscribed attendance-realtime-$employeeId (attendance_daily, attendance_punches)');
+          }
+        });
     } catch (e) {
       secureLog('[REALTIME] Attendance subscription notice: $e');
     }
   }
 
-  /// Fetches today's authoritative attendance from Supabase
+  /// Fetches today's authoritative attendance from Supabase for the currently logged-in employee session
   Future<void> fetchTodayAttendance() async {
     final user = UserService.instance.currentUser;
-    if (user.dataId.isEmpty) {
+    if (!UserService.instance.isLoggedIn || user.dataId.isEmpty) {
+      _attendanceChannel?.unsubscribe();
+      _attendanceChannel = null;
+      _subscribedEmpId = null;
       _session = const AttendanceSession(status: AttendanceStatus.notCheckedIn);
       _ticker?.cancel();
       notifyListeners();
@@ -119,6 +126,12 @@ class AttendanceService extends ChangeNotifier {
           checkOutDt = AttendanceTimeService.parseServerTimestamp(lastOut, referenceDate: dailyRow['date']?.toString());
         }
 
+        final rawSource = dailyRow['source']?.toString();
+        final attendanceSource = AttendanceSource.fromValue(rawSource);
+        final verifyMethod = dailyRow['verification_type']?.toString();
+        final deviceId = dailyRow['device_id']?.toString();
+        final isSourceLocked = attendanceSource != AttendanceSource.unassigned;
+
         if (checkInDt != null) {
           final isCheckedOut = !isCurrentlyIn && checkOutDt != null && checkOutDt.isAfter(checkInDt);
           if (isCheckedOut) {
@@ -128,6 +141,11 @@ class AttendanceService extends ChangeNotifier {
               checkOutTime: checkOutDt,
               netWorkingMinutes: netMins,
               checkInLocationName: dailyRow['location_name']?.toString() ?? user.campus,
+              source: attendanceSource,
+              sourceLabel: attendanceSource.label,
+              verificationMethod: verifyMethod,
+              deviceId: deviceId,
+              isSourceLocked: isSourceLocked,
             );
             _ticker?.cancel();
           } else {
@@ -135,6 +153,11 @@ class AttendanceService extends ChangeNotifier {
               status: AttendanceStatus.checkedIn,
               checkInTime: checkInDt,
               checkInLocationName: dailyRow['location_name']?.toString() ?? user.campus,
+              source: attendanceSource,
+              sourceLabel: attendanceSource.label,
+              verificationMethod: verifyMethod,
+              deviceId: deviceId,
+              isSourceLocked: isSourceLocked,
             );
             _startTickerIfNeeded();
           }
@@ -146,6 +169,26 @@ class AttendanceService extends ChangeNotifier {
         _session = const AttendanceSession(status: AttendanceStatus.notCheckedIn);
         _ticker?.cancel();
       }
+
+      final checkInFormatted = _session.checkInTime != null
+          ? AttendanceTimeService.formatAttendanceTime(_session.checkInTime!)
+          : null;
+      final sessionKey =
+          '${user.dataId}|${_session.status.name}|${checkInFormatted ?? ""}|${_session.checkOutTime?.toIso8601String() ?? ""}';
+      if (_lastLoggedSessionKey != sessionKey) {
+        _lastLoggedSessionKey = sessionKey;
+        logSessionBanner(
+          event: 'ATTENDANCE STATE SYNCED FOR ACTIVE SESSION',
+          isLoggedIn: true,
+          employeeName: user.name,
+          employeeCode: user.employeeId,
+          employeeUuid: user.dataId,
+          email: user.officeEmail ?? user.personalEmail,
+          attendanceStatus: _session.status.name.toUpperCase(),
+          checkInTime: checkInFormatted,
+          source: _session.sourceLabel,
+        );
+      }
     } catch (e) {
       secureLog('[Attendance] fetchTodayAttendance error: $e');
     } finally {
@@ -153,13 +196,13 @@ class AttendanceService extends ChangeNotifier {
     }
   }
 
+  String? _lastLoggedSessionKey;
+
   void _startTickerIfNeeded() {
     _ticker?.cancel();
-    if (_session.isCheckedIn) {
-      _ticker = Timer.periodic(const Duration(seconds: 1), (timer) {
-        notifyListeners();
-      });
-    }
+    _ticker = null;
+    // Live timer ticking is handled locally by isolated leaf widgets (e.g. AttendanceLiveTimerWidget)
+    // to prevent full-screen tree re-rendering, frame drops, and battery drain.
   }
 
   @override
@@ -206,9 +249,15 @@ class AttendanceService extends ChangeNotifier {
 
     // 3. Prevent duplicate check-in
     if (_session.isCheckedIn) {
-      return const CheckInResult(
+      final timeStr = _session.checkInTime != null
+          ? AttendanceTimeService.formatAttendanceTime(_session.checkInTime!)
+          : 'earlier';
+      final src = (_session.sourceLabel != null && _session.sourceLabel!.isNotEmpty)
+          ? _session.sourceLabel!.toLowerCase()
+          : 'biometric';
+      return CheckInResult(
         success: false,
-        message: "You are already checked in for today's shift.",
+        message: "You're already checked in at $timeStr via $src.",
       );
     }
 

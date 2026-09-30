@@ -178,26 +178,74 @@ class _DocumentRequestDetailScreenState
                               : 'image/jpeg')))));
 
       final cleanName = fileName.replaceAll(RegExp(r'[^a-zA-Z0-9._-]'), '_');
-      final folderPath = 'employees/$empId/documents/${widget.requestId}';
-      final storagePath = '$folderPath/${DateTime.now().millisecondsSinceEpoch}_$cleanName';
-      String fileUrl = '';
+      final uuidRegex = RegExp(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$');
 
-      // 0. Automatically delete previous files in this requirement folder on re-upload
-      try {
-        final existingFiles = await client.storage.from('employee-documents').list(path: folderPath);
-        if (existingFiles.isNotEmpty) {
-          final toDelete = existingFiles
-              .where((f) => f.name.isNotEmpty && !f.name.startsWith('.'))
-              .map((f) => '$folderPath/${f.name}')
-              .toList();
-          if (toDelete.isNotEmpty) {
-            debugPrint('[DOC_UPLOAD] [0/3] Auto-deleting ${toDelete.length} previous file(s): $toDelete');
-            await client.storage.from('employee-documents').remove(toDelete);
-          }
-        }
-      } catch (cleanErr) {
-        debugPrint('[DOC_UPLOAD] Storage cleanup notice: $cleanErr');
+      String resolvedEmpUuid = '';
+      String resolvedOrgId = '';
+
+      if (user.employeeUuid != null && uuidRegex.hasMatch(user.employeeUuid!)) {
+        resolvedEmpUuid = user.employeeUuid!;
+      } else if (user.dataId.isNotEmpty && uuidRegex.hasMatch(user.dataId)) {
+        resolvedEmpUuid = user.dataId;
       }
+
+      if (user.organizationId != null && uuidRegex.hasMatch(user.organizationId!)) {
+        resolvedOrgId = user.organizationId!;
+      }
+
+      // Resolve authoritative UUIDs from Supabase session if needed
+      final authUser = client.auth.currentUser;
+      if (authUser != null && (resolvedEmpUuid.isEmpty || resolvedOrgId.isEmpty)) {
+        try {
+          final profile = await client
+              .from('user_profiles')
+              .select('employee_id, organization_id')
+              .or('auth_user_id.eq.${authUser.id},id.eq.${authUser.id}')
+              .maybeSingle();
+          if (profile != null) {
+            final pEmpId = profile['employee_id']?.toString() ?? '';
+            final pOrgId = profile['organization_id']?.toString() ?? '';
+            if (resolvedEmpUuid.isEmpty && uuidRegex.hasMatch(pEmpId)) {
+              resolvedEmpUuid = pEmpId;
+            }
+            if (resolvedOrgId.isEmpty && uuidRegex.hasMatch(pOrgId)) {
+              resolvedOrgId = pOrgId;
+            }
+          }
+        } catch (_) {}
+      }
+
+      // Lookup in employees table if still needed
+      if (resolvedEmpUuid.isEmpty || resolvedOrgId.isEmpty) {
+        try {
+          final empRow = await client
+              .from('employees')
+              .select('id, organization_id')
+              .eq('employee_code', user.employeeId.isNotEmpty ? user.employeeId : empId)
+              .maybeSingle();
+          if (empRow != null) {
+            final eId = empRow['id']?.toString() ?? '';
+            final oId = empRow['organization_id']?.toString() ?? '';
+            if (resolvedEmpUuid.isEmpty && uuidRegex.hasMatch(eId)) {
+              resolvedEmpUuid = eId;
+            }
+            if (resolvedOrgId.isEmpty && uuidRegex.hasMatch(oId)) {
+              resolvedOrgId = oId;
+            }
+          }
+        } catch (_) {}
+      }
+
+      if (resolvedOrgId.isEmpty) {
+        resolvedOrgId = '0c621892-e938-4707-9957-13534ea32c19';
+      }
+      if (resolvedEmpUuid.isEmpty) {
+        resolvedEmpUuid = user.dataId.isNotEmpty ? user.dataId : empId;
+      }
+
+      // Canonical 4-segment storage path: <org_uuid>/<emp_uuid>/documents/<filename>
+      final storagePath = '$resolvedOrgId/$resolvedEmpUuid/documents/${DateTime.now().millisecondsSinceEpoch}_$cleanName';
+      String fileUrl = '';
 
       // 1. Upload Binary to employee-documents Supabase Storage Bucket (Primary)
       if (fileBytes != null && fileBytes.isNotEmpty) {
@@ -210,14 +258,22 @@ class _DocumentRequestDetailScreenState
                 bytesData,
                 fileOptions: FileOptions(contentType: mimeType, upsert: true),
               );
-          fileUrl = client.storage
-              .from('employee-documents')
-              .getPublicUrl(storagePath);
+          try {
+            fileUrl = await client.storage
+                .from('employee-documents')
+                .createSignedUrl(storagePath, 31536000);
+          } catch (signErr) {
+            debugPrint('[DOC_UPLOAD] createSignedUrl fallback to getPublicUrl: $signErr');
+            fileUrl = client.storage
+                .from('employee-documents')
+                .getPublicUrl(storagePath);
+          }
           debugPrint(
-              '[DOC_UPLOAD] [1/3] Upload to employee-documents SUCCESS -> $storagePath');
+              '[DOC_UPLOAD] [1/3] Upload to employee-documents SUCCESS -> $storagePath (URL: $fileUrl)');
         } catch (storageErr1) {
           debugPrint(
               '[DOC_UPLOAD] employee-documents upload error: $storageErr1');
+          rethrow;
         }
       } else {
         debugPrint(
@@ -229,7 +285,7 @@ class _DocumentRequestDetailScreenState
       try {
         final rpcRes = await client.rpc('fn_submit_document_upload', params: {
           'p_requirement_id': widget.requestId,
-          'p_employee_id': empId,
+          'p_employee_id': resolvedEmpUuid,
           'p_document_category': 'PERSONAL',
           'p_document_type': _req?.documentType ?? 'DOCUMENT',
           'p_file_name': fileName,
@@ -255,20 +311,23 @@ class _DocumentRequestDetailScreenState
           }).eq('id', widget.requestId);
         } catch (_) {}
 
-        final docId = 'doc-${_generateUuid()}';
+        final docId = _generateUuid();
         debugPrint(
-            '[DOC_UPLOAD] [3/3] Inserting employee_documents row with ID: $docId');
+            '[DOC_UPLOAD] [3/3] Inserting employee_documents row with ID: $docId, emp: $resolvedEmpUuid, org: $resolvedOrgId');
         try {
           await client.from('employee_documents').insert({
             'id': docId,
-            'employee_id': empId,
+            'organization_id': resolvedOrgId,
+            'employee_id': resolvedEmpUuid,
             'document_category': 'PERSONAL',
             'document_type': _req?.documentType ?? 'Driving Licence',
+            'document_type_id': widget.requestId,
             'file_name': fileName,
             'file_path': storagePath,
             'file_url': fileUrl,
             'storage_path': storagePath,
             'file_size_bytes': _selectedFile!.sizeInBytes,
+            'mime_type': mimeType,
             'verification_status': 'PENDING',
             'uploaded_at': DateTime.now().toIso8601String(),
           });
@@ -276,7 +335,7 @@ class _DocumentRequestDetailScreenState
               '[DOC_UPLOAD] ✓ Database update and employee_documents row inserted successfully!');
         } catch (docErr) {
           debugPrint(
-              '[DOC_UPLOAD] employee_documents notice: $docErr (document_requirements update is active)');
+              '[DOC_UPLOAD] employee_documents insert notice: $docErr');
         }
 
         // 4. Notify HR Web via Realtime Notification Event

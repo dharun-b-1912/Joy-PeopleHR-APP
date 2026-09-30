@@ -48,7 +48,7 @@ class SupabaseNotificationRepository implements INotificationRepository {
       if (authUid != null && _isValidUuid(authUid)) {
         try {
           final profileRow = await withTimeout(
-            _client.from('user_profiles').select('id').eq('auth_user_id', authUid).maybeSingle(),
+            _client.from('user_profiles').select('id').or('auth_user_id.eq.$authUid,id.eq.$authUid').maybeSingle(),
           );
           userProfileId = profileRow?['id']?.toString();
         } catch (_) {}
@@ -59,6 +59,7 @@ class SupabaseNotificationRepository implements INotificationRepository {
         final orFilters = <String>{
           if (userProfileId != null && _isValidUuid(userProfileId)) 'recipient_user_id.eq.$userProfileId',
           if (targetId.isNotEmpty && _isValidUuid(targetId)) 'recipient_user_id.eq.$targetId',
+          if (authUid != null && _isValidUuid(authUid)) 'recipient_user_id.eq.$authUid',
           'recipient_user_id.is.null',
         }.join(',');
 
@@ -366,9 +367,19 @@ class SupabaseNotificationRepository implements INotificationRepository {
     try {
       if (!SupabaseConfig.isConfigured || notificationId.isEmpty) return;
       if (_isValidUuid(notificationId)) {
-        await _client.from('notification_events').update({
-          'is_read': true,
-        }).eq('id', notificationId);
+        final nowStr = DateTime.now().toIso8601String();
+        try {
+          await _client.from('notification_events').update({
+            'is_read': true,
+          }).eq('id', notificationId);
+        } catch (_) {}
+
+        try {
+          await _client.from('notification_deliveries').update({
+            'status': 'READ',
+            'read_at': nowStr,
+          }).eq('notification_id', notificationId);
+        } catch (_) {}
       }
     } catch (e) {
       secureLog('[Notify] markAsRead failed: $e');

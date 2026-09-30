@@ -96,8 +96,10 @@ class SupabaseAuthRepository implements IAuthRepository {
 
       if (resolution.success && resolution.userModel != null) {
         UserService.instance.setUser(resolution.userModel!);
-        secureLog(
-            '[Auth] Employee resolved → ${resolution.userModel!.employeeId} / ${resolution.userModel!.name}');
+        logProcess(
+          'AUTH',
+          'Authenticated ${resolution.userModel!.name} (${resolution.userModel!.employeeId})',
+        );
         return AuthResult(
           success: true,
           user: resolution.userModel,
@@ -107,6 +109,11 @@ class SupabaseAuthRepository implements IAuthRepository {
         secureLog(
             '[Auth] Identity resolution failed: ${resolution.state} — ${resolution.safeDiagnosticInfo}');
         await _client.auth.signOut().catchError((_) {});
+        logSessionBanner(
+          event: 'LOGIN REJECTED (NO EMPLOYEE PROFILE MAPPED)',
+          isLoggedIn: false,
+          email: authUser.email,
+        );
         return AuthResult(
           success: false,
           errorMessage: resolution.errorMessage ??
@@ -197,8 +204,14 @@ class SupabaseAuthRepository implements IAuthRepository {
   @override
   Future<void> signOut() async {
     try {
+      final prevUser = UserService.instance.currentUser;
+      logProcess('AUTH', 'Signing out employee session', data: {
+        'employee': prevUser.name,
+        'code': prevUser.employeeId,
+        'uuid': prevUser.dataId,
+      });
       await _client.auth.signOut();
-      secureLog('[Auth] Signed out');
+      secureLog('[Auth] Signed out from Supabase Auth');
     } catch (e) {
       secureLog('[Auth] Sign out error: $e');
     } finally {
@@ -214,7 +227,10 @@ class SupabaseAuthRepository implements IAuthRepository {
   Future<UserModel?> restoreSession() async {
     try {
       final session = _client.auth.currentSession;
-      if (session == null) {
+      final isStaleAdminSession = session?.user.email == 'marimuthu@joycorporatesolutions.com' &&
+          EnvConfig.devAuthEmail.isNotEmpty &&
+          EnvConfig.devAuthEmail != 'marimuthu@joycorporatesolutions.com';
+      if (session == null || isStaleAdminSession) {
         // Development Auto-Login (Debug only)
         if (!kReleaseMode &&
             EnvConfig.devAutoLogin &&
@@ -237,12 +253,19 @@ class SupabaseAuthRepository implements IAuthRepository {
           }
         }
 
-        secureLog('[Auth] No active session — showing Login');
+        UserService.instance.clearUser();
+        logSessionBanner(
+          event: 'STARTUP SESSION CHECK — NO EMPLOYEE LOGGED IN (SHOWING LOGIN)',
+          isLoggedIn: false,
+        );
         return null;
       }
 
       final authUser = session.user;
-      secureLog('[Auth] Session found — uid: ${authUser.id}');
+      logProcess('AUTH', 'Existing Supabase JWT session detected — resolving employee identity', data: {
+        'auth_uid': authUser.id,
+        'email': authUser.email,
+      });
 
       final resolution = await EmployeeIdentityResolver.resolve(
         client: _client,
@@ -253,7 +276,10 @@ class SupabaseAuthRepository implements IAuthRepository {
 
       if (resolution.success && resolution.userModel != null) {
         UserService.instance.setUser(resolution.userModel!);
-        secureLog('[Auth] Session restored → ${resolution.userModel!.name}');
+        logProcess(
+          'AUTH',
+          'Session restored for ${resolution.userModel!.name} (${resolution.userModel!.employeeId})',
+        );
         return resolution.userModel;
       } else {
         secureLog(
@@ -298,7 +324,7 @@ class SupabaseAuthRepository implements IAuthRepository {
     try {
       await _client.auth.resetPasswordForEmail(
         email,
-        redirectTo: 'workforceos://reset-password',
+        redirectTo: 'https://joypeoplehr.com/auth/reset-password',
       );
       return true;
     } catch (e) {
@@ -344,49 +370,51 @@ class SupabaseAuthRepository implements IAuthRepository {
         if (_client.auth.currentUser?.id != null) _client.auth.currentUser!.id,
       }.where((s) => s.isNotEmpty).toList();
 
-      // Use ALL candidate IDs — statutory/bank tables may use non-UUID formats
-      // like 'EMP-617871' instead of UUIDs
-      final lookupIds = candidateEmpIds;
+      // Only pass valid UUIDs — employee_id in employee_statutory_details,
+      // employee_bank_details, and employees.id are Postgres UUID columns.
+      final lookupIds = candidateEmpIds.where((s) => Validators.isValidUuid(s)).toList();
       secureLog('[Statutory] Querying with IDs: $lookupIds');
 
       Map<String, dynamic>? statData;
-      try {
-        final statRows = await withTimeout(
-          _client
-              .from('employee_statutory_details')
-              .select()
-              .inFilter('employee_id', lookupIds),
-        );
-        if (statRows.isNotEmpty) {
-          statData = Map<String, dynamic>.from(statRows.first as Map);
-          secureLog(
-              '[Statutory] employee_statutory_details FOUND: pan=${statData['pan_number']}, pf=${statData['pf_number']}, esi=${statData['esi_number']}');
-        } else {
-          secureLog(
-              '[Statutory] employee_statutory_details EMPTY for IDs: $lookupIds');
-        }
-      } catch (e) {
-        secureLog('[Statutory] employee_statutory_details query error: $e');
-      }
-
       Map<String, dynamic>? bankData;
-      try {
-        final bankRows = await withTimeout(
-          _client
-              .from('employee_bank_details')
-              .select()
-              .inFilter('employee_id', lookupIds),
-        );
-        if (bankRows.isNotEmpty) {
-          bankData = Map<String, dynamic>.from(bankRows.first as Map);
-          secureLog(
-              '[Statutory] employee_bank_details FOUND: bank=${bankData['bank_name']}, acc=${bankData['account_number']}');
-        } else {
-          secureLog(
-              '[Statutory] employee_bank_details EMPTY for IDs: $lookupIds');
+      if (lookupIds.isNotEmpty) {
+        try {
+          final statRows = await withTimeout(
+            _client
+                .from('employee_statutory_details')
+                .select()
+                .inFilter('employee_id', lookupIds),
+          );
+          if (statRows.isNotEmpty) {
+            statData = Map<String, dynamic>.from(statRows.first as Map);
+            secureLog(
+                '[Statutory] employee_statutory_details FOUND: pan=${statData['pan_number']}, pf=${statData['pf_number']}, esi=${statData['esi_number']}');
+          } else {
+            secureLog(
+                '[Statutory] employee_statutory_details EMPTY for IDs: $lookupIds');
+          }
+        } catch (e) {
+          secureLog('[Statutory] employee_statutory_details query error: $e');
         }
-      } catch (e) {
-        secureLog('[Auth] employee_bank_details query notice: $e');
+
+        try {
+          final bankRows = await withTimeout(
+            _client
+                .from('employee_bank_details')
+                .select()
+                .inFilter('employee_id', lookupIds),
+          );
+          if (bankRows.isNotEmpty) {
+            bankData = Map<String, dynamic>.from(bankRows.first as Map);
+            secureLog(
+                '[Statutory] employee_bank_details FOUND: bank=${bankData['bank_name']}, acc=${bankData['account_number']}');
+          } else {
+            secureLog(
+                '[Statutory] employee_bank_details EMPTY for IDs: $lookupIds');
+          }
+        } catch (e) {
+          secureLog('[Auth] employee_bank_details query notice: $e');
+        }
       }
 
       // Check employees row fallback if sub-tables had nulls

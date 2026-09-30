@@ -3,7 +3,6 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.CAMERA" />
     <!-- Android 13+ (API 33+) granular media permission -->
@@ -54,15 +53,22 @@
                     android:scheme="workforceos"
                     android:host="reset-password" />
             </intent-filter>
-        </activity>
-        <!-- Firebase Cloud Messaging background service -->
-        <service
-            android:name="com.google.firebase.messaging.FirebaseMessagingService"
-            android:exported="false">
+            <!-- Deep link: joypeoplehr:// scheme -->
             <intent-filter>
-                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="joypeoplehr"
+                    android:host="auth" />
+                <data
+                    android:scheme="joypeoplehr"
+                    android:host="reset-password" />
+                <data
+                    android:scheme="joypeoplehr"
+                    android:host="accept-invite" />
             </intent-filter>
-        </service>
+        </activity>
 
         <!-- Firebase Cloud Messaging default notification channel and icon -->
         <meta-data

@@ -86,7 +86,7 @@ class _ExpenseClaimModalState extends State<ExpenseClaimModal> {
       return;
     }
     if (_receiptBytes == null || _receiptFileName == null) {
-      setState(() => _errorText = "Please upload a bill or receipt proof (Mandatory)");
+      setState(() => _errorText = "Please attach the bill/receipt before submitting.");
       return;
     }
 

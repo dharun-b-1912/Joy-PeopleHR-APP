@@ -50,7 +50,11 @@ class MoreModulesController extends ChangeNotifier {
   RealtimeChannel? _documentsChannel;
   String? _subscribedDocEmpId;
 
+  bool _isInitialized = false;
+
   void initialize() {
+    if (_isInitialized) return;
+    _isInitialized = true;
     UserService.instance.addListener(loadAllData);
     loadAllData();
   }
@@ -66,15 +70,6 @@ class MoreModulesController extends ChangeNotifier {
         ..onPostgresChanges(
           event: PostgresChangeEvent.all,
           schema: 'public',
-          table: 'employee_service_configs',
-          callback: (payload) {
-            secureLog('[REALTIME] employee_service_configs change event');
-            loadAllData();
-          },
-        )
-        ..onPostgresChanges(
-          event: PostgresChangeEvent.all,
-          schema: 'public',
           table: 'expense_claims',
           callback: (payload) {
             secureLog('[REALTIME] expense_claims change event');
@@ -84,54 +79,9 @@ class MoreModulesController extends ChangeNotifier {
         ..onPostgresChanges(
           event: PostgresChangeEvent.all,
           schema: 'public',
-          table: 'digital_letters',
+          table: 'employee_requests',
           callback: (payload) {
-            secureLog('[REALTIME] digital_letters change event');
-            loadAllData();
-          },
-        )
-        ..onPostgresChanges(
-          event: PostgresChangeEvent.all,
-          schema: 'public',
-          table: 'helpdesk_tickets',
-          callback: (payload) {
-            secureLog('[REALTIME] helpdesk_tickets change event');
-            loadAllData();
-          },
-        )
-        ..onPostgresChanges(
-          event: PostgresChangeEvent.all,
-          schema: 'public',
-          table: 'helpdesk_messages',
-          callback: (payload) {
-            secureLog('[REALTIME] helpdesk_messages change event');
-            loadAllData();
-          },
-        )
-        ..onPostgresChanges(
-          event: PostgresChangeEvent.all,
-          schema: 'public',
-          table: 'service_definitions',
-          callback: (payload) {
-            secureLog('[REALTIME] service_definitions change event');
-            loadAllData();
-          },
-        )
-        ..onPostgresChanges(
-          event: PostgresChangeEvent.all,
-          schema: 'public',
-          table: 'service_requests',
-          callback: (payload) {
-            secureLog('[REALTIME] service_requests change event');
-            loadAllData();
-          },
-        )
-        ..onPostgresChanges(
-          event: PostgresChangeEvent.all,
-          schema: 'public',
-          table: 'communications',
-          callback: (payload) {
-            secureLog('[REALTIME] communications change event');
+            secureLog('[REALTIME] employee_requests change event');
             loadAllData();
           },
         )
@@ -147,10 +97,46 @@ class MoreModulesController extends ChangeNotifier {
         ..onPostgresChanges(
           event: PostgresChangeEvent.all,
           schema: 'public',
-          table: 'shift_rosters',
+          table: 'documents',
           callback: (payload) {
-            secureLog('[REALTIME] shift_rosters change event');
+            secureLog('[REALTIME] documents change event');
             _silentRefreshDocuments();
+          },
+        )
+        ..onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'document_requests',
+          callback: (payload) {
+            secureLog('[REALTIME] document_requests change event');
+            _silentRefreshDocuments();
+          },
+        )
+        ..onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'employee_shift_assignments',
+          callback: (payload) {
+            secureLog('[REALTIME] employee_shift_assignments change event');
+            loadAllData();
+          },
+        )
+        ..onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'payslips',
+          callback: (payload) {
+            secureLog('[REALTIME] payslips change event');
+            loadAllData();
+          },
+        )
+        ..onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'notification_events',
+          callback: (payload) {
+            secureLog('[REALTIME] notification_events change event');
+            loadAllData();
           },
         )
         ..subscribe();
@@ -183,7 +169,7 @@ class MoreModulesController extends ChangeNotifier {
     final hasExistingData = documents.isNotEmpty || rosters.isNotEmpty || letters.isNotEmpty;
     if (!hasExistingData) {
       _isLoading = true;
-      notifyListeners();
+      Future.microtask(notifyListeners);
     }
 
     try {
@@ -306,16 +292,24 @@ class MoreModulesController extends ChangeNotifier {
     String? receiptFileName,
   }) async {
     try {
+      if (receiptBytes == null || receiptFileName == null || receiptFileName.isEmpty) {
+        secureLog('[MoreModulesController] Blocked: receipt proof is mandatory for expense claims');
+        return false;
+      }
+
       final user = UserService.instance.currentUser;
       String? uploadedUrl;
 
-      if (receiptBytes != null && receiptFileName != null && receiptFileName.isNotEmpty) {
-        uploadedUrl = await DocumentUploadService.instance.uploadExpenseReceipt(
-          tenantId: user.tenantId,
-          employeeId: user.resolvedEmployeeId,
-          bytes: receiptBytes,
-          fileName: receiptFileName,
-        );
+      uploadedUrl = await DocumentUploadService.instance.uploadExpenseReceipt(
+        tenantId: user.tenantId,
+        employeeId: user.resolvedEmployeeId,
+        bytes: receiptBytes,
+        fileName: receiptFileName,
+      );
+
+      if (uploadedUrl == null || uploadedUrl.isEmpty) {
+        secureLog('[MoreModulesController] Blocked: receipt upload failed');
+        return false;
       }
 
       final claim = ExpenseClaimModel(
@@ -481,6 +475,7 @@ class MoreModulesController extends ChangeNotifier {
 
   @override
   void dispose() {
+    UserService.instance.removeListener(loadAllData);
     _documentsChannel?.unsubscribe();
     super.dispose();
   }

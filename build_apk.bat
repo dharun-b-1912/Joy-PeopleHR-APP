@@ -1,7 +1,7 @@
 @echo off
 echo ===================================================
 echo   JOY PeopleHR Mobile - Production Release Builder
-echo   Version: 1.0.2+7 (Live Office Production Test)
+echo   Version: 1.0.5+10 (Production Release with Push & Tray Fixes)
 echo ===================================================
 echo.
 cd /d "%~dp0"
@@ -14,11 +14,11 @@ call flutter build apk --release
 echo.
 echo [3/3] Copying APK to root for distribution...
 if exist "build\app\outputs\flutter-apk\app-release.apk" (
-    copy /y "build\app\outputs\flutter-apk\app-release.apk" "JOY_PeopleHR_v1.0.2_build7.apk"
+    copy /y "build\app\outputs\flutter-apk\app-release.apk" "JOY_PeopleHR_v1.0.5_build10.apk"
     echo.
     echo ===================================================
     echo   SUCCESS! Release APK generated:
-    echo   JOY_PeopleHR_v1.0.2_build7.apk
+    echo   JOY_PeopleHR_v1.0.5_build10.apk
     echo ===================================================
 ) else (
     echo.

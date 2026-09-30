@@ -46,7 +46,7 @@ class _PayslipsScreenState extends State<PayslipsScreen> {
             backgroundColor: Colors.white,
             onRefresh: () => controller.loadAllData(),
             child: controller.isLoading && payslips.isEmpty
-                ? const Center(child: CircularProgressIndicator())
+                ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
                 : payslips.isEmpty
                     ? ListView(
                         physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),

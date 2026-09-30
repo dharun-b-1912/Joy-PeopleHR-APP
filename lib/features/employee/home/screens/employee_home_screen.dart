@@ -27,6 +27,7 @@ import '../../../../repositories/supabase/supabase_employee_repository.dart';
 import '../../virtual_id/dialogs/virtual_id_card_dialog.dart';
 import '../../../../models/employee_models.dart';
 import '../../../../widgets/attendance/attendance_live_timer.dart';
+import '../../../../core/services/local_notification_store.dart';
 import 'notifications_screen.dart';
 
 class HomeDashboardScreen extends StatefulWidget {
@@ -787,15 +788,24 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
   }
 
 
+  bool _isRefreshingHome = false;
+
   Future<void> _handlePullToRefresh() async {
-    await Future.wait([
-      LocationService.instance.evaluateLiveLocation(),
-      AttendanceService.instance.fetchTodayAttendance(),
-      NotificationController.instance.refresh(),
-      MoreModulesController.instance.loadAllData(),
-      AttendanceDetailController.instance.refresh(),
-      SupabaseEmployeeRepository().getCurrentEmployee(),
-    ]);
+    if (_isRefreshingHome) return;
+    _isRefreshingHome = true;
+    try {
+      await Future.wait([
+        LocationService.instance.evaluateLiveLocation(),
+        AttendanceService.instance.fetchTodayAttendance(),
+        NotificationController.instance.refresh(),
+        MoreModulesController.instance.loadAllData(),
+        AttendanceDetailController.instance.refresh(),
+        SupabaseEmployeeRepository().getCurrentEmployee(),
+      ]);
+    } catch (_) {
+    } finally {
+      _isRefreshingHome = false;
+    }
   }
 
   @override
@@ -808,84 +818,90 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
     return Stack(
       children: [
         Positioned(
-          top: 0,
-          left: 0,
-          right: 0,
-          height: 340,
-          child: Container(
-            decoration: const BoxDecoration(
-              gradient: AppColors.emeraldAuraHeader,
+            top: 0,
+            left: 0,
+            right: 0,
+            height: 380,
+            child: Container(
+              decoration: const BoxDecoration(
+                gradient: AppColors.emeraldAuraHeader,
+              ),
             ),
           ),
-        ),
-        RefreshIndicator(
-          color: AppColors.primary,
-          backgroundColor: Colors.white,
-          onRefresh: _handlePullToRefresh,
-          child: SingleChildScrollView(
-            physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
-            padding: EdgeInsets.fromLTRB(
-              AppSpacing.screenHorizontal,
-              topSafeArea,
-              AppSpacing.screenHorizontal,
-              AppSpacing.bottomNavClearance,
-            ),
-            child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          _timeBasedGreeting,
-                          style: AppTypography.caption.copyWith(
-                            color: AppColors.textSecondary,
+          RefreshIndicator(
+            color: AppColors.primary,
+            backgroundColor: Colors.white,
+            edgeOffset: MediaQuery.paddingOf(context).top,
+            displacement: 40,
+            onRefresh: _handlePullToRefresh,
+            child: SingleChildScrollView(
+              physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
+              padding: EdgeInsets.fromLTRB(
+                AppSpacing.screenHorizontal,
+                topSafeArea,
+                AppSpacing.screenHorizontal,
+                AppSpacing.bottomNavClearance,
+              ),
+              child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            _timeBasedGreeting,
+                            style: AppTypography.caption.copyWith(
+                              color: AppColors.textSecondary,
+                            ),
                           ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          currentUser.firstName,
-                          style: AppTypography.displayHeader,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          (currentUser.companyName != null && currentUser.companyName!.isNotEmpty)
-                              ? currentUser.companyName!
-                              : "Organization",
-                          style: AppTypography.bodySmall.copyWith(
-                            fontWeight: FontWeight.w700,
-                            color: AppColors.textPrimary,
+                          const SizedBox(height: 2),
+                          Text(
+                            currentUser.firstName,
+                            style: AppTypography.displayHeader,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                           ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        Text(
-                          "${currentUser.department.isNotEmpty && currentUser.department != 'N/A' ? currentUser.department.trim() : 'Development'} · ${(locationResult.targetLocation?.name ?? (currentUser.approvedLocation.name.isNotEmpty && currentUser.approvedLocation.name != 'Work Location' ? currentUser.approvedLocation.name : (currentUser.campus.isNotEmpty && currentUser.campus != '—' ? currentUser.campus : 'Workplace')))}",
-                          style: AppTypography.caption.copyWith(
-                            color: AppColors.textSecondary,
-                            fontSize: 11,
+                          const SizedBox(height: 4),
+                          Text(
+                            (currentUser.companyName != null && currentUser.companyName!.isNotEmpty)
+                                ? currentUser.companyName!
+                                : "Organization",
+                            style: AppTypography.bodySmall.copyWith(
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.textPrimary,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                           ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ],
+                          Text(
+                            "${currentUser.department.isNotEmpty && currentUser.department != 'N/A' ? (currentUser.unit?.isNotEmpty == true ? '${currentUser.department.trim()} / ${currentUser.unit!.trim()}' : currentUser.department.trim()) : (currentUser.designation.isNotEmpty ? currentUser.designation.trim() : 'Workforce')} · ${(locationResult.targetLocation?.name ?? (currentUser.approvedLocation.name.isNotEmpty && currentUser.approvedLocation.name != 'Work Location' ? currentUser.approvedLocation.name : (currentUser.campus.isNotEmpty && currentUser.campus != '—' ? currentUser.campus : 'Workplace')))}",
+                            style: AppTypography.caption.copyWith(
+                              color: AppColors.textSecondary,
+                              fontSize: 11,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
                   const SizedBox(width: 12),
                   Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       ListenableBuilder(
-                        listenable: NotificationController.instance,
+                        listenable: Listenable.merge([
+                          NotificationController.instance,
+                          LocalNotificationStore.instance,
+                        ]),
                         builder: (context, _) {
-                          final count = NotificationController.instance.unreadCount;
+                          final count = NotificationController.instance.unreadCount +
+                              LocalNotificationStore.instance.unreadCount;
                           return GestureDetector(
                             onTap: () {
                               Navigator.push(
@@ -1073,12 +1089,12 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
                                                         locationResult.state == AttendanceGpsState.initializing
                                                     ? "GPS: Locating..."
                                                     : (locationResult.isInside
-                                                        ? "GPS: In"
+                                                        ? "In Range"
                                                         : (locationResult.state == AttendanceGpsState.locationDisabled
                                                             ? "GPS Off"
                                                             : (locationResult.state == AttendanceGpsState.permissionDenied
                                                                 ? "Permission"
-                                                                : "GPS: Out"))),
+                                                                : "Out of Range"))),
                                                 overflow: TextOverflow.ellipsis,
                                                 maxLines: 1,
                                                 style: AppTypography.overline.copyWith(
@@ -1174,24 +1190,30 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
                                     width: double.infinity,
                                     padding: const EdgeInsets.symmetric(vertical: 8),
                                     decoration: BoxDecoration(
-                                      color: AppColors.mintBg,
+                                      color: attendanceSession.isBiometricLocked ? const Color(0xFFEFF6FF) : AppColors.mintBg,
                                       borderRadius: AppRadius.borderPill,
                                     ),
                                     child: Center(
                                       child: Row(
                                         mainAxisSize: MainAxisSize.min,
                                         children: [
-                                          const Icon(
-                                            CupertinoIcons.checkmark_alt_circle_fill,
+                                          Icon(
+                                            attendanceSession.isBiometricLocked
+                                                ? CupertinoIcons.bolt_fill
+                                                : CupertinoIcons.checkmark_alt_circle_fill,
                                             size: 14,
-                                            color: AppColors.mintFg,
+                                            color: attendanceSession.isBiometricLocked ? const Color(0xFF2563EB) : AppColors.mintFg,
                                           ),
                                           const SizedBox(width: 4),
                                           Text(
-                                            "Checked In",
+                                            attendanceSession.isBiometricLocked
+                                                ? (attendanceSession.verificationMethod != null && attendanceSession.verificationMethod!.isNotEmpty
+                                                    ? "Biometric (${attendanceSession.verificationMethod})"
+                                                    : "Biometric In")
+                                                : "Mobile In",
                                             style: AppTypography.caption.copyWith(
                                               fontWeight: FontWeight.w800,
-                                              color: AppColors.mintFg,
+                                              color: attendanceSession.isBiometricLocked ? const Color(0xFF2563EB) : AppColors.mintFg,
                                             ),
                                           ),
                                         ],
@@ -1364,14 +1386,21 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
                                   Expanded(
                                     child: Text(
                                       isCheckedIn
-                                          ? "Working Today"
+                                          ? (attendanceSession.isBiometricLocked
+                                              ? "Biometric Active"
+                                              : "Working Today")
                                           : (AttendanceService.instance.session.isCheckedOut
                                               ? "Today's Work"
                                               : "Upcoming Shift"),
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
                                       style: AppTypography.caption.copyWith(
-                                        color: AppColors.textOnDarkMuted,
+                                        color: isCheckedIn && attendanceSession.isBiometricLocked
+                                            ? AppColors.primaryAccent
+                                            : AppColors.textOnDarkMuted,
+                                        fontWeight: isCheckedIn && attendanceSession.isBiometricLocked
+                                            ? FontWeight.w700
+                                            : FontWeight.w500,
                                       ),
                                     ),
                                   ),
@@ -1412,7 +1441,9 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
                                 ),
                                 child: Text(
                                   isCheckedIn
-                                      ? "Shift Ends ${currentUser.shiftEnd}"
+                                      ? (attendanceSession.isBiometricLocked
+                                          ? "Locked: Biometric Terminal"
+                                          : "Shift Ends ${currentUser.shiftEnd}")
                                       : (AttendanceService.instance.session.isCheckedOut
                                           ? "Completed for today"
                                           : "Shift Starts ${currentUser.shiftStart}"),

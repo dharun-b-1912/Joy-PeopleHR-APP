@@ -30,7 +30,11 @@ class LeaveController extends ChangeNotifier {
   List<LeaveTypeConfigModel> _leaveTypes = [];
   List<LeaveTypeConfigModel> get leaveTypes => _leaveTypes;
 
+  bool _isInitialized = false;
+
   void initialize() {
+    if (_isInitialized) return;
+    _isInitialized = true;
     UserService.instance.addListener(_loadData);
     _loadData();
   }
@@ -196,6 +200,7 @@ class LeaveController extends ChangeNotifier {
 
   @override
   void dispose() {
+    UserService.instance.removeListener(_loadData);
     _leaveChannel?.unsubscribe();
     super.dispose();
   }

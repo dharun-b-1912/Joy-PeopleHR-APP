@@ -7,6 +7,7 @@ import '../../core/services/user_service.dart';
 import '../../core/utils/app_date_time.dart';
 import '../../core/utils/query_timeout.dart';
 import '../../core/utils/secure_log.dart';
+import '../../core/utils/validators.dart';
 import '../../models/employee_models.dart';
 import '../../models/hrms_models.dart';
 import '../interfaces/employee_repository.dart';
@@ -72,91 +73,93 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
         if (user.employeeId.isNotEmpty) user.employeeId,
         if (user.resolvedEmployeeId.isNotEmpty) user.resolvedEmployeeId,
         if (employeeId.trim().isNotEmpty) employeeId.trim(),
-      }.where((id) => id.isNotEmpty).toList();
+      }.where((id) => Validators.isValidUuid(id)).toList();
 
       Map<String, dynamic> merged = {};
 
-      // 1. Query attendance_daily by authoritative attendance_date and employee UUID
-      try {
-        final dailyDataList = await withTimeout(
-          _client
-              .from('attendance_daily')
-              .select()
-              .inFilter('employee_id', candidateEmpIds)
-              .eq('attendance_date', todayDate)
-              .limit(1),
-        );
-        if (dailyDataList.isNotEmpty) {
-          final row = Map<String, dynamic>.from(dailyDataList.first);
-          merged.addAll(row);
-          merged['date'] = row['attendance_date'] ?? todayDate;
-          merged['net_working_minutes'] = (row['total_work_minutes'] as num?)?.toInt() ?? (row['net_working_minutes'] as num?)?.toInt() ?? 0;
-          merged['location_name'] = row['check_in_location_name'] ?? row['location_name'];
-          merged['source'] = row['active_source'] ?? row['source'] ?? row['punch_source'];
-          merged['verification_type'] = row['verification_type'] ?? row['punch_method'] ?? row['verify_type'];
-          merged['device_id'] = row['device_id'] ?? row['device_serial'];
-          if (row['first_check_in'] != null && (row['last_check_out'] == null || row['last_check_out'].toString().isEmpty)) {
-            merged['is_currently_in'] = true;
-          }
-        }
-      } catch (e) {
-        secureLog('[Attendance] attendance_daily query notice: $e');
-      }
-
-      // 2. Query today's attendance_punches to ensure authoritative check-in/out timestamps and source
-      try {
-        final businessDateParts = todayDate.split('-').map(int.parse).toList();
-        // Start of business day in IST (00:00:00 IST) converted to UTC (-5h30m)
-        final businessDayStartUtc = DateTime.utc(businessDateParts[0], businessDateParts[1], businessDateParts[2])
-            .subtract(AttendanceTimeService.istOffset);
-
-        final events = await withTimeout(
-          _client
-              .from('attendance_punches')
-              .select()
-              .inFilter('employee_id', candidateEmpIds)
-              .gte('punch_time', businessDayStartUtc.toIso8601String())
-              .order('punch_time', ascending: true),
-        );
-
-        if (events.isNotEmpty) {
-          events.sort((a, b) => (a['punch_time'] ?? '').toString().compareTo((b['punch_time'] ?? '').toString()));
-
-          String? firstInTimestamp;
-          String? lastOutTimestamp;
-          String? firstSource;
-          String? firstVerifyType;
-          String? firstDeviceId;
-
-          for (final ev in events) {
-            final type = (ev['punch_type'] ?? '').toString().toUpperCase();
-            final ts = ev['punch_time']?.toString();
-            if (ts != null && ts.isNotEmpty) {
-              if (type.contains('IN') && !type.contains('OUT')) {
-                firstInTimestamp ??= ts;
-                firstSource ??= (ev['punch_source'] ?? ev['source'])?.toString();
-                firstVerifyType ??= (ev['verification_type'] ?? ev['verify_type'] ?? ev['punch_method'])?.toString();
-                firstDeviceId ??= (ev['device_id'] ?? ev['device_serial'])?.toString();
-              } else if (type.contains('OUT')) {
-                lastOutTimestamp = ts;
-              }
+      if (candidateEmpIds.isNotEmpty) {
+        // 1. Query attendance_daily by authoritative attendance_date and employee UUID
+        try {
+          final dailyDataList = await withTimeout(
+            _client
+                .from('attendance_daily')
+                .select()
+                .inFilter('employee_id', candidateEmpIds)
+                .eq('attendance_date', todayDate)
+                .limit(1),
+          );
+          if (dailyDataList.isNotEmpty) {
+            final row = Map<String, dynamic>.from(dailyDataList.first);
+            merged.addAll(row);
+            merged['date'] = row['attendance_date'] ?? todayDate;
+            merged['net_working_minutes'] = (row['total_work_minutes'] as num?)?.toInt() ?? (row['net_working_minutes'] as num?)?.toInt() ?? 0;
+            merged['location_name'] = row['check_in_location_name'] ?? row['location_name'];
+            merged['source'] = row['active_source'] ?? row['source'] ?? row['punch_source'];
+            merged['verification_type'] = row['verification_type'] ?? row['punch_method'] ?? row['verify_type'];
+            merged['device_id'] = row['device_id'] ?? row['device_serial'];
+            if (row['first_check_in'] != null && (row['last_check_out'] == null || row['last_check_out'].toString().isEmpty)) {
+              merged['is_currently_in'] = true;
             }
           }
-
-          final latestEvent = events.last;
-          final latestType = (latestEvent['punch_type'] ?? '').toString().toUpperCase();
-          final isCurrentlyIn = latestType.contains('IN') && !latestType.contains('OUT');
-
-          merged['first_check_in'] = firstInTimestamp ?? merged['first_check_in'];
-          merged['last_check_out'] = isCurrentlyIn ? null : (lastOutTimestamp ?? merged['last_check_out']);
-          merged['is_currently_in'] = isCurrentlyIn || (merged['first_check_in'] != null && (merged['last_check_out'] == null || merged['last_check_out'].toString().isEmpty));
-          merged['date'] = todayDate;
-          if (firstSource != null) merged['source'] = firstSource;
-          if (firstVerifyType != null) merged['verification_type'] = firstVerifyType;
-          if (firstDeviceId != null) merged['device_id'] = firstDeviceId;
+        } catch (e) {
+          secureLog('[Attendance] attendance_daily query notice: $e');
         }
-      } catch (e) {
-        secureLog('[Attendance] attendance_punches query notice: $e');
+
+        // 2. Query today's attendance_punches to ensure authoritative check-in/out timestamps and source
+        try {
+          final businessDateParts = todayDate.split('-').map(int.parse).toList();
+          // Start of business day in IST (00:00:00 IST) converted to UTC (-5h30m)
+          final businessDayStartUtc = DateTime.utc(businessDateParts[0], businessDateParts[1], businessDateParts[2])
+              .subtract(AttendanceTimeService.istOffset);
+
+          final events = await withTimeout(
+            _client
+                .from('attendance_punches')
+                .select()
+                .inFilter('employee_id', candidateEmpIds)
+                .gte('punch_time', businessDayStartUtc.toIso8601String())
+                .order('punch_time', ascending: true),
+          );
+
+          if (events.isNotEmpty) {
+            events.sort((a, b) => (a['punch_time'] ?? '').toString().compareTo((b['punch_time'] ?? '').toString()));
+
+            String? firstInTimestamp;
+            String? lastOutTimestamp;
+            String? firstSource;
+            String? firstVerifyType;
+            String? firstDeviceId;
+
+            for (final ev in events) {
+              final type = (ev['punch_type'] ?? '').toString().toUpperCase();
+              final ts = ev['punch_time']?.toString();
+              if (ts != null && ts.isNotEmpty) {
+                if (type.contains('IN') && !type.contains('OUT')) {
+                  firstInTimestamp ??= ts;
+                  firstSource ??= (ev['punch_source'] ?? ev['source'])?.toString();
+                  firstVerifyType ??= (ev['verification_mode'] ?? ev['verification_type'] ?? ev['verify_type'] ?? ev['punch_method'])?.toString();
+                  firstDeviceId ??= (ev['device_id'] ?? ev['device_serial'])?.toString();
+                } else if (type.contains('OUT')) {
+                  lastOutTimestamp = ts;
+                }
+              }
+            }
+
+            final latestEvent = events.last;
+            final latestType = (latestEvent['punch_type'] ?? '').toString().toUpperCase();
+            final isCurrentlyIn = latestType.contains('IN') && !latestType.contains('OUT');
+
+            merged['first_check_in'] = firstInTimestamp ?? merged['first_check_in'];
+            merged['last_check_out'] = isCurrentlyIn ? null : (lastOutTimestamp ?? merged['last_check_out']);
+            merged['is_currently_in'] = isCurrentlyIn || (merged['first_check_in'] != null && (merged['last_check_out'] == null || merged['last_check_out'].toString().isEmpty));
+            merged['date'] = todayDate;
+            if (firstSource != null) merged['source'] = firstSource;
+            if (firstVerifyType != null) merged['verification_type'] = firstVerifyType;
+            if (firstDeviceId != null) merged['device_id'] = firstDeviceId;
+          }
+        } catch (e) {
+          secureLog('[Attendance] attendance_punches query notice: $e');
+        }
       }
 
       if (merged.isNotEmpty) {
@@ -236,6 +239,24 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
           }),
         );
         secureLog('[ATTENDANCE][RPC] fn_record_attendance_punch success: $rpcRes');
+
+        // Broadcast Realtime Outbox Event for cross-platform instant mesh update
+        await RealtimeOutboxService.insertEvent(
+          entityType: 'ATTENDANCE_DAILY',
+          eventType: 'attendance.updated',
+          entityId: employeeUuid,
+          tenantId: tenantId,
+          actorId: employeeUuid,
+          payload: {
+            'employee_id': employeeUuid,
+            'employee_code': user.employeeId,
+            'employee_name': user.name,
+            'punch_type': type,
+            'timestamp': nowIso,
+            'date': todayDate,
+            'source': 'MOBILE_GPS',
+          },
+        );
         return; // Server-side function authoritatively handled both punch and daily records
       } catch (rpcErr) {
         secureLog('[ATTENDANCE][RPC] Exception during GPS attendance validation: $rpcErr');
@@ -247,26 +268,25 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
 
     // 3. Fallback / Direct insert into attendance_punches (canonical punch ledger)
     final isCheckOut = type.toUpperCase().contains('OUT');
+    final isUnauthorizedCheckout = isCheckOut &&
+        checkoutVerification != null &&
+        checkoutVerification.status == CheckoutLocationStatus.unauthorized;
     final payload = <String, dynamic>{
       'employee_id': employeeUuid,
       if (tenantId.isNotEmpty) 'organization_id': tenantId,
       'punch_time': nowIso,
       'punch_type': isCheckOut ? 'OUT' : 'IN',
-      'punch_source': 'MOBILE',
+      'verification_mode': 'GPS',
+      'punch_source': 'MOBILE_GPS',
       'latitude': latitude,
       'longitude': longitude,
-      'device_id': deviceId ?? 'FLUTTER_MOBILE',
-      'device_info': {
-        'accuracy': accuracy ?? 10.0,
-        'isMock': isMocked,
-      },
-      'is_geofence_verified': true,
+      'accuracy_meters': accuracy ?? 10.0,
+      'location_authorized': !isUnauthorizedCheckout,
+      'unauthorized_checkout': isUnauthorizedCheckout,
+      if (checkoutVerification?.reason != null)
+        'unauthorized_checkout_reason': checkoutVerification!.reason,
+      'is_processed': true,
     };
-
-    // Attach checkout location verification data for CHECK_OUT events
-    if (isCheckOut && checkoutVerification != null) {
-      payload.addAll(checkoutVerification.toMap());
-    }
 
     try {
       await withTimeout(
@@ -301,26 +321,22 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
         }
       }
 
-      final existingSource = existingDaily?['active_source'] ?? existingDaily?['source'] ?? existingDaily?['punch_source'];
       final dailyPayload = <String, dynamic>{
+        if (tenantId.isNotEmpty) 'organization_id': tenantId,
         'employee_id': employeeUuid,
         'attendance_date': todayDate,
         'status': 'PRESENT',
+        'payable_status': 1.0,
         'first_check_in': firstIn,
         'last_check_out': lastOut,
         'total_work_minutes': netMinutes,
-        'active_source': existingSource ?? 'MOBILE',
-        'source': existingSource ?? 'MOBILE',
-        'punch_source': existingSource ?? 'MOBILE',
-        'verification_type': isCheckIn ? 'GPS_GEOFENCE' : (existingDaily?['verification_type'] ?? 'GPS_GEOFENCE'),
-        'device_id': deviceId ?? 'FLUTTER_MOBILE',
+        'unauthorized_checkout': isUnauthorizedCheckout,
+        if (checkoutVerification?.reason != null)
+          'unauthorized_checkout_reason': checkoutVerification!.reason,
+        if (!isCheckIn && checkoutVerification?.locationName != null)
+          'check_out_location_name': checkoutVerification!.locationName,
         'updated_at': nowIso,
       };
-
-      // Attach checkout location verification data for CHECK_OUT events
-      if (!isCheckIn && checkoutVerification != null) {
-        dailyPayload.addAll(checkoutVerification.toMap());
-      }
 
       await withTimeout(
         _client.from('attendance_daily').upsert(dailyPayload, onConflict: 'employee_id,attendance_date'),
@@ -372,63 +388,64 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
 
       final user = UserService.instance.currentUser;
       final targetId = user.resolvedEmployeeId.isNotEmpty ? user.resolvedEmployeeId : employeeId;
-      final targetCode = user.employeeId;
 
       final candidateEmpIds = <String>{
         targetId,
         if (user.employeeUuid?.isNotEmpty == true) user.employeeUuid!,
         if (user.dataId.isNotEmpty) user.dataId,
         if (employeeId.trim().isNotEmpty) employeeId.trim(),
-      }.where((id) => id.isNotEmpty).toList();
+      }.where((id) => Validators.isValidUuid(id)).toList();
 
       // 1. Fetch all raw ledger rows from attendance_daily
       final dailyMap = <String, Map<String, dynamic>>{};
-      try {
-        final dailyRows = await withTimeout(
-          _client
-              .from('attendance_daily')
-              .select()
-              .inFilter('employee_id', candidateEmpIds)
-              .gte('attendance_date', '$y-${m.toString().padLeft(2, '0')}-01')
-              .lte('attendance_date', '$y-${m.toString().padLeft(2, '0')}-$totalDaysInMonth'),
-        );
-        for (final r in dailyRows) {
-          final d = (r['attendance_date'] ?? r['date'])?.toString();
-          if (d != null && d.isNotEmpty) {
-            dailyMap[d] = Map<String, dynamic>.from(r);
-          }
-        }
-      } catch (e) {
-        secureLog('[Attendance] attendance_daily fetch notice: $e');
-      }
-
-      // 2. Fetch all raw events from attendance_punches in case punch is recorded there
       final eventsMap = <String, List<Map<String, dynamic>>>{};
-      try {
-        final startUtc = DateTime.utc(y, m, 1).subtract(AttendanceTimeService.istOffset);
-        final endUtc = DateTime.utc(y, m, totalDaysInMonth, 23, 59, 59).subtract(AttendanceTimeService.istOffset);
-
-        final eventRows = await withTimeout(
-          _client
-              .from('attendance_punches')
-              .select()
-              .inFilter('employee_id', candidateEmpIds)
-              .gte('punch_time', startUtc.toIso8601String())
-              .lte('punch_time', endUtc.toIso8601String())
-              .order('punch_time', ascending: true),
-        );
-        for (final ev in eventRows) {
-          final tsStr = ev['punch_time']?.toString();
-          if (tsStr != null && tsStr.isNotEmpty) {
-            final parsedDt = DateTime.tryParse(tsStr);
-            if (parsedDt != null) {
-              final bDate = AttendanceTimeService.getBusinessDate(parsedDt);
-              eventsMap.putIfAbsent(bDate, () => []).add(Map<String, dynamic>.from(ev));
+      if (candidateEmpIds.isNotEmpty) {
+        try {
+          final dailyRows = await withTimeout(
+            _client
+                .from('attendance_daily')
+                .select()
+                .inFilter('employee_id', candidateEmpIds)
+                .gte('attendance_date', '$y-${m.toString().padLeft(2, '0')}-01')
+                .lte('attendance_date', '$y-${m.toString().padLeft(2, '0')}-$totalDaysInMonth'),
+          );
+          for (final r in dailyRows) {
+            final d = (r['attendance_date'] ?? r['date'])?.toString();
+            if (d != null && d.isNotEmpty) {
+              dailyMap[d] = Map<String, dynamic>.from(r);
             }
           }
+        } catch (e) {
+          secureLog('[Attendance] attendance_daily fetch notice: $e');
         }
-      } catch (e) {
-        secureLog('[Attendance] attendance_punches fetch notice: $e');
+
+        // 2. Fetch all raw events from attendance_punches in case punch is recorded there
+        try {
+          final startUtc = DateTime.utc(y, m, 1).subtract(AttendanceTimeService.istOffset);
+          final endUtc = DateTime.utc(y, m, totalDaysInMonth, 23, 59, 59).subtract(AttendanceTimeService.istOffset);
+
+          final eventRows = await withTimeout(
+            _client
+                .from('attendance_punches')
+                .select()
+                .inFilter('employee_id', candidateEmpIds)
+                .gte('punch_time', startUtc.toIso8601String())
+                .lte('punch_time', endUtc.toIso8601String())
+                .order('punch_time', ascending: true),
+          );
+          for (final ev in eventRows) {
+            final tsStr = ev['punch_time']?.toString();
+            if (tsStr != null && tsStr.isNotEmpty) {
+              final parsedDt = DateTime.tryParse(tsStr);
+              if (parsedDt != null) {
+                final bDate = AttendanceTimeService.getBusinessDate(parsedDt);
+                eventsMap.putIfAbsent(bDate, () => []).add(Map<String, dynamic>.from(ev));
+              }
+            }
+          }
+        } catch (e) {
+          secureLog('[Attendance] attendance_punches fetch notice: $e');
+        }
       }
 
       // 3. Fetch approved leaves for this month
@@ -438,7 +455,7 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
           _client
               .from('leave_requests')
               .select()
-              .or('employee_id.eq.$targetId,employee_id.eq.$targetCode')
+              .eq('employee_id', targetId)
               .eq('status', 'APPROVED'),
         );
         for (final lr in leaveRows) {
@@ -461,24 +478,27 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
       // 3.5. Fetch all regularization requests for this employee in this month
       final regularizationsMap = <String, Map<String, dynamic>>{};
       try {
-        final orFilterReg = <String>{
-          'employee_id.eq.$targetId',
-          if (targetCode.isNotEmpty) 'employee_code.eq.$targetCode',
-          if (user.employeeUuid?.isNotEmpty == true) 'employee_id.eq.${user.employeeUuid}',
-          if (user.employeeId.isNotEmpty) 'employee_code.eq.${user.employeeId}',
-        }.join(',');
+        final validRegIds = <String>{
+          if (Validators.isValidUuid(targetId)) targetId,
+          if (user.employeeUuid?.isNotEmpty == true && Validators.isValidUuid(user.employeeUuid!)) user.employeeUuid!,
+          if (user.dataId.isNotEmpty && Validators.isValidUuid(user.dataId)) user.dataId,
+        };
 
-        final regRows = await withTimeout(
-          _client
-              .from('attendance_regularizations')
-              .select('*')
-              .or(orFilterReg),
-        );
-        for (final r in regRows) {
-          final dateRaw = (r['attendance_date'] ?? r['date'] ?? r['work_date'])?.toString();
-          if (dateRaw != null && dateRaw.isNotEmpty) {
-            final dateKey = dateRaw.split('T')[0];
-            regularizationsMap[dateKey] = Map<String, dynamic>.from(r);
+        if (validRegIds.isNotEmpty) {
+          final orFilterReg = validRegIds.map((id) => 'employee_id.eq.$id').join(',');
+
+          final regRows = await withTimeout(
+            _client
+                .from('attendance_regularizations')
+                .select('*')
+                .or(orFilterReg),
+          );
+          for (final r in regRows) {
+            final dateRaw = (r['attendance_date'] ?? r['date'] ?? r['work_date'])?.toString();
+            if (dateRaw != null && dateRaw.isNotEmpty) {
+              final dateKey = dateRaw.split('T')[0];
+              regularizationsMap[dateKey] = Map<String, dynamic>.from(r);
+            }
           }
         }
       } catch (e) {
@@ -528,7 +548,9 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
 
         String? firstCheckIn = dailyRecord?['first_check_in']?.toString();
         String? lastCheckOut = dailyRecord?['last_check_out']?.toString();
-        int netMinutes = (dailyRecord?['net_working_minutes'] as num?)?.toInt() ?? 0;
+        int netMinutes = (dailyRecord?['total_work_minutes'] as num?)?.toInt() ??
+            (dailyRecord?['net_working_minutes'] as num?)?.toInt() ??
+            0;
         String source = dailyRecord?['source']?.toString() ?? 'Mobile Geofence';
 
         // 1. Regularization check (Approved regularization makes it full Present)
@@ -547,8 +569,8 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
         // 2. Punch calculation if events exist
         if (firstCheckIn == null && dayEvents.isNotEmpty) {
           for (final ev in dayEvents) {
-            final type = (ev['type'] ?? ev['event_type'] ?? '').toString().toUpperCase();
-            final ts = ev['timestamp']?.toString();
+            final type = (ev['punch_type'] ?? ev['type'] ?? ev['event_type'] ?? '').toString().toUpperCase();
+            final ts = (ev['punch_time'] ?? ev['timestamp'])?.toString();
             if (ts != null) {
               if (type.contains('IN') && !type.contains('OUT')) {
                 firstCheckIn ??= ts;
@@ -564,6 +586,12 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
           final dtOut = DateTime.tryParse(lastCheckOut);
           if (dtIn != null && dtOut != null) {
             netMinutes = dtOut.difference(dtIn).inMinutes;
+            if (netMinutes < 0) netMinutes = 0;
+          }
+        } else if (isToday && firstCheckIn != null && lastCheckOut == null && netMinutes == 0) {
+          final dtIn = DateTime.tryParse(firstCheckIn);
+          if (dtIn != null) {
+            netMinutes = DateTime.now().toUtc().difference(dtIn.toUtc()).inMinutes;
             if (netMinutes < 0) netMinutes = 0;
           }
         }
@@ -584,8 +612,11 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
             } else {
               status = DayAttendanceStatus.notPayable;
             }
+          } else if (isToday) {
+            // Active shift in progress today => Present (matches Web App)
+            status = DayAttendanceStatus.present;
           } else {
-            // Checked in, but NO checkout punch => Not Payable (Purple)
+            // Past day checked in, but NO checkout punch => Not Payable (Missing Checkout)
             status = DayAttendanceStatus.notPayable;
           }
         } else if (leaveDates.contains(dateStr)) {
@@ -604,7 +635,7 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
           clockInTime: firstCheckIn != null ? AttendanceTimeService.formatAttendanceTime(firstCheckIn) : null,
           clockOutTime: lastCheckOut != null ? AttendanceTimeService.formatAttendanceTime(lastCheckOut) : null,
           totalHours: netMinutes > 0 && (status == DayAttendanceStatus.present || status == DayAttendanceStatus.halfDay)
-              ? _formatDuration(netMinutes)
+              ? (isToday && lastCheckOut == null ? '${_formatDuration(netMinutes)} (Active)' : _formatDuration(netMinutes))
               : (status == DayAttendanceStatus.notPayable
                   ? (isToday ? 'Shift Active' : 'Missed Out')
                   : (status == DayAttendanceStatus.weekOff
@@ -698,11 +729,14 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
             break;
         }
 
-        if (ts.clockInTime != null && ts.clockOutTime != null) {
+        if (ts.netWorkingMinutes > 0) {
+          totalMinutes += ts.netWorkingMinutes;
+          workedDayCount++;
+        } else if (ts.clockInTime != null && ts.clockOutTime != null) {
           final durParts = ts.totalHours.split('h');
           if (durParts.length == 2) {
             final h = int.tryParse(durParts[0].trim()) ?? 0;
-            final m = int.tryParse(durParts[1].replaceAll('m', '').trim()) ?? 0;
+            final m = int.tryParse(durParts[1].replaceAll(RegExp(r'[^0-9]'), '').trim()) ?? 0;
             final mins = (h * 60) + m;
             if (mins > 0) {
               totalMinutes += mins;
@@ -1035,20 +1069,21 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
         if (user.employeeUuid?.isNotEmpty == true) user.employeeUuid!,
         if (user.dataId.isNotEmpty) user.dataId,
         if (employeeId.trim().isNotEmpty) employeeId.trim(),
-      }.where((id) => id.isNotEmpty).toList();
+      }.where((id) => Validators.isValidUuid(id)).toList();
 
       List<AttendanceDeviationModel> list = [];
 
       // 1. Fetch from attendance_daily rows
-      try {
-        final dailyRows = await withTimeout(
-          _client
-              .from('attendance_daily')
-              .select('*')
-              .inFilter('employee_id', candidateEmpIds)
-              .order('attendance_date', ascending: false)
-              .limit(30),
-        );
+      if (candidateEmpIds.isNotEmpty) {
+        try {
+          final dailyRows = await withTimeout(
+            _client
+                .from('attendance_daily')
+                .select('*')
+                .inFilter('employee_id', candidateEmpIds)
+                .order('attendance_date', ascending: false)
+                .limit(30),
+          );
 
         for (final row in dailyRows) {
           final firstIn = row['first_check_in']?.toString();
@@ -1056,28 +1091,33 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
           final dateStr = (row['attendance_date'] ?? row['date'])?.toString() ?? DateTime.now().toIso8601String().split('T')[0];
           final dateParsed = DateTime.tryParse(dateStr) ?? DateTime.now();
 
-          final schedInMins = _parseTimeToMinutes(row['expected_check_in']?.toString()) ?? 570; // 09:30 AM
-          final schedOutMins = _parseTimeToMinutes(row['expected_check_out']?.toString()) ?? 1110; // 06:30 PM
-          final actualInMins = _parseTimeToMinutes(firstIn);
-          final actualOutMins = _parseTimeToMinutes(lastOut);
+          final schedInMins = _parseTimeToMinutes(row['expected_check_in']?.toString()) ?? 540; // 09:00 AM (GEN-09)
+          final schedOutMins = _parseTimeToMinutes(row['expected_check_out']?.toString()) ?? 1080; // 06:00 PM (GEN-09)
+          final formattedInIst = firstIn != null ? _formatTimeString(firstIn) : null;
+          final formattedOutIst = lastOut != null ? _formatTimeString(lastOut) : null;
+          final actualInMins = _parseTimeToMinutes(formattedInIst);
+          final actualOutMins = _parseTimeToMinutes(formattedOutIst);
 
-          int lateMins = 0;
-          int earlyMins = 0;
+          int lateMins = (row['late_entry_minutes'] as num?)?.toInt() ?? 0;
+          int earlyMins = (row['early_exit_minutes'] as num?)?.toInt() ?? 0;
 
-          if (actualInMins != null && actualInMins > schedInMins) {
+          if (lateMins == 0 && actualInMins != null && actualInMins > schedInMins) {
             lateMins = actualInMins - schedInMins;
           }
 
-          if (actualOutMins != null && actualOutMins < schedOutMins) {
+          if (earlyMins == 0 && actualOutMins != null && actualOutMins < schedOutMins) {
             earlyMins = schedOutMins - actualOutMins;
           }
+
+          final todayDateStr = AttendanceTimeService.todayDateString();
+          final isPastDay = dateStr.compareTo(todayDateStr) < 0;
 
           String? devType;
           if (firstIn == null && lastOut == null) {
             devType = 'MISSING_ATTENDANCE';
           } else if (firstIn == null) {
             devType = 'MISSING_CHECK_IN';
-          } else if (lastOut == null && dateParsed.isBefore(DateTime.now())) {
+          } else if (lastOut == null && isPastDay) {
             devType = 'MISSING_CHECK_OUT';
           } else if (lateMins > 10 && earlyMins > 10) {
             devType = 'LATE_EARLY';
@@ -1097,13 +1137,13 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
               date: dateParsed,
               shiftCode: row['shift_code']?.toString() ?? 'GEN-09',
               shiftName: row['shift_name']?.toString() ?? 'General Shift',
-              scheduledIn: row['expected_check_in']?.toString() ?? '09:30 AM',
-              actualIn: firstIn != null ? _formatTimeString(firstIn) : null,
+              scheduledIn: row['expected_check_in']?.toString() ?? '09:00 AM',
+              actualIn: formattedInIst,
               lateMinutes: lateMins,
               lateGraceMinutes: 10,
               payableLateMinutes: lateMins > 10 ? lateMins - 10 : 0,
-              scheduledOut: row['expected_check_out']?.toString() ?? '06:30 PM',
-              actualOut: lastOut != null ? _formatTimeString(lastOut) : null,
+              scheduledOut: row['expected_check_out']?.toString() ?? '06:00 PM',
+              actualOut: formattedOutIst,
               earlyMinutes: earlyMins,
               earlyGraceMinutes: 10,
               payableEarlyMinutes: earlyMins > 10 ? earlyMins - 10 : 0,
@@ -1113,8 +1153,9 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
             ));
           }
         }
-      } catch (e) {
-        secureLog('[Attendance] getAttendanceDeviations daily query error: $e');
+        } catch (e) {
+          secureLog('[Attendance] getAttendanceDeviations daily query error: $e');
+        }
       }
 
       return list;
@@ -1144,14 +1185,15 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
       // Derive actionable attendance exceptions from canonical attendance_daily table
       try {
         final todayStr = DateTime.now().toIso8601String().split('T')[0];
-          final candidateEmpIds = <String>{
-            targetId,
-            if (targetCode.isNotEmpty) targetCode,
-            if (user.employeeUuid?.isNotEmpty == true) user.employeeUuid!,
-            if (user.dataId.isNotEmpty) user.dataId,
-            if (employeeId.trim().isNotEmpty) employeeId.trim(),
-          }.where((id) => id.isNotEmpty).toList();
+        final candidateEmpIds = <String>{
+          targetId,
+          if (targetCode.isNotEmpty) targetCode,
+          if (user.employeeUuid?.isNotEmpty == true) user.employeeUuid!,
+          if (user.dataId.isNotEmpty) user.dataId,
+          if (employeeId.trim().isNotEmpty) employeeId.trim(),
+        }.where((id) => Validators.isValidUuid(id)).toList();
 
+        if (candidateEmpIds.isNotEmpty) {
           final dailyRows = await withTimeout(
             _client
                 .from('attendance_daily')
@@ -1186,7 +1228,8 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
               break;
             }
           }
-        } catch (_) {}
+        }
+      } catch (_) {}
 
       return list;
     } catch (e) {

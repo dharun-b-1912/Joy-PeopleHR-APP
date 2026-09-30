@@ -1,6 +1,7 @@
-import 'dart:async';
+  import 'dart:async';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 /// InAppNotificationBanner — Slides down from the top of the screen
 /// when a push notification arrives while the app is in the foreground.
@@ -32,6 +33,12 @@ class InAppNotificationBanner extends StatefulWidget {
     Map<String, dynamic>? data,
     VoidCallback? onTap,
   }) {
+    // Play alert sound and haptic feedback when banner appears
+    try {
+      SystemSound.play(SystemSoundType.alert);
+      HapticFeedback.mediumImpact();
+    } catch (_) {}
+
     final overlay = Overlay.of(context);
     late OverlayEntry entry;
 

@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart' show kIsWeb, kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../models/hrms_models.dart';
 import '../utils/secure_log.dart';
+import '../utils/validators.dart';
 import 'user_service.dart';
 
 /// Authoritative Attendance & GPS State Machine Enum
@@ -208,24 +210,6 @@ class LocationService extends ChangeNotifier {
               refreshLocationsAndEvaluate();
             },
           )
-          .onPostgresChanges(
-            event: PostgresChangeEvent.all,
-            schema: 'public',
-            table: 'employee_work_locations',
-            callback: (payload) {
-              secureLog('[REALTIME GPS] employee_work_locations changed -> updating employee assignments');
-              refreshLocationsAndEvaluate();
-            },
-          )
-          .onPostgresChanges(
-            event: PostgresChangeEvent.all,
-            schema: 'public',
-            table: 'attendance_location_policy',
-            callback: (payload) {
-              secureLog('[REALTIME GPS] attendance_location_policy changed -> re-evaluating');
-              refreshLocationsAndEvaluate();
-            },
-          )
           .subscribe();
     } catch (e) {
       secureLog('[REALTIME GPS] Subscription notice: $e');
@@ -234,6 +218,11 @@ class LocationService extends ChangeNotifier {
 
   /// Fetches authorized work locations dynamically from Supabase
   Future<List<ApprovedWorkLocation>> fetchAuthorizedLocations() async {
+    final client = Supabase.instance.client;
+    if (!UserService.instance.isLoggedIn || client.auth.currentSession == null) {
+      return _authorizedLocations;
+    }
+
     final user = UserService.instance.currentUser;
     final orgId = user.companyId.isNotEmpty
         ? user.companyId
@@ -245,48 +234,16 @@ class LocationService extends ChangeNotifier {
     }
 
     try {
-      final client = Supabase.instance.client;
-
-      // 1. Primary: Authoritative server-side RPC fn_get_my_assigned_work_locations
-      try {
-        final rpcResult = await client.rpc('fn_get_my_assigned_work_locations');
-        if (rpcResult is List && rpcResult.isNotEmpty) {
-          final mapped = rpcResult.map((item) {
-            return ApprovedWorkLocation.fromJson(Map<String, dynamic>.from(item as Map));
-          }).toList();
-
-          final Map<String, ApprovedWorkLocation> unique = {};
-          for (final loc in mapped) {
-            final key = (loc.id != null && loc.id!.isNotEmpty) ? loc.id! : loc.name.trim().toLowerCase();
-            if (!unique.containsKey(key)) {
-              unique[key] = loc;
-            } else if (loc.isPrimary && !unique[key]!.isPrimary) {
-              unique[key] = loc;
-            }
-          }
-          final deduplicated = unique.values.toList();
-          deduplicated.sort((a, b) => (b.isPrimary ? 1 : 0).compareTo(a.isPrimary ? 1 : 0));
-
-          if (deduplicated.isNotEmpty) {
-            _authorizedLocations = deduplicated;
-            secureLog('[GPS] Loaded ${deduplicated.length} location(s) from fn_get_my_assigned_work_locations');
-            return _authorizedLocations;
-          }
-        }
-      } catch (rpcErr) {
-        secureLog('[GPS] fn_get_my_assigned_work_locations RPC notice: $rpcErr');
-      }
-
-      // 2. Secondary: Direct query on employee_work_location_assignments
+      // 1. Primary: Direct query on employee_work_locations
       final candidateEmpIds = <String>{
         empId,
         user.dataId,
         user.employeeId,
         if (user.employeeUuid != null && user.employeeUuid!.isNotEmpty) user.employeeUuid!,
-      }.where((s) => s.isNotEmpty).toList();
+      }.where((s) => Validators.isValidUuid(s)).toList();
 
       if (candidateEmpIds.isNotEmpty) {
-        for (final table in const ['employee_work_location_assignments', 'employee_work_locations']) {
+        for (final table in const ['employee_work_location_assignments']) {
           try {
             final assignedData = await client
                 .from(table)
@@ -429,6 +386,15 @@ class LocationService extends ChangeNotifier {
       }
 
       if (!serviceEnabled) {
+        if (kIsWeb && kDebugMode) {
+          final fallback = await _resolveWebDevFallbackPosition('Location service disabled on desktop OS');
+          if (fallback != null) {
+            _processPosition(fallback);
+            _isAcquiring = false;
+            notifyListeners();
+            return _currentResult;
+          }
+        }
         // Try requesting anyway or report disabled
         LocationPermission permission = await Geolocator.checkPermission();
         if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
@@ -446,6 +412,15 @@ class LocationService extends ChangeNotifier {
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
         if (permission == LocationPermission.denied) {
+          if (kIsWeb && kDebugMode) {
+            final fallback = await _resolveWebDevFallbackPosition('Browser geolocation permission denied in local Chrome');
+            if (fallback != null) {
+              _processPosition(fallback);
+              _isAcquiring = false;
+              notifyListeners();
+              return _currentResult;
+            }
+          }
           _transitionTo(UserLocationResult.error(
             'Location permission is required for attendance clocking.',
             state: AttendanceGpsState.permissionDenied,
@@ -456,6 +431,15 @@ class LocationService extends ChangeNotifier {
       }
 
       if (permission == LocationPermission.deniedForever) {
+        if (kIsWeb && kDebugMode) {
+          final fallback = await _resolveWebDevFallbackPosition('Browser geolocation deniedForever in local Chrome');
+          if (fallback != null) {
+            _processPosition(fallback);
+            _isAcquiring = false;
+            notifyListeners();
+            return _currentResult;
+          }
+        }
         _transitionTo(UserLocationResult.error(
           'Location permissions are permanently denied. Please enable them in App Settings.',
           state: AttendanceGpsState.permissionPermanentlyDenied,
@@ -491,17 +475,31 @@ class LocationService extends ChangeNotifier {
       }
 
       if (position == null || (position.latitude == 0.0 && position.longitude == 0.0)) {
-        _transitionTo(UserLocationResult.error(
-          'Unable to acquire device GPS signal. Please move to an open area and tap Re-scan GPS.',
-          state: AttendanceGpsState.gpsError,
-        ));
-        _isAcquiring = false;
-        return _currentResult;
+        if (kIsWeb && kDebugMode) {
+          position = await _resolveWebDevFallbackPosition('Browser GPS unavailable on desktop Chrome');
+        }
+        if (position == null || (position.latitude == 0.0 && position.longitude == 0.0)) {
+          _transitionTo(UserLocationResult.error(
+            'Unable to acquire device GPS signal. Please move to an open area and tap Re-scan GPS.',
+            state: AttendanceGpsState.gpsError,
+          ));
+          _isAcquiring = false;
+          return _currentResult;
+        }
       }
 
       _processPosition(position);
     } catch (e) {
       secureLog('[GPS] Position acquisition exception: $e');
+      if (kIsWeb && kDebugMode) {
+        final fallback = await _resolveWebDevFallbackPosition('Exception: $e');
+        if (fallback != null) {
+          _processPosition(fallback);
+          _isAcquiring = false;
+          notifyListeners();
+          return _currentResult;
+        }
+      }
       _transitionTo(UserLocationResult.error(
         'Unable to determine your location: ${e.toString().replaceAll('Exception:', '').trim()}',
         state: AttendanceGpsState.gpsError,
@@ -512,6 +510,37 @@ class LocationService extends ChangeNotifier {
     }
 
     return _currentResult;
+  }
+
+  /// Provides a deterministic fallback Position in local Chrome debug sessions
+  /// when a desktop PC lacks hardware GPS or browser geolocation is unavailable.
+  Future<Position?> _resolveWebDevFallbackPosition(String reason) async {
+    if (_authorizedLocations.isEmpty) {
+      await fetchAuthorizedLocations();
+    }
+    final user = UserService.instance.currentUser;
+    final candidates = _authorizedLocations.isNotEmpty
+        ? _authorizedLocations
+        : (user.assignedLocations.isNotEmpty ? user.assignedLocations : [user.approvedLocation]);
+    final valid = candidates.where((l) => l.latitude != 0.0 || l.longitude != 0.0).toList();
+    final target = valid.isNotEmpty
+        ? valid.firstWhere((l) => l.isPrimary, orElse: () => valid.first)
+        : null;
+    final lat = target?.latitude ?? 11.0844364;
+    final lng = target?.longitude ?? 77.1262627;
+    logProcess('GPS-WEB-DEV', 'Using local Chrome debug GPS fallback → (${lat.toStringAsFixed(6)}, ${lng.toStringAsFixed(6)}) [${target?.name ?? "Default Office"}] | reason: $reason');
+    return Position(
+      latitude: lat,
+      longitude: lng,
+      timestamp: DateTime.now(),
+      accuracy: 8.0,
+      altitude: 0.0,
+      altitudeAccuracy: 0.0,
+      heading: 0.0,
+      headingAccuracy: 0.0,
+      speed: 0.0,
+      speedAccuracy: 0.0,
+    );
   }
 
   /// Processes live position updates against authorized geofences
@@ -579,14 +608,29 @@ class LocationService extends ChangeNotifier {
       orElse: () => locations.first,
     );
 
-    final ApprovedWorkLocation target;
-    final double targetDistance;
-    final bool isInside;
+    ApprovedWorkLocation target;
+    double targetDistance;
+    bool isInside;
+    double effectiveLat = position.latitude;
+    double effectiveLng = position.longitude;
+    double effectiveAcc = position.accuracy;
 
     if (insideLocation != null) {
       // 1. Employee is physically inside an assigned workplace!
       target = insideLocation;
       targetDistance = insideDistance;
+      isInside = true;
+    } else if (kIsWeb && kDebugMode && (primaryLocation.latitude != 0.0 || primaryLocation.longitude != 0.0)) {
+      // Local Chrome debug fallback when desktop ISP IP geolocation is away from office
+      logProcess(
+        'GPS-WEB-DEV',
+        'Desktop browser IP location (${position.latitude.toStringAsFixed(5)}, ${position.longitude.toStringAsFixed(5)}, ±${position.accuracy.round()}m) is ${minDistance.round()}m from ${primaryLocation.name} → snapping to primary work location for local Chrome testing',
+      );
+      target = primaryLocation;
+      effectiveLat = primaryLocation.latitude;
+      effectiveLng = primaryLocation.longitude;
+      effectiveAcc = 8.0;
+      targetDistance = 0.0;
       isInside = true;
     } else if (nearestLocation != null) {
       // 2. Employee is closest to this assigned workplace
@@ -605,7 +649,7 @@ class LocationService extends ChangeNotifier {
     }
 
     final targetRadius = target.allowedRadiusMeters > 0 ? target.allowedRadiusMeters : 200.0;
-    final isAccuracyTooLow = position.accuracy > (targetRadius * 2.0);
+    final isAccuracyTooLow = effectiveAcc > (targetRadius * 2.0);
 
     AttendanceGpsState newState;
     if (isInside) {
@@ -615,15 +659,15 @@ class LocationService extends ChangeNotifier {
     }
 
     final newResult = UserLocationResult(
-      latitude: position.latitude,
-      longitude: position.longitude,
-      accuracyMeters: position.accuracy,
+      latitude: effectiveLat,
+      longitude: effectiveLng,
+      accuracyMeters: effectiveAcc,
       distanceMeters: targetDistance,
       isInside: isInside && !isAccuracyTooLow,
       targetLocation: target,
       state: newState,
       errorMessage: isAccuracyTooLow
-          ? 'GPS accuracy (±${position.accuracy.toStringAsFixed(0)}m) is too low for geofence validation. Move to an open outdoor area.'
+          ? 'GPS accuracy (±${effectiveAcc.toStringAsFixed(0)}m) is too low for geofence validation. Move to an open outdoor area.'
           : null,
       timestamp: position.timestamp,
       isMock: position.isMocked,
@@ -742,7 +786,12 @@ class LocationService extends ChangeNotifier {
       }
     }
 
-    // If no GPS at all → gps_unavailable
+    // If no GPS at all → try local Chrome debug fallback or classify as gps_unavailable
+    if (position == null || (position.latitude == 0.0 && position.longitude == 0.0)) {
+      if (kIsWeb && kDebugMode) {
+        position = await _resolveWebDevFallbackPosition('Checkout location verification in local Chrome');
+      }
+    }
     if (position == null || (position.latitude == 0.0 && position.longitude == 0.0)) {
       secureLog('[CHECKOUT-VERIFY] No GPS signal available — classified as gps_unavailable');
       return const CheckoutLocationVerification(

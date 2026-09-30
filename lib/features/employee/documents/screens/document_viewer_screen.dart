@@ -34,20 +34,37 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
   }
 
   Future<void> _resolveDocumentUrl() async {
-    final rawUrl = widget.document.storagePath ?? widget.document.fileUrl;
+    final rawUrl = widget.document.fileUrl ?? widget.document.storagePath;
     if (rawUrl != null && rawUrl.isNotEmpty) {
       setState(() {
         _isLoading = true;
         _errorMessage = null;
       });
       try {
+        String? signed;
+        Uint8List? bytes;
+
+        if (rawUrl.startsWith('http://') || rawUrl.startsWith('https://')) {
+          signed = rawUrl;
+        }
+
         final cleanPath = DocumentUploadService.instance.extractStoragePath(rawUrl);
-        final signed = await DocumentUploadService.instance.getSignedUrl(cleanPath);
-        final bytes = await DocumentUploadService.instance.downloadFileBytes(cleanPath);
+        if (cleanPath.isNotEmpty) {
+          try {
+            final fetchedSigned = await DocumentUploadService.instance.getSignedUrl(cleanPath);
+            if (fetchedSigned != null && fetchedSigned.startsWith('http')) {
+              signed = fetchedSigned;
+            }
+          } catch (_) {}
+
+          try {
+            bytes = await DocumentUploadService.instance.downloadFileBytes(cleanPath);
+          } catch (_) {}
+        }
 
         if (mounted) {
           setState(() {
-            _resolvedUrl = signed;
+            _resolvedUrl = signed ?? (rawUrl.startsWith('http') ? rawUrl : null);
             _fileBytes = bytes;
             _isLoading = false;
             if (_fileBytes == null && (_resolvedUrl == null || !_resolvedUrl!.startsWith('http'))) {
@@ -59,7 +76,12 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
         if (mounted) {
           setState(() {
             _isLoading = false;
-            _errorMessage = "Document could not be opened.";
+            if (rawUrl.startsWith('http')) {
+              _resolvedUrl = rawUrl;
+              _errorMessage = null;
+            } else {
+              _errorMessage = "Document could not be opened.";
+            }
           });
         }
       }

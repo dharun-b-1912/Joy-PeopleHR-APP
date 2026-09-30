@@ -44,23 +44,22 @@ class DefaultFirebaseOptions {
   }
 
   static const FirebaseOptions web = FirebaseOptions(
-    apiKey: 'AIzaSyDN2BABaziPCycKIwfBUd_FkcY2xjc2lRE',
-    appId: '1:1047166003228:web:21b1ed7ed068203338d7d9',
-    messagingSenderId: '1047166003228',
-    projectId: 'joy-peoplehr',
-    authDomain: 'joy-peoplehr.firebaseapp.com',
-    storageBucket: 'joy-peoplehr.firebasestorage.app',
-    measurementId: 'G-Q2E66NQSBB',
+    apiKey: 'AIzaSyDjMNGuoe3V-qXvC3Fo8RZ2SQyQtRQekEk',
+    appId: '1:683368772742:web:150c43d1fd5836ea898d07',
+    messagingSenderId: '683368772742',
+    projectId: 'joy-peoplehr-mobile-app',
+    authDomain: 'joy-peoplehr-mobile-app.firebaseapp.com',
+    storageBucket: 'joy-peoplehr-mobile-app.firebasestorage.app',
+    measurementId: 'G-8L5X0Z6DM1',
   );
 
   static const FirebaseOptions android = FirebaseOptions(
-    apiKey: 'AIzaSyBFIkHuWTWjeqTj7XyyKcEcplf9F3Vwf48',
-    appId: '1:1047166003228:android:d0596687b790996338d7d9',
-    messagingSenderId: '1047166003228',
-    projectId: 'joy-peoplehr',
-    storageBucket: 'joy-peoplehr.firebasestorage.app',
+    apiKey: 'AIzaSyAKm_nTP7WdJdinY7ol1PtnCXXFxS-rYeU',
+    appId: '1:683368772742:android:73cf4484df3f2b06898d07',
+    messagingSenderId: '683368772742',
+    projectId: 'joy-peoplehr-mobile-app',
+    storageBucket: 'joy-peoplehr-mobile-app.firebasestorage.app',
   );
-
   static const FirebaseOptions windows = FirebaseOptions(
     apiKey: 'AIzaSyDN2BABaziPCycKIwfBUd_FkcY2xjc2lRE',
     appId: '1:1047166003228:web:61d41da2732719e038d7d9',
@@ -70,12 +69,13 @@ class DefaultFirebaseOptions {
     storageBucket: 'joy-peoplehr.firebasestorage.app',
     measurementId: 'G-GM2PETVQHZ',
   );
+
   static const FirebaseOptions ios = FirebaseOptions(
-    apiKey: 'AIzaSyDoQI4zbqVuZxn_JbZvU5Rjlo1lJQFeTno',
-    appId: '1:1047166003228:ios:f43eae90168462d238d7d9',
-    messagingSenderId: '1047166003228',
-    projectId: 'joy-peoplehr',
-    storageBucket: 'joy-peoplehr.firebasestorage.app',
+    apiKey: 'AIzaSyBueuDd4TMR5HuFqqdVh39kitfIuiAiAB4',
+    appId: '1:683368772742:ios:399edbd72e94c8a0898d07',
+    messagingSenderId: '683368772742',
+    projectId: 'joy-peoplehr-mobile-app',
+    storageBucket: 'joy-peoplehr-mobile-app.firebasestorage.app',
     iosBundleId: 'com.joypeoplehr.app',
   );
 }

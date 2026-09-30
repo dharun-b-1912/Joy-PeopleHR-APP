@@ -140,15 +140,18 @@ class NotificationRealtimeService with WidgetsBindingObserver {
   /// Unsubscribes from the current channel.
   Future<void> unsubscribe() async {
     try {
+      final wasActive = _channel != null || _isSubscribed;
       if (_channel != null) {
         await _channel?.unsubscribe();
         _channel = null;
       }
       _isSubscribed = false;
       _subscribedTargetId = null;
-      secureLog('[NOTIFICATION] unsubscribed');
+      if (wasActive) {
+        secureLog('[REALTIME] Notification channel unsubscribed');
+      }
     } catch (e) {
-      secureLog('[NOTIFICATION] unsubscribe error: $e');
+      secureLog('[REALTIME] Notification unsubscribe error: $e');
     }
   }
 

@@ -36,6 +36,11 @@ String resolveAvatarUrl(String url, {AvatarVariant variant = AvatarVariant.mediu
     }
   }
 
+  // If the URL is already a Supabase Signed URL, preserve query params exactly to avoid breaking HMAC signature
+  if (uri.path.contains('/object/sign/') || uri.queryParameters.containsKey('token')) {
+    return url;
+  }
+
   // Supabase Image Transformations fallback
   final queryParams = Map<String, String>.from(uri.queryParameters);
   queryParams['width'] = variant.dimension.toString();

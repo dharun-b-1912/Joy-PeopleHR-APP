@@ -1,5 +1,15 @@
 /// Email, phone, and file validation utilities for WorkForceOS.
 class Validators {
+  static final _uuidRegex = RegExp(
+    r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
+  );
+
+  /// Validates whether a given string is a valid UUID format.
+  static bool isValidUuid(String? str) {
+    if (str == null || str.trim().isEmpty) return false;
+    return _uuidRegex.hasMatch(str.trim());
+  }
+
   /// RFC 5322 simplified email regex.
   static final _emailRegex = RegExp(
     r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$',

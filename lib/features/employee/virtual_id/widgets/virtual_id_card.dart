@@ -97,13 +97,27 @@ class VirtualIdCard extends StatelessWidget {
                                   ),
                                 ],
                               ),
-                              child: const Center(
-                                child: Icon(
-                                  CupertinoIcons.building_2_fill,
-                                  color: Colors.white,
-                                  size: 15,
-                                ),
-                              ),
+                              child: (user.companyLogoUrl != null && user.companyLogoUrl!.isNotEmpty)
+                                  ? ClipOval(
+                                      child: Image.network(
+                                        user.companyLogoUrl!,
+                                        fit: BoxFit.cover,
+                                        errorBuilder: (_, __, ___) => const Center(
+                                          child: Icon(
+                                            CupertinoIcons.building_2_fill,
+                                            color: Colors.white,
+                                            size: 15,
+                                          ),
+                                        ),
+                                      ),
+                                    )
+                                  : const Center(
+                                      child: Icon(
+                                        CupertinoIcons.building_2_fill,
+                                        color: Colors.white,
+                                        size: 15,
+                                      ),
+                                    ),
                             ),
                             const SizedBox(width: 8),
                             Expanded(

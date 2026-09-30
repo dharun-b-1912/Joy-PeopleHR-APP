@@ -52,9 +52,9 @@ class SupabaseEmployeeRelationsRepository {
             final id = r['id']?.toString() ?? '';
             final statusStr = r['status']?.toString() ?? 'PENDING';
             HelpdeskStatus status = HelpdeskStatus.open;
-            if (statusStr == 'IN_REVIEW') status = HelpdeskStatus.inProgress;
-            if (statusStr == 'APPROVED' || statusStr == 'FULFILLED') status = HelpdeskStatus.resolved;
-            if (statusStr == 'REJECTED' || statusStr == 'CANCELLED') status = HelpdeskStatus.closed;
+            if (statusStr == 'IN_REVIEW' || statusStr == 'IN_PROGRESS') status = HelpdeskStatus.inProgress;
+            if (statusStr == 'APPROVED' || statusStr == 'FULFILLED' || statusStr == 'RESOLVED') status = HelpdeskStatus.resolved;
+            if (statusStr == 'REJECTED' || statusStr == 'CANCELLED' || statusStr == 'CLOSED') status = HelpdeskStatus.closed;
 
             final priorityStr = r['priority']?.toString() ?? 'MEDIUM';
             TicketPriority priority = TicketPriority.medium;
@@ -368,10 +368,24 @@ class SupabaseEmployeeRelationsRepository {
   Future<bool> markCommunicationAsRead(String communicationId) async {
     if (!SupabaseConfig.isConfigured || communicationId.isEmpty) return false;
     try {
-      await _client
-          .from('notification_events')
-          .update({'is_read': true})
-          .eq('id', communicationId);
+      final nowStr = DateTime.now().toIso8601String();
+      try {
+        await _client
+            .from('notification_events')
+            .update({'is_read': true})
+            .eq('id', communicationId);
+      } catch (_) {}
+
+      try {
+        await _client
+            .from('notification_deliveries')
+            .update({
+              'status': 'READ',
+              'read_at': nowStr,
+            })
+            .eq('notification_id', communicationId);
+      } catch (_) {}
+
       return true;
     } catch (e) {
       secureLog('[HelpdeskRepo] markCommunicationAsRead error: $e');

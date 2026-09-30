@@ -126,7 +126,8 @@ class DocumentUploadService {
         return null;
       }
 
-      // 1. Resolve canonical identity from database (do not trust client employee code)
+      // 1. Resolve canonical identity strictly following architecture rules:
+      // auth.uid() -> user_profiles -> employee_id -> employees -> organization_id
       String resolvedOrgId = organizationId ?? tenantId ?? '';
       String resolvedEmpId = employeeId;
 
@@ -134,15 +135,32 @@ class DocumentUploadService {
         final profileRes = await _supabase
             .from('user_profiles')
             .select('id, organization_id, employee_id')
-            .eq('auth_user_id', authUser.id)
+            .or('auth_user_id.eq.${authUser.id},id.eq.${authUser.id}')
             .maybeSingle();
 
         if (profileRes != null) {
-          resolvedOrgId = profileRes['organization_id']?.toString() ?? resolvedOrgId;
-          resolvedEmpId = profileRes['employee_id']?.toString() ?? resolvedEmpId;
+          final upEmpId = profileRes['employee_id']?.toString() ?? '';
+          final upProfileId = profileRes['id']?.toString() ?? '';
+
+          // Look up canonical employees row by id or user_id to ensure UUID
+          var empQuery = _supabase.from('employees').select('id, organization_id');
+          if (upEmpId.isNotEmpty) {
+            empQuery = empQuery.or('id.eq.$upEmpId,user_id.eq.$upProfileId');
+          } else {
+            empQuery = empQuery.eq('user_id', upProfileId);
+          }
+
+          final empRes = await empQuery.limit(1).maybeSingle();
+          if (empRes != null) {
+            resolvedEmpId = empRes['id']?.toString() ?? resolvedEmpId;
+            resolvedOrgId = empRes['organization_id']?.toString() ?? resolvedOrgId;
+          } else {
+            resolvedOrgId = profileRes['organization_id']?.toString() ?? resolvedOrgId;
+            resolvedEmpId = upEmpId.isNotEmpty ? upEmpId : resolvedEmpId;
+          }
         }
       } catch (e) {
-        secureLog('[Storage] Identity resolution fallback notice: $e');
+        secureLog('[Storage] Strict identity resolution notice: $e');
       }
 
       if (resolvedEmpId.isEmpty || resolvedOrgId.isEmpty) {
@@ -173,18 +191,18 @@ class DocumentUploadService {
       String? resolvedDocTypeId = documentTypeId;
       if (resolvedDocTypeId == null || resolvedDocTypeId.isEmpty) {
         try {
+          final cleanType = documentType.replaceAll(RegExp(r'[^a-zA-Z0-9_\s]'), '').trim();
           final dtRes = await _supabase
               .from('document_types')
-              .select('id, name, code')
-              .eq('organization_id', resolvedOrgId)
-              .or('name.ilike.%$documentType%,code.ilike.%$documentType%')
+              .select('id, name, display_name, code')
+              .or('name.ilike.%$cleanType%,display_name.ilike.%$cleanType%,code.ilike.%$cleanType%')
               .limit(1)
               .maybeSingle();
 
           if (dtRes != null) {
             resolvedDocTypeId = dtRes['id']?.toString();
           } else {
-            // Fallback: query without organization filter or get first available
+            // Fallback: get first available document_type
             final fallbackDt = await _supabase
                 .from('document_types')
                 .select('id')

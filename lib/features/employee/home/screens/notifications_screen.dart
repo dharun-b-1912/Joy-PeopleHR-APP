@@ -17,6 +17,7 @@ import '../../letters/screens/digital_letters_screen.dart';
 import '../../payslips/screens/payslips_screen.dart';
 import '../../performance/screens/performance_screen.dart';
 import '../../roster/screens/shift_roster_screen.dart';
+import '../../../../core/services/push_notification_service.dart';
 import '../../documents/screens/document_request_detail_screen.dart';
 
 class NotificationsScreen extends StatefulWidget {
@@ -32,14 +33,11 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       NotificationController.instance.loadNotifications();
-      // Mark all local FCM notifications as read when screen opens
-      LocalNotificationStore.instance.markAllAsRead();
     });
   }
 
   void _handleFCMNotificationTap(dynamic item) {
-    LocalNotificationStore.instance.removeNotification(item.id);
-    NotificationController.instance.dismissAndRemoveNotification(item.id);
+    LocalNotificationStore.instance.markAsRead(item.id);
     final route = item.route ?? 'home';
     final context = this.context;
 
@@ -78,8 +76,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   }
 
   void _handleNotificationTap(NotificationItemModel item) {
-    // 1. Permanently remove notification from all records, local state & DB
-    NotificationController.instance.dismissAndRemoveNotification(item.id);
+    // 1. Mark notification as read in database & state
+    NotificationController.instance.markAsRead(item.id);
 
     // 2. Direct deep navigation to respective feature screen
     final lowerTitle = item.title.toLowerCase();
@@ -153,6 +151,114 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     return '${dt.day} ${months[dt.month]}';
   }
 
+  void _showTestNotificationSheet(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+        decoration: const BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Row(
+                  children: [
+                    Icon(CupertinoIcons.bell_fill, color: AppColors.primary, size: 22),
+                    SizedBox(width: 8),
+                    Text(
+                      "Test Notifications & Sound",
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black87),
+                    ),
+                  ],
+                ),
+                IconButton(
+                  icon: const Icon(CupertinoIcons.xmark_circle, color: Colors.grey),
+                  onPressed: () => Navigator.pop(ctx),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              "Tap any notification to test sound, haptic vibration, top banner, and deep navigation:",
+              style: TextStyle(fontSize: 13, color: Colors.black54),
+            ),
+            const SizedBox(height: 16),
+            // 1. Announcement notification
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(color: Colors.orange.withValues(alpha: 0.12), shape: BoxShape.circle),
+                child: const Icon(CupertinoIcons.speaker_2_fill, color: Colors.orange, size: 22),
+              ),
+              title: const Text("Company Announcement", style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
+              subtitle: const Text("Town Hall alert • Plays audible sound • Opens Announcements"),
+              onTap: () {
+                Navigator.pop(ctx);
+                PushNotificationService.instance.triggerTestNotification(
+                  title: "Q3 Company Town Hall",
+                  body: "Quarterly Town Hall is scheduled for Friday at 4:00 PM IST. Tap to view details and agenda.",
+                  route: "announcements",
+                  data: {"type": "announcement"},
+                );
+              },
+            ),
+            const Divider(height: 12),
+            // 2. Payslip notification
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(color: Colors.green.withValues(alpha: 0.12), shape: BoxShape.circle),
+                child: const Icon(CupertinoIcons.money_dollar_circle_fill, color: Colors.green, size: 22),
+              ),
+              title: const Text("Salary Payslip Released", style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
+              subtitle: const Text("August 2026 slip • Plays alert sound • Opens Payslips"),
+              onTap: () {
+                Navigator.pop(ctx);
+                PushNotificationService.instance.triggerTestNotification(
+                  title: "August 2026 Salary Payslip Released",
+                  body: "Your salary payslip for August 2026 has been published and is ready for download.",
+                  route: "payslip",
+                  data: {"type": "payslip"},
+                );
+              },
+            ),
+            const Divider(height: 12),
+            // 3. Attendance Clock-in notification
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(color: Colors.blue.withValues(alpha: 0.12), shape: BoxShape.circle),
+                child: const Icon(CupertinoIcons.clock_fill, color: Colors.blue, size: 22),
+              ),
+              title: const Text("Attendance Clock-in Recorded", style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
+              subtitle: const Text("Punch at 09:30 AM recorded • Plays sound alert"),
+              onTap: () {
+                Navigator.pop(ctx);
+                PushNotificationService.instance.triggerTestNotification(
+                  title: "Attendance Clock-in Recorded",
+                  body: "Attendance marked at 09:30 AM (Joy Tech Park). Have a great day!",
+                  route: "attendance",
+                  data: {"type": "attendance"},
+                );
+              },
+            ),
+            const SizedBox(height: 10),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
@@ -164,14 +270,25 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         return Scaffold(
           backgroundColor: AppColors.scaffoldBg,
           body: SafeArea(
+            top: false,
             child: Column(
               children: [
                 AppHeader(
                   title: "Notifications",
                   subtitle: "Updates & Alerts",
-                  rightAction: IconButton(
-                    icon: const Icon(CupertinoIcons.xmark_circle_fill, color: Colors.white70, size: 24),
-                    onPressed: () => Navigator.pop(context),
+                  rightAction: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        icon: const Icon(CupertinoIcons.bolt_fill, color: Colors.amber, size: 22),
+                        tooltip: "Test Push Notifications",
+                        onPressed: () => _showTestNotificationSheet(context),
+                      ),
+                      IconButton(
+                        icon: const Icon(CupertinoIcons.xmark_circle_fill, color: Colors.white70, size: 24),
+                        onPressed: () => Navigator.pop(context),
+                      ),
+                    ],
                   ),
                 ),
                 Expanded(
@@ -300,6 +417,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                                                     TextButton.icon(
                                                       onPressed: () {
                                                         NotificationController.instance.clearAllNotifications();
+                                                        LocalNotificationStore.instance.clearAll();
                                                       },
                                                       icon: const Icon(CupertinoIcons.clear_thick, size: 13, color: AppColors.primary),
                                                       label: Text(
@@ -339,6 +457,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                                                       ),
                                                       onDismissed: (_) {
                                                         NotificationController.instance.dismissAndRemoveNotification(item.id);
+                                                        LocalNotificationStore.instance.removeNotification(item.id);
                                                       },
                                                       child: InkWell(
                                                         onTap: item.onTap,

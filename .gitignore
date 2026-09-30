@@ -44,6 +44,7 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 *.apk
+*.aab
 
 # ── Security: secrets, keys, and platform config ──
 **/.env*
@@ -56,3 +57,4 @@ app.*.map.json
 **/GoogleService-Info.plist
 **/app.json
 **/.dart_tool/config.json
+**/powershell.cmd

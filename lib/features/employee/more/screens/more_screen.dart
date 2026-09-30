@@ -119,7 +119,7 @@ class _MoreScreenState extends State<MoreScreen> {
             ],
           },
           {
-            'title': 'HR Services & Support',
+            'title': 'Support & Helpdesk',
             'modules': [
               {
                 'id': 'helpdesk',
@@ -313,7 +313,7 @@ class _MoreScreenState extends State<MoreScreen> {
                   child: Column(
                     children: [
                       Text(
-                        "JOY PeopleHR Enterprise Mobile",
+                        "JOY PeopleHR • People & Culture",
                         style: AppTypography.caption.copyWith(
                           color: AppColors.textMuted,
                           fontWeight: FontWeight.w600,

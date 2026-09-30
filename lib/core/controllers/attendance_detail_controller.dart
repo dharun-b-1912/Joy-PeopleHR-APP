@@ -51,7 +51,11 @@ class AttendanceDetailController extends ChangeNotifier {
     return _actionableExceptions.isNotEmpty ? _actionableExceptions.first : null;
   }
 
+  bool _isInitialized = false;
+
   void initialize() {
+    if (_isInitialized) return;
+    _isInitialized = true;
     UserService.instance.addListener(_loadData);
     _loadData();
   }
@@ -159,5 +163,11 @@ class AttendanceDetailController extends ChangeNotifier {
       await _loadData();
       return false;
     }
+  }
+
+  @override
+  void dispose() {
+    UserService.instance.removeListener(_loadData);
+    super.dispose();
   }
 }

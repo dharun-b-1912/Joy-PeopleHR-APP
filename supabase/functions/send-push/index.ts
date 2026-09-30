@@ -1,27 +1,5 @@
-/**
- * send-push — Supabase Edge Function
- *
- * Sends Firebase Cloud Messaging (FCM) push notifications to employees.
- * Called automatically by database triggers or manually from the app.
- *
- * Environment secrets required (set via `supabase secrets set`):
- *   FIREBASE_SERVICE_ACCOUNT — full JSON of Firebase Admin service account
- *
- * Usage (manual):
- *   POST /functions/v1/send-push
- *   {
- *     "employee_id": "uuid-or-employee-id",
- *     "title": "Leave Approved",
- *     "body": "Your sick leave for Aug 30 has been approved.",
- *     "route": "leaves",
- *     "data": { "leave_id": "..." }
- *   }
- */
-
 import { serve } from "https://deno.land/std@0.208.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.0";
-
-// ─── Firebase Admin SDK (lightweight, no npm) ───────────────────────────────
 
 interface FirebaseServiceAccount {
   project_id: string;
@@ -29,13 +7,21 @@ interface FirebaseServiceAccount {
   private_key: string;
 }
 
-interface FCMMessage {
-  token: string;
+interface FCMTarget {
+  token?: string;
+  topic?: string;
   notification?: { title: string; body: string };
   data?: Record<string, string>;
   android?: {
-    notification?: { channel_id: string; icon: string; color: string };
-    priority: "high";
+    notification?: {
+      channel_id: string;
+      sound?: string;
+      default_vibrate_timings?: boolean;
+      notification_priority?: string;
+      icon?: string;
+      color?: string;
+    };
+    priority?: "HIGH" | "NORMAL";
   };
   apns?: {
     payload: {
@@ -74,9 +60,7 @@ async function getFirebaseAccessToken(): Promise<string> {
 
   const dataToSign = `${header}.${claimSet}`;
 
-  // Import private key for signing
   const pemKey = sa.private_key.replace(/\\n/g, "\n");
-  const encoder = new TextEncoder();
   const keyData = pemKey
     .replace("-----BEGIN PRIVATE KEY-----", "")
     .replace("-----END PRIVATE KEY-----", "")
@@ -95,7 +79,7 @@ async function getFirebaseAccessToken(): Promise<string> {
   const signature = await crypto.subtle.sign(
     "RSASSA-PKCS1-v1_5",
     cryptoKey,
-    encoder.encode(dataToSign)
+    new TextEncoder().encode(dataToSign)
   );
 
   const jwt = `${dataToSign}.${btoa(String.fromCharCode(...new Uint8Array(signature)))
@@ -119,26 +103,27 @@ async function getFirebaseAccessToken(): Promise<string> {
   return accessToken!;
 }
 
-async function sendFCMMessage(message: FCMMessage): Promise<{ success: boolean; error?: string }> {
+async function sendFCMMessage(target: FCMTarget): Promise<{ success: boolean; messageId?: string; error?: string }> {
   try {
-    const accessToken = await getFirebaseAccessToken();
-    const projectId = JSON.parse(Deno.env.get("FIREBASE_SERVICE_ACCOUNT")!).project_id;
+    const token = await getFirebaseAccessToken();
+    const sa: FirebaseServiceAccount = JSON.parse(Deno.env.get("FIREBASE_SERVICE_ACCOUNT")!);
+    const projectId = sa.project_id;
 
     const resp = await fetch(
       `https://fcm.googleapis.com/v1/projects/${projectId}/messages:send`,
       {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${accessToken}`,
+          Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ message }),
+        body: JSON.stringify({ message: target }),
       }
     );
 
     const result = await resp.json();
     if (resp.ok) {
-      return { success: true };
+      return { success: true, messageId: result.name };
     }
     return { success: false, error: result.error?.message || JSON.stringify(result) };
   } catch (e) {
@@ -146,10 +131,7 @@ async function sendFCMMessage(message: FCMMessage): Promise<{ success: boolean; 
   }
 }
 
-// ─── Edge Function Handler ──────────────────────────────────────────────────
-
 serve(async (req) => {
-  // CORS preflight
   if (req.method === "OPTIONS") {
     return new Response("ok", {
       headers: {
@@ -165,6 +147,7 @@ serve(async (req) => {
     const {
       employee_id,
       auth_user_id,
+      topic,
       title,
       body: messageBody,
       route,
@@ -178,111 +161,134 @@ serve(async (req) => {
       );
     }
 
-    // Create Supabase client with service role to read FCM tokens
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    // Look up FCM tokens for the target employee/user
+    const stringData: Record<string, string> = {
+      title: String(title),
+      body: String(messageBody),
+      message: String(messageBody),
+      route: String(route || "home"),
+      timestamp: String(Date.now()),
+      ...(extraData ? Object.fromEntries(
+        Object.entries(extraData).map(([k, v]) => [k, String(v)])
+      ) : {}),
+    };
+
+    const androidConfig = {
+      priority: "HIGH" as const,
+      notification: {
+        channel_id: "joy_peoplehr_high_importance",
+        sound: "default",
+        default_vibrate_timings: true,
+        notification_priority: "PRIORITY_MAX",
+        icon: "ic_launcher",
+        color: "#1A56DB",
+      },
+    };
+
+    const apnsConfig = {
+      payload: {
+        aps: {
+          alert: { title, body: messageBody },
+          sound: "default",
+          badge: 1,
+        },
+      },
+    };
+
+    const results: any[] = [];
+
+    // If explicit topic specified or broadcast
+    if (topic) {
+      const topicResult = await sendFCMMessage({
+        topic: topic.replace(/^\/topics\//, ""),
+        notification: { title, body: messageBody },
+        data: stringData,
+        android: androidConfig,
+        apns: apnsConfig,
+      });
+      results.push({ target: `topic:${topic}`, ...topicResult });
+    }
+
+    // Lookup device tokens
     const tokens: string[] = [];
 
-    // 1. Try employee_device_tokens table
     if (employee_id) {
-      const { data: deviceTokens } = await supabase
+      const { data: dt } = await supabase
         .from("employee_device_tokens")
         .select("fcm_token")
-        .eq("employee_id", employee_id)
-        .not("fcm_token", "is", null);
-
-      if (deviceTokens) {
-        const filtered = deviceTokens.map((t: any) => t.fcm_token).filter(Boolean);
-        tokens.push(...filtered);
+        .eq("employee_id", employee_id);
+      if (dt) {
+        tokens.push(...dt.map((r: any) => r.fcm_token).filter(Boolean));
       }
     }
 
-    // 2. Try profiles table
     if (auth_user_id) {
-      const { data: profileToken } = await supabase
-        .from("profiles")
+      const { data: dt2 } = await supabase
+        .from("employee_device_tokens")
         .select("fcm_token")
-        .eq("id", auth_user_id)
-        .not("fcm_token", "is", null)
-        .single();
+        .eq("auth_user_id", auth_user_id);
+      if (dt2) {
+        tokens.push(...dt2.map((r: any) => r.fcm_token).filter(Boolean));
+      }
 
-      if (profileToken?.fcm_token && !tokens.includes(profileToken.fcm_token)) {
-        tokens.push(profileToken.fcm_token);
+      const { data: ps } = await supabase
+        .from("push_subscriptions")
+        .select("endpoint")
+        .eq("user_id", auth_user_id);
+      if (ps) {
+        tokens.push(...ps.map((r: any) => r.endpoint).filter((e: string) => e && !e.startsWith("https://")));
       }
     }
 
-    // 3. Fallback: lookup by employee_id in profiles
-    if (tokens.length === 0 && employee_id) {
-      const { data: profileByEmp } = await supabase
-        .from("profiles")
-        .select("fcm_token, id")
-        .eq("employee_id", employee_id)
-        .not("fcm_token", "is", null)
-        .single();
-
-      if (profileByEmp?.fcm_token) {
-        tokens.push(profileByEmp.fcm_token);
-        if (!auth_user_id) {
-          // Also try to send via profiles id
-        }
-      }
-    }
-
-    // Deduplicate
     const uniqueTokens = [...new Set(tokens)].filter((t) => t && t.length > 10);
 
-    if (uniqueTokens.length === 0) {
-      return new Response(
-        JSON.stringify({ success: true, sent: 0, message: "No FCM tokens found for employee" }),
-        { status: 200, headers: { "Content-Type": "application/json" } }
-      );
-    }
-
-    // Send to all tokens
-    const results = [];
     for (const token of uniqueTokens) {
-      const fcmPayload: FCMMessage = {
+      const tokenResult = await sendFCMMessage({
         token,
         notification: { title, body: messageBody },
-        data: {
-          route: route || "home",
-          ...(extraData ? Object.fromEntries(
-            Object.entries(extraData).map(([k, v]) => [k, String(v)])
-          ) : {}),
-        },
-        android: {
-          notification: {
-            channel_id: "joy_peoplehr_high_importance",
-            icon: "ic_launcher",
-            color: "#1A56DB",
-          },
-          priority: "high",
-        },
-        apns: {
-          payload: {
-            aps: {
-              alert: { title, body: messageBody },
-              sound: "default",
-              badge: 1,
-            },
-          },
-        },
-      };
-
-      const result = await sendFCMMessage(fcmPayload);
-      results.push({ token: token.substring(0, 20) + "...", ...result });
+        data: stringData,
+        android: androidConfig,
+        apns: apnsConfig,
+      });
+      results.push({ target: `token:${token.substring(0, 15)}...`, ...tokenResult });
     }
 
-    const successCount = results.filter((r) => r.success).length;
+    // If no tokens found and no explicit topic, broadcast to fallback topics for safety
+    if (uniqueTokens.length === 0 && !topic) {
+      // Send to employee-specific topic or all_employees topic
+      const fallbackTopic = employee_id ? `emp_${employee_id}` : "all_employees";
+      const topicFallbackResult = await sendFCMMessage({
+        topic: fallbackTopic,
+        notification: { title, body: messageBody },
+        data: stringData,
+        android: androidConfig,
+        apns: apnsConfig,
+      });
+      results.push({ target: `fallback_topic:${fallbackTopic}`, ...topicFallbackResult });
+
+      // Also send to all_employees if this was a broadcast/announcement
+      if (route === 'announcement' || route === 'broadcast' || !employee_id) {
+        const allEmployeesResult = await sendFCMMessage({
+          topic: "all_employees",
+          notification: { title, body: messageBody },
+          data: stringData,
+          android: androidConfig,
+          apns: apnsConfig,
+        });
+        results.push({ target: "fallback_topic:all_employees", ...allEmployeesResult });
+      }
+    }
+
+    const successful = results.filter((r) => r.success).length;
 
     return new Response(
       JSON.stringify({
-        success: true,
-        sent: successCount,
-        total: uniqueTokens.length,
+        success: successful > 0,
+        sent: successful,
+        total: results.length,
         results,
       }),
       { status: 200, headers: { "Content-Type": "application/json" } }
