@@ -8,7 +8,6 @@ import 'attendance_service.dart';
 import 'employee_profile_mapper.dart';
 import 'local_notification_store.dart';
 import 'location_service.dart';
-import 'push_notification_service.dart';
 import 'user_service.dart';
 
 /// Connection status states for Employee Realtime Service
@@ -327,21 +326,14 @@ class EmployeeRealtimeService with WidgetsBindingObserver {
         callback: (PostgresChangePayload payload) {
           final isAnnouncement = payload.newRecord['recipient_user_id'] == null;
           final title = payload.newRecord['title'] ?? (isAnnouncement ? 'Company Announcement' : 'Notification');
-          final message = payload.newRecord['message'] ?? payload.newRecord['content'] ?? 'New notification from HR.';
-          final actionUrl = payload.newRecord['action_url']?.toString();
 
           secureLog('[REALTIME] notification_events event received: $title (isAnnouncement: $isAnnouncement)');
           NotificationController.instance.loadNotifications();
           if (isAnnouncement) {
             MoreModulesController.instance.loadAllData();
           }
-
-          PushNotificationService.instance.triggerTestNotification(
-            title: title,
-            body: message,
-            route: isAnnouncement ? 'announcements' : (actionUrl ?? 'home'),
-            data: {'type': isAnnouncement ? 'announcement' : 'notification'},
-          );
+          // Note: Remote FCM push is handled securely by backend Edge Function and FirebaseMessaging.
+          // Do not pop duplicate local notifications here.
         },
       );
 
@@ -353,12 +345,7 @@ class EmployeeRealtimeService with WidgetsBindingObserver {
         callback: (PostgresChangePayload payload) {
           secureLog('[REALTIME] payslips change event received');
           MoreModulesController.instance.loadAllData();
-          PushNotificationService.instance.triggerTestNotification(
-            title: '💳 Payslip Released',
-            body: 'Your latest salary payslip has been published by HR.',
-            route: 'payslip',
-            data: {'type': 'payslip'},
-          );
+          // Realtime refreshes models; remote push is delivered via FCM
         },
       );
 
@@ -373,14 +360,6 @@ class EmployeeRealtimeService with WidgetsBindingObserver {
           final title = payload.newRecord['file_name'] ?? payload.newRecord['document_name'] ?? 'Document';
           secureLog('[REALTIME] employee_documents change event received: $title');
           MoreModulesController.instance.loadAllData();
-          if (payload.eventType != PostgresChangeEvent.delete) {
-            PushNotificationService.instance.triggerTestNotification(
-              title: '📄 Document Updated: $title',
-              body: 'Your employee documents have been updated.',
-              route: 'documents',
-              data: {'type': 'document'},
-            );
-          }
         },
       );
 
@@ -499,6 +478,16 @@ class EmployeeRealtimeService with WidgetsBindingObserver {
 
       // 1. Immediately parse incoming record if populated
       if (newRecord.isNotEmpty) {
+        final current = UserService.instance.currentUser;
+        if (current.reportsToName != null && current.reportsToName!.isNotEmpty) {
+          newRecord['reports_to_name'] ??= current.reportsToName;
+          newRecord['reporting_manager_name'] ??= current.reportsToName;
+          newRecord['manager_name'] ??= current.reportsToName;
+        }
+        if (current.reportsToId != null && current.reportsToId!.isNotEmpty) {
+          newRecord['reports_to_id'] ??= current.reportsToId;
+          newRecord['reporting_manager_id'] ??= current.reportsToId;
+        }
         final updatedUserModel = EmployeeProfileMapper.fromEmployeesRow(
           newRecord,
           authEmail: _authEmail,

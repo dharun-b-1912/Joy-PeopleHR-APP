@@ -69,9 +69,6 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
 
-            ndk {
-                debugSymbolLevel = "SYMBOL_TABLE"
-            }
 
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -91,7 +88,6 @@ android {
         }
         jniLibs {
             useLegacyPackaging = true
-            keepDebugSymbols += "**/*.so"
         }
     }
 }

@@ -9,6 +9,7 @@ class AppHeader extends StatelessWidget {
   final Widget? rightAction;
   final Widget? bottomWidget;
   final LinearGradient gradient;
+  final bool transparent;
 
   const AppHeader({
     super.key,
@@ -17,6 +18,7 @@ class AppHeader extends StatelessWidget {
     this.rightAction,
     this.bottomWidget,
     this.gradient = AppColors.emeraldAuraHeader,
+    this.transparent = false,
   });
 
   @override
@@ -37,12 +39,14 @@ class AppHeader extends StatelessWidget {
           AppSpacing.screenHorizontal,
           bottomWidget != null ? AppSpacing.lg : 16,
         ),
-        decoration: BoxDecoration(
-          gradient: gradient,
-          borderRadius: const BorderRadius.vertical(
-            bottom: Radius.circular(AppRadius.sheet),
-          ),
-        ),
+        decoration: transparent
+            ? null
+            : BoxDecoration(
+                gradient: gradient,
+                borderRadius: const BorderRadius.vertical(
+                  bottom: Radius.circular(AppRadius.sheet),
+                ),
+              ),
         child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

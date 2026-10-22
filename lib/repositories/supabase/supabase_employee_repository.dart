@@ -18,18 +18,25 @@ class SupabaseEmployeeRepository {
   Future<UserModel?> getCurrentEmployee() async {
     try {
       final authUser = _client.auth.currentUser;
-      if (authUser == null) {
-        secureLog('[Employee] No authenticated user');
+      final currentUser = UserService.instance.currentUser;
+      final effectiveUid = authUser?.id ??
+          (currentUser.employeeUuid?.isNotEmpty == true
+              ? currentUser.employeeUuid!
+              : (currentUser.dataId.isNotEmpty ? currentUser.dataId : ''));
+      final effectiveEmail = authUser?.email ?? currentUser.officeEmail ?? currentUser.personalEmail;
+
+      if (effectiveUid.isEmpty) {
+        secureLog('[Employee] No authenticated user or active session UID');
         return null;
       }
 
-      secureLog('[Employee] Resolving employee for uid=${authUser.id}');
+      secureLog('[Employee] Resolving employee for uid=$effectiveUid');
 
       final resolution = await EmployeeIdentityResolver.resolve(
         client: _client,
-        authUid: authUser.id,
-        authEmail: authUser.email,
-        authAvatarUrl: authUser.userMetadata?['avatar_url'] as String?,
+        authUid: effectiveUid,
+        authEmail: effectiveEmail,
+        authAvatarUrl: authUser?.userMetadata?['avatar_url'] as String?,
       );
 
       if (resolution.success && resolution.userModel != null) {

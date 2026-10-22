@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../../../core/controllers/employee_controller.dart';
 import '../../../../core/services/file_download_service.dart';
 import '../../../../core/theme/klarna_tokens.dart';
+import '../../../../core/utils/validators.dart';
 import '../../../../widgets/core/app_card.dart';
 import '../../../../widgets/core/empty_state_widget.dart';
 import '../../../../widgets/core/status_chip.dart';
@@ -13,9 +14,17 @@ class DigitalLettersScreen extends StatelessWidget {
 
   Future<void> _handleDownload(BuildContext context, String title, String? url) async {
     final messenger = ScaffoldMessenger.of(context);
-    final cleanName = '${title.replaceAll(RegExp(r'[^a-zA-Z0-9._-]'), '_')}.pdf';
+    final cleanName = Validators.sanitizeFileName(title);
 
-    if (url != null && url.startsWith('http')) {
+    if (url != null && url.isNotEmpty) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text("Downloading $cleanName..."),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: AppRadius.borderMd),
+        ),
+      );
+
       final downloaded = await FileDownloadService.downloadFromUrl(
         url: url,
         fileName: cleanName,
@@ -26,6 +35,13 @@ class DigitalLettersScreen extends StatelessWidget {
             content: Text("✓ '$cleanName' downloaded successfully."),
             backgroundColor: AppColors.primary,
             behavior: SnackBarBehavior.floating,
+            action: SnackBarAction(
+              label: "OPEN",
+              textColor: Colors.white,
+              onPressed: () {
+                FileDownloadService.openDownloadedFile(cleanName);
+              },
+            ),
           ),
         );
         return;
@@ -33,10 +49,10 @@ class DigitalLettersScreen extends StatelessWidget {
     }
 
     messenger.showSnackBar(
-      SnackBar(
-        content: Text("Downloading $cleanName..."),
+      const SnackBar(
+        content: Text("Unable to download document. Please check connection."),
+        backgroundColor: AppColors.statusError,
         behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: AppRadius.borderMd),
       ),
     );
   }
@@ -62,16 +78,26 @@ class DigitalLettersScreen extends StatelessWidget {
           ),
           body: controller.isLoading
               ? const Center(child: CircularProgressIndicator())
-              : letters.isEmpty
-                  ? const EmptyStateWidget(
-                      icon: CupertinoIcons.doc_plaintext,
-                      title: "No digital letters yet",
-                      description: "Official HR offer letters, increment letters, and certificates will appear here.",
-                    )
-                  : ListView.builder(
-                      padding: const EdgeInsets.all(AppSpacing.screenHorizontal),
-                      itemCount: letters.length,
-                      itemBuilder: (context, index) {
+              : RefreshIndicator(
+                  onRefresh: () async => controller.loadAllData(),
+                  color: AppColors.primary,
+                  child: letters.isEmpty
+                      ? ListView(
+                          physics: const AlwaysScrollableScrollPhysics(),
+                          children: const [
+                            SizedBox(height: 120),
+                            EmptyStateWidget(
+                              icon: CupertinoIcons.doc_plaintext,
+                              title: "No digital letters yet",
+                              description: "Official HR offer letters, increment letters, and certificates will appear here.",
+                            ),
+                          ],
+                        )
+                      : ListView.builder(
+                          physics: const AlwaysScrollableScrollPhysics(),
+                          padding: const EdgeInsets.all(AppSpacing.screenHorizontal),
+                          itemCount: letters.length,
+                          itemBuilder: (context, index) {
                         final item = letters[index];
                         final issuedDateStr = "${item.issueDate.day}/${item.issueDate.month}/${item.issueDate.year}";
 
@@ -212,6 +238,7 @@ class DigitalLettersScreen extends StatelessWidget {
                         );
                       },
                     ),
+                ),
         );
       },
     );

@@ -459,7 +459,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
 
         return StatefulBuilder(
           builder: (context, setDialogState) {
-            final hasText = reasonController.text.trim().isNotEmpty;
+            final hasText = reasonController.text.trim().length >= 3;
 
             return Dialog(
               backgroundColor: Colors.transparent,
@@ -535,7 +535,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
                           minLines: 2,
                           textCapitalization: TextCapitalization.sentences,
                           decoration: InputDecoration(
-                            hintText: "Enter reason...",
+                            hintText: "Enter reason (minimum 3 characters)...",
                             hintStyle: AppTypography.bodyRegular.copyWith(
                               color: AppColors.textMuted,
                             ),
@@ -1207,7 +1207,9 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
                                           const SizedBox(width: 4),
                                           Text(
                                             attendanceSession.isBiometricLocked
-                                                ? (attendanceSession.verificationMethod != null && attendanceSession.verificationMethod!.isNotEmpty
+                                                ? (attendanceSession.verificationMethod != null &&
+                                                        attendanceSession.verificationMethod!.isNotEmpty &&
+                                                        attendanceSession.verificationMethod!.toUpperCase() != 'BIOMETRIC'
                                                     ? "Biometric (${attendanceSession.verificationMethod})"
                                                     : "Biometric In")
                                                 : "Mobile In",
@@ -1461,7 +1463,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
                               AppSpacing.gapSM,
                               isCheckedIn
                                   ? GestureDetector(
-                                      onTap: locationResult.isInside ? _handleCheckOut : null,
+                                      onTap: AttendanceService.instance.isProcessing ? null : _handleCheckOut,
                                       child: Container(
                                         width: double.infinity,
                                         padding: const EdgeInsets.symmetric(vertical: 8),
@@ -1473,14 +1475,28 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
                                           child: Row(
                                             mainAxisSize: MainAxisSize.min,
                                             children: [
-                                              const Icon(
-                                                CupertinoIcons.checkmark_alt_circle_fill,
-                                                size: 14,
-                                                color: AppColors.mintFg,
-                                              ),
-                                              const SizedBox(width: 4),
+                                              if (AttendanceService.instance.isProcessing) ...[
+                                                const SizedBox(
+                                                  width: 14,
+                                                  height: 14,
+                                                  child: CircularProgressIndicator(
+                                                    strokeWidth: 2,
+                                                    color: AppColors.mintFg,
+                                                  ),
+                                                ),
+                                                const SizedBox(width: 6),
+                                              ] else ...[
+                                                const Icon(
+                                                  CupertinoIcons.checkmark_alt_circle_fill,
+                                                  size: 14,
+                                                  color: AppColors.mintFg,
+                                                ),
+                                                const SizedBox(width: 4),
+                                              ],
                                               Text(
-                                                "Check-out",
+                                                AttendanceService.instance.isProcessing
+                                                    ? "Checking out..."
+                                                    : "Check-out",
                                                 style: AppTypography.caption.copyWith(
                                                   fontWeight: FontWeight.w800,
                                                   color: AppColors.mintFg,

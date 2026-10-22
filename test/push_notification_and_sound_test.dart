@@ -156,5 +156,18 @@ void main() {
       }
       expect(testModules.length, equals(5));
     });
+
+    test('PushNotificationService permission query and management methods execute gracefully', () async {
+      final service = PushNotificationService.instance;
+
+      final isGranted = await service.isPermissionGranted();
+      expect(isGranted, isA<bool>());
+
+      final isPermanentlyDenied = await service.isPermanentlyDenied();
+      expect(isPermanentlyDenied, isA<bool>());
+
+      final requestResult = await service.requestNotificationPermission();
+      expect(requestResult, isA<bool>());
+    });
   });
 }

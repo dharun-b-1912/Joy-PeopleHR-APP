@@ -46,27 +46,41 @@ class _LeaveScreenState extends State<LeaveScreen> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.scaffoldBg,
-      body: ListenableBuilder(
-        listenable: LeaveController.instance,
-        builder: (context, _) {
-          final controller = LeaveController.instance;
-          final balance = controller.balance;
-          final requests = controller.requests;
+      body: Stack(
+        children: [
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            height: 280,
+            child: Container(
+              decoration: const BoxDecoration(
+                gradient: AppColors.emeraldAuraHeader,
+              ),
+            ),
+          ),
+          ListenableBuilder(
+            listenable: LeaveController.instance,
+            builder: (context, _) {
+              final controller = LeaveController.instance;
+              final balance = controller.balance;
+              final requests = controller.requests;
 
-          return RefreshIndicator(
-            color: AppColors.primary,
-            backgroundColor: Colors.white,
-            onRefresh: () => controller.refresh(),
-            child: SingleChildScrollView(
-              physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
-              padding: const EdgeInsets.only(bottom: AppSpacing.bottomNavClearance),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const AppHeader(
-                    subtitle: "Balances & Applications",
-                    title: "Leave",
-                  ),
+              return RefreshIndicator(
+                color: AppColors.primary,
+                backgroundColor: Colors.white,
+                onRefresh: () => controller.refresh(),
+                child: SingleChildScrollView(
+                  physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
+                  padding: const EdgeInsets.only(bottom: AppSpacing.bottomNavClearance),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const AppHeader(
+                        transparent: true,
+                        subtitle: "Balances & Applications",
+                        title: "Leave",
+                      ),
                   AppSpacing.gapLG,
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: AppSpacing.screenHorizontal),
@@ -283,7 +297,9 @@ class _LeaveScreenState extends State<LeaveScreen> with WidgetsBindingObserver {
           );
         },
       ),
-    );
+    ],
+  ),
+);
   }
 
   Widget _buildBalancesSection(LeaveBalanceModel balance) {

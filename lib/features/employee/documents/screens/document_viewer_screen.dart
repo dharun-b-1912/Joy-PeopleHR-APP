@@ -2,7 +2,6 @@ import 'dart:typed_data';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:photo_view/photo_view.dart';
-import 'package:url_launcher/url_launcher.dart';
 import '../../../../core/services/document_upload_service.dart';
 import '../../../../core/services/file_download_service.dart';
 import '../../../../core/theme/klarna_tokens.dart';
@@ -10,6 +9,7 @@ import '../../../../models/employee_models.dart';
 import '../../../../widgets/core/app_button.dart';
 import '../../../../widgets/core/app_card.dart';
 import '../../../../widgets/core/status_chip.dart';
+import '../../letters/screens/document_full_view_screen.dart';
 
 class DocumentViewerScreen extends StatefulWidget {
   final DocumentModel document;
@@ -125,32 +125,19 @@ class _DocumentViewerScreenState extends State<DocumentViewerScreen> {
   }
 
   void _handleFullView() {
-    final isImg = _isImageDocument();
-    final rawUrl = _resolvedUrl ?? widget.document.fileUrl ?? '';
-
-    if (isImg && (_fileBytes != null || (rawUrl.isNotEmpty && rawUrl.startsWith('http')))) {
-      Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (_) => FullScreenInteractiveViewer(
-            title: widget.document.name,
-            fileBytes: _fileBytes,
-            imageUrl: rawUrl.startsWith('http') ? rawUrl : null,
-          ),
+    final rawUrl = _resolvedUrl ?? widget.document.fileUrl ?? widget.document.storagePath;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => DocumentFullViewScreen(
+          documentId: widget.document.id,
+          title: widget.document.name,
+          documentUrl: rawUrl,
+          fileBytes: _fileBytes,
+          fileName: _getCleanFileName(),
         ),
-      );
-    } else if (rawUrl.isNotEmpty && rawUrl.startsWith('http')) {
-      final uri = Uri.parse(rawUrl);
-      launchUrl(uri, mode: LaunchMode.externalApplication);
-    } else if (_fileBytes != null && _fileBytes!.isNotEmpty) {
-      final cleanName = _getCleanFileName();
-      FileDownloadService.downloadBytes(
-        fileName: cleanName,
-        bytes: _fileBytes!,
-      );
-    } else {
-      _handleDownload();
-    }
+      ),
+    );
   }
 
   Future<void> _handleDownload() async {

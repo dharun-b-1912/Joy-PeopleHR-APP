@@ -87,7 +87,7 @@ class _PayslipsScreenState extends State<PayslipsScreen> {
                                     children: [
                                       Expanded(
                                         child: Text(
-                                          item.monthYear,
+                                          item.formattedPeriod,
                                           style: AppTypography.titleLarge,
                                           maxLines: 1,
                                           overflow: TextOverflow.ellipsis,
@@ -119,7 +119,7 @@ class _PayslipsScreenState extends State<PayslipsScreen> {
                                     children: [
                                       Text("Gross: ${item.grossEarnings}", style: AppTypography.bodySmall),
                                       Text("Deductions: ${item.deductions}", style: AppTypography.bodySmall),
-                                      Text("Paid on ${item.payDate}", style: AppTypography.caption),
+                                      Text("Paid on ${item.formattedPayDate}", style: AppTypography.caption),
                                     ],
                                   ),
                                   const Divider(height: 20, color: AppColors.borderSubtle),

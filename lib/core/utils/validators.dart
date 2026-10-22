@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 /// Email, phone, and file validation utilities for WorkForceOS.
 class Validators {
   static final _uuidRegex = RegExp(
@@ -36,4 +38,13 @@ class Validators {
         .replaceAll(RegExp(r'[^\w\.\-]'), '_'); // Replace special chars with underscore
     return sanitized.substring(0, sanitized.length.clamp(0, 200)); // Limit length
   }
+
+  /// Generates a valid random v4 UUID string.
+  static String generateUuid() {
+    final rnd = math.Random();
+    String hex(int len) =>
+        List.generate(len, (_) => rnd.nextInt(16).toRadixString(16)).join();
+    return '${hex(8)}-${hex(4)}-4${hex(3)}-${(rnd.nextInt(4) + 8).toRadixString(16)}${hex(3)}-${hex(12)}';
+  }
 }
+

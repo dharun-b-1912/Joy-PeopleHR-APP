@@ -367,11 +367,21 @@ class AttendanceService extends ChangeNotifier {
 
       // 1. Real Supabase insertion into attendance_punches & attendance_daily
       //    with location verification data
+      final effectiveLat = (locVerification.latitude != 0)
+          ? locVerification.latitude
+          : (loc.latitude != 0 ? loc.latitude : null);
+      final effectiveLng = (locVerification.longitude != 0)
+          ? locVerification.longitude
+          : (loc.longitude != 0 ? loc.longitude : null);
+      final effectiveAccuracy = (locVerification.accuracyMeters > 0)
+          ? locVerification.accuracyMeters
+          : (loc.accuracyMeters > 0 ? loc.accuracyMeters : null);
+
       await _repository.recordPunchEvent(
         type: 'CHECK_OUT',
-        latitude: loc.latitude != 0 ? loc.latitude : null,
-        longitude: loc.longitude != 0 ? loc.longitude : null,
-        accuracy: loc.accuracyMeters > 0 ? loc.accuracyMeters : null,
+        latitude: effectiveLat,
+        longitude: effectiveLng,
+        accuracy: effectiveAccuracy,
         isMocked: loc.isMock,
         checkoutVerification: verifiedWithReason,
       );

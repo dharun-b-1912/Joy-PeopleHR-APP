@@ -430,18 +430,20 @@ class SupabaseLeaveRepository implements ILeaveRepository {
   Future<LeaveRequestModel> applyLeave(LeaveRequestModel request) async {
     final user = UserService.instance.currentUser;
     final typeName = request.leaveTypeName ?? _leaveTypeName(request.type);
-
-    // Resolve matching catalog row or fallback code & id
     String typeCode = request.leaveTypeCode ?? _leaveTypeCode(request.type);
     String typeId = request.leaveTypeId ?? '';
 
-    if (typeId.isEmpty) {
+    // 1. Authoritative Leave Type Resolution
+    if (typeId.isEmpty || !Validators.isValidUuid(typeId)) {
       try {
         final types =
             await _client.from('leave_types').select('id, code, name');
         for (final t in types) {
-          final n = '${t['name']} ${t['code']}'.toLowerCase();
-          if (_matchesType(n, request.type) || t['name'] == typeName) {
+          final code = t['code']?.toString().toUpperCase() ?? '';
+          final name = t['name']?.toString().toLowerCase() ?? '';
+          if (code == typeCode.toUpperCase() ||
+              name == typeName.toLowerCase() ||
+              _matchesType('$name $code', request.type)) {
             typeId = t['id']?.toString() ?? '';
             typeCode = t['code']?.toString() ?? typeCode;
             break;
@@ -452,67 +454,126 @@ class SupabaseLeaveRepository implements ILeaveRepository {
       }
     }
 
-    if (typeId.isEmpty) {
-      typeId = _leaveTypeId(request.type);
+    if (typeId.isEmpty || !Validators.isValidUuid(typeId)) {
+      switch (request.type) {
+        case LeaveType.sick:
+          typeId = '0f2240de-0ac5-4178-8f1d-20a68114f48e';
+          break;
+        case LeaveType.earned:
+          typeId = '0f2240de-0ac5-4178-8f1d-20a68114f48f';
+          break;
+        case LeaveType.casual:
+        default:
+          typeId = '0f2240de-0ac5-4178-8f1d-20a68114f48d';
+          break;
+      }
     }
 
+    // 2. Authoritative Employee & Organization Identity Resolution
     final targetEmployeeId = user.resolvedEmployeeId;
-    final orgId = user.tenantId;
-    final managerId = request.managerId ?? user.reportsToId;
+    if (targetEmployeeId.isEmpty) {
+      throw Exception('Could not resolve your employee identity. Please log out and sign in again.');
+    }
 
-    // Canonical direct insert into leave_requests with guaranteed schema compliance
+    String effectiveOrgId = (user.organizationId?.isNotEmpty == true && Validators.isValidUuid(user.organizationId!))
+        ? user.organizationId!
+        : (Validators.isValidUuid(user.tenantId) ? user.tenantId : '');
+
+    if (effectiveOrgId.isEmpty && Validators.isValidUuid(targetEmployeeId)) {
+      try {
+        final empData = await _client
+            .from('employees')
+            .select('organization_id')
+            .eq('id', targetEmployeeId)
+            .maybeSingle();
+        if (empData != null && empData['organization_id'] != null) {
+          effectiveOrgId = empData['organization_id'].toString();
+        }
+      } catch (e) {
+        secureLog('[Leave] Error resolving employee organization_id: $e');
+      }
+    }
+
+    if (effectiveOrgId.isEmpty) {
+      effectiveOrgId = '0c621892-e938-4707-9957-13534ea32c19'; // Default Joy Corporate Solutions Org ID
+    }
+
+    final managerId = request.managerId ?? user.reportsToId;
     final startDateStr = request.startDate.toIso8601String().split('T')[0];
     final endDateStr = request.endDate.toIso8601String().split('T')[0];
-    final daysCountVal = request.daysCount > 0 ? request.daysCount : 1.0;
+    final daysCountVal = request.daysCount > 0 ? request.daysCount : (request.isHalfDay ? 0.5 : 1.0);
 
+    // 3. Overlapping Leave Request / Idempotency Guard
+    try {
+      final existing = await _client
+          .from('leave_requests')
+          .select('id, status, start_date, end_date')
+          .eq('employee_id', targetEmployeeId)
+          .inFilter('status', ['PENDING', 'APPROVED'])
+          .lte('start_date', endDateStr)
+          .gte('end_date', startDateStr)
+          .maybeSingle();
+
+      if (existing != null) {
+        final existingStatus = existing['status'] ?? 'PENDING';
+        throw Exception(
+            'You already have an active $existingStatus leave request overlapping with this date range ($startDateStr to $endDateStr).');
+      }
+    } catch (e) {
+      if (e is Exception && e.toString().contains('overlapping with')) {
+        rethrow;
+      }
+    }
+
+    // 4. Schema-Compliant Payload matching PostgreSQL table public.leave_requests
     final payload = <String, dynamic>{
+      'organization_id': effectiveOrgId,
       'employee_id': targetEmployeeId,
       'leave_type_id': typeId,
       'start_date': startDateStr,
       'end_date': endDateStr,
       'total_days': daysCountVal,
-      'from_date': startDateStr,
-      'to_date': endDateStr,
-      'working_days': daysCountVal,
-      'reason': request.reason,
+      'is_half_day': request.isHalfDay,
+      'reason': request.reason.trim(),
       'status': 'PENDING',
-      if (managerId != null && managerId.isNotEmpty) 'approver_id': managerId,
-      if (managerId != null && managerId.isNotEmpty) 'manager_id': managerId,
-      'created_at': DateTime.now().toIso8601String(),
     };
 
+    String generatedRequestId = request.id;
     try {
-      await _client.from('leave_requests').insert(payload);
+      final insertedRow =
+          await _client.from('leave_requests').insert(payload).select().single();
+      generatedRequestId = insertedRow['id']?.toString() ?? request.id;
       secureLog(
-          '[Leave] Leave request successfully inserted into Supabase → $typeName');
+          '[Leave] Leave request successfully inserted into Supabase -> ID: $generatedRequestId, type: $typeName');
+    } on PostgrestException catch (e) {
+      final formattedError = _formatPostgrestError(e);
+      throw Exception(formattedError);
     } catch (e) {
-      secureLog(
-          '[Leave] Direct insert notice: $e. Retrying minimal canonical payload...');
-      final minimalPayload = <String, dynamic>{
-        'employee_id': targetEmployeeId,
-        'leave_type_id': typeId,
-        'start_date': startDateStr,
-        'end_date': endDateStr,
-        'total_days': daysCountVal,
-        'reason': request.reason,
-        'status': 'PENDING',
-      };
-      await _client.from('leave_requests').insert(minimalPayload);
-      secureLog(
-          '[Leave] Leave request inserted with minimal payload → $typeName');
+      secureLog('[Leave] Direct insert failure: $e');
+      rethrow;
     }
 
-    // Outbox notification sync via centralized service
-    await RealtimeOutboxService.insertEvent(
-      entityType: 'LEAVE_REQUEST',
-      eventType: 'CREATED',
-      entityId: payload['request_code'],
-      tenantId: orgId,
-      actorId: targetEmployeeId,
-      payload: payload,
-    );
+    // 5. Outbox notification sync via centralized service (non-blocking)
+    try {
+      await RealtimeOutboxService.insertEvent(
+        entityType: 'LEAVE_REQUEST',
+        eventType: 'CREATED',
+        entityId: generatedRequestId,
+        tenantId: effectiveOrgId,
+        actorId: targetEmployeeId,
+        payload: {
+          ...payload,
+          'id': generatedRequestId,
+          'leave_type_name': typeName,
+          'leave_type_code': typeCode,
+          if (managerId != null && managerId.isNotEmpty) 'manager_id': managerId,
+        },
+      );
+    } catch (e) {
+      secureLog('[Leave] Outbox notification notice: $e');
+    }
 
-    // Send push notification to the reporting manager/HR
+    // 6. Send push notification to the reporting manager/HR (non-blocking)
     if (managerId != null && managerId.isNotEmpty) {
       try {
         final dateRange =
@@ -521,11 +582,11 @@ class SupabaseLeaveRepository implements ILeaveRepository {
           employeeId: managerId,
           title: 'New Leave Request',
           body:
-              '${user.name} has requested $typeName ($dateRange) — ${request.daysCount} day(s)',
+              '${user.name} has requested $typeName ($dateRange) — $daysCountVal day(s)',
           route: 'leaves',
           data: {
-            'leave_id': payload['request_code'] ?? '',
-            'employee_name': user.name
+            'leave_id': generatedRequestId,
+            'employee_name': user.name,
           },
         );
       } catch (e) {
@@ -533,7 +594,41 @@ class SupabaseLeaveRepository implements ILeaveRepository {
       }
     }
 
-    return request;
+    return request.copyWith(id: generatedRequestId);
+  }
+
+  @visibleForTesting
+  static String formatPostgrestErrorForTesting(PostgrestException e) =>
+      _formatPostgrestError(e);
+
+  static String _formatPostgrestError(PostgrestException e) {
+    final correlationId = 'LV-${DateTime.now().millisecondsSinceEpoch.toString().substring(7)}';
+    secureLog(
+        '[Leave][DB_ERROR][$correlationId] code=${e.code}, message=${e.message}, details=${e.details}, hint=${e.hint}');
+
+    switch (e.code) {
+      case '23502':
+        return 'A required field was missing. Please verify your leave details and try again. (Ref: $correlationId)';
+      case '23503':
+        return 'Invalid employee or leave type configuration. (Ref: $correlationId)';
+      case '23505':
+        return 'A leave request already exists for this date range. (Ref: $correlationId)';
+      case '23514':
+        return 'The requested leave dates or duration are invalid. (Ref: $correlationId)';
+      case '42501':
+        return 'Permission denied: You can only submit leave for your authorized employee profile. (Ref: $correlationId)';
+      case '22P02':
+        return 'Invalid data format submitted. Please check your selections and try again. (Ref: $correlationId)';
+      case 'PGRST204':
+        return 'Database column configuration mismatch. (Ref: $correlationId)';
+      default:
+        if (e.message.isNotEmpty &&
+            !e.message.toLowerCase().contains('violates') &&
+            !e.message.toLowerCase().contains('syntax')) {
+          return '${e.message} (Ref: $correlationId)';
+        }
+        return 'Your leave request could not be submitted. Please try again. Reference: $correlationId';
+    }
   }
 
   @override
@@ -699,20 +794,6 @@ class SupabaseLeaveRepository implements ILeaveRepository {
     }
   }
 
-  static String _leaveTypeId(LeaveType type) {
-    switch (type) {
-      case LeaveType.casual:
-        return 'lt-cl';
-      case LeaveType.sick:
-        return 'lt-sl';
-      case LeaveType.earned:
-        return 'lt-el';
-      case LeaveType.maternity:
-        return 'lt-ml';
-      case LeaveType.paternity:
-        return 'lt-pl';
-    }
-  }
 
   static LeaveStatus _parseStatus(dynamic s) {
     final str = s?.toString().toUpperCase().trim() ?? 'PENDING';

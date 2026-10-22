@@ -1,14 +1,25 @@
 # ============================================================
 # ProGuard / R8 Rules for JOY PeopleHR
+# Optimized for Google Play Console High DEX Code Optimization
 # ============================================================
 
-# ─── Flutter ────────────────────────────────────────────────────
+# Strip verbose/debug logs in release build for memory reduction
+-assumenosideeffects class android.util.Log {
+    public static boolean isLoggable(java.lang.String, int);
+    public static int v(...);
+    public static int d(...);
+}
+
+# ─── Flutter Embedding & Plugin Bridge ──────────────────────────
 -keep class io.flutter.app.** { *; }
--keep class io.flutter.plugin.**  { *; }
--keep class io.flutter.util.**  { *; }
--keep class io.flutter.view.**  { *; }
--keep class io.flutter.**  { *; }
--keep class io.flutter.plugins.**  { *; }
+-keep class io.flutter.plugin.** { *; }
+-keep class io.flutter.util.** { *; }
+-keep class io.flutter.view.** { *; }
+-keep class io.flutter.embedding.** { *; }
+-keep class io.flutter.** { *; }
+-keep class io.flutter.plugins.** { *; }
+-keep class * implements io.flutter.embedding.engine.plugins.FlutterPlugin { *; }
+-keep class * implements io.flutter.plugin.common.MethodChannel$MethodCallHandler { *; }
 
 # ─── Firebase & Google Play Services ────────────────────────────
 -keep class com.google.firebase.** { *; }
@@ -16,61 +27,56 @@
 -keep class com.google.firebase.messaging.FirebaseMessagingService { *; }
 -keep class com.google.firebase.iid.FirebaseInstanceId { *; }
 -keep class * extends com.google.firebase.messaging.FirebaseMessagingService { *; }
+-dontwarn com.google.firebase.**
 
-# ─── Supabase ───────────────────────────────────────────────────
--keep class io.github.jan-tennert.supabase.** { *; }
--keep class io.ktor.** { *; }
--keep class kotlinx.serialization.** { *; }
--keepattributes *Annotation*, InnerClasses, EnclosingMethod
+# ─── Flutter Local Notifications ────────────────────────────────
+-keep class com.dexterous.flutterlocalnotifications.** { *; }
+-keep class androidx.core.app.NotificationCompat** { *; }
 
-# ─── Kotlin Serialization ──────────────────────────────────────
--keepattributes *Annotation*, InnerClasses, EnclosingMethod
--keepattributes Signature
--keepattributes *Annotation*
+# ─── Kotlin Serialization & Annotations ─────────────────────────
+-keepattributes *Annotation*, InnerClasses, EnclosingMethod, Signature
 -dontwarn kotlinx.serialization.**
 -keepclassmembers class * {
     @kotlinx.serialization.Serializable <fields>;
 }
 
-# ─── Data Models (prevent stripping during minification) ───────
--keep class com.joypeoplehr.app.models.** { *; }
--keepclassmembers class * extends com.google.android.gms.cloudservice.** { *; }
-
-# ─── Native Methods ─────────────────────────────────────────────
+# ─── Native JNI Methods ─────────────────────────────────────────
 -keepclasseswithmembernames class * {
     native <methods>;
 }
 
-# ─── Enums ──────────────────────────────────────────────────────
+# ─── Enums & Parcelables ────────────────────────────────────────
 -keepclassmembers class * extends java.lang.Enum {
     public static **[] values();
     public static ** valueOf(java.lang.String);
 }
 
-# ─── Parcelable ─────────────────────────────────────────────────
 -keepclassmembers class * implements android.os.Parcelable {
     public static final ** CREATOR;
 }
 
-# ─── Gson / JSON Serialization ─────────────────────────────────
--keepattributes Signature
--keepattributes *Annotation*
+# ─── Gson Serialization ─────────────────────────────────────────
 -dontwarn sun.misc.**
--keep class com.google.gson.** { *; }
--keep class * implements com.google.gson.TypeAdapterFactory
--keep class * implements com.google.gson.JsonSerializer
--keep class * implements com.google.gson.JsonDeserializer
+-keepclassmembers class * {
+    @com.google.gson.annotations.SerializedName <fields>;
+}
 
-# ─── Play Core (Flutter deferred components) ───────────────────
--dontwarn com.google.android.play.core.splitcompat.**
--dontwarn com.google.android.play.core.splitinstall.**
--dontwarn com.google.android.play.core.tasks.**
+# ─── Image Compression & JNI Bridge ──────────────────────────────
+-keep class com.fluttercandies.flutter_image_compress.** { *; }
 
-# ─── General Best Practices ────────────────────────────────────
+# ─── PDFx & Document Viewing ────────────────────────────────────
+-keep class io.scer.pdfx.** { *; }
+
+# ─── Open Filex & File Picker ───────────────────────────────────
+-keep class com.crazecoder.openfile.** { *; }
+-keep class com.mr.flutter.plugin.filepicker.** { *; }
+
+# ─── Suppress Benign Library Warnings ───────────────────────────
 -dontwarn javax.annotation.**
 -dontwarn org.conscrypt.**
-
-# ─── Flutter Local Notifications ───────────────────────────────
--keep class com.dexterous.flutterlocalnotifications.** { *; }
--keep class androidx.core.app.NotificationCompat** { *; }
+-dontwarn com.google.android.play.core.**
+-dontwarn io.ktor.**
+-dontwarn io.github.jan-tennert.supabase.**
+-dontwarn androidx.activity.EdgeToEdge**
+-dontwarn androidx.core.view.WindowInsets**
 

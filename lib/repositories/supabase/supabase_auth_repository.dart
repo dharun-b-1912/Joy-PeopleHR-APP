@@ -593,13 +593,29 @@ class SupabaseAuthRepository implements IAuthRepository {
   // PHONE LOOKUP HELPER
   // ────────────────────────────────────────────────────────────────────────
 
-  /// Phone → work_email lookup. The employees table has no top-level phone
-  /// column in this schema; the value lives in the profile jsonb.
-  Future<String> _resolveEmailFromPhone(String phone) async {
-    if (!Validators.isValidPhone(phone)) {
-      return '';
+  /// Identifier (Employee Code or Phone) → work_email lookup.
+  Future<String> _resolveEmailFromPhone(String identifier) async {
+    final cleaned = identifier.trim();
+
+    // 1. Try Employee Code lookup (e.g. JMS - 102, JMS-102, JCS-017)
+    try {
+      final codeNorm = cleaned.replaceAll(RegExp(r'\s+'), '');
+      final byCode = await withTimeout(
+        _client
+            .from('employees')
+            .select('work_email')
+            .ilike('employee_code', '%$codeNorm%')
+            .maybeSingle(),
+      );
+      if (byCode != null && byCode['work_email'] != null) {
+        return byCode['work_email'].toString();
+      }
+    } catch (e) {
+      secureLog('[Auth] Employee code lookup ($cleaned) error: $e');
     }
-    final cleanedPhone = phone.replaceAll(RegExp(r'[\s\-\(\)]'), '');
+
+    // 2. Try Phone lookup across profile JSONB and top-level phone
+    final cleanedPhone = cleaned.replaceAll(RegExp(r'[\s\-\(\)]'), '');
     for (final key in const [
       'phone',
       'mobile',

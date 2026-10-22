@@ -166,6 +166,8 @@ class _InAppNotificationBannerState extends State<InAppNotificationBanner>
                                 'assets/images/app_logo.png',
                                 width: 38,
                                 height: 38,
+                                cacheWidth: 120,
+                                cacheHeight: 120,
                                 fit: BoxFit.contain,
                                 errorBuilder: (_, __, ___) => const Icon(
                                   CupertinoIcons.bell_fill,

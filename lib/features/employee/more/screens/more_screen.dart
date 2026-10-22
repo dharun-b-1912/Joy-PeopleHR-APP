@@ -1,6 +1,7 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import '../../../../core/controllers/employee_controller.dart';
+import '../../../../core/services/app_version_service.dart';
 import '../../../../core/theme/klarna_tokens.dart';
 import '../../../../widgets/core/app_card.dart';
 import '../../../../widgets/core/app_header.dart';
@@ -199,16 +200,30 @@ class _MoreScreenState extends State<MoreScreen> {
 
         return Scaffold(
           backgroundColor: AppColors.scaffoldBg,
-          body: SingleChildScrollView(
-            physics: const BouncingScrollPhysics(),
-            padding: const EdgeInsets.only(bottom: AppSpacing.bottomNavClearance),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const AppHeader(
-                  subtitle: "All Employee Services",
-                  title: "More",
+          body: Stack(
+            children: [
+              Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                height: 280,
+                child: Container(
+                  decoration: const BoxDecoration(
+                    gradient: AppColors.emeraldAuraHeader,
+                  ),
                 ),
+              ),
+              SingleChildScrollView(
+                physics: const BouncingScrollPhysics(),
+                padding: const EdgeInsets.only(bottom: AppSpacing.bottomNavClearance),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const AppHeader(
+                      transparent: true,
+                      subtitle: "All Employee Services",
+                      title: "More",
+                    ),
                 AppSpacing.gapSM,
                 ...sections.map((section) {
                   final title = section['title'] as String;
@@ -319,23 +334,8 @@ class _MoreScreenState extends State<MoreScreen> {
                           fontWeight: FontWeight.w600,
                         ),
                       ),
-                      const SizedBox(height: 2),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-                        decoration: BoxDecoration(
-                          color: AppColors.slateBg,
-                          borderRadius: AppRadius.borderPill,
-                          border: Border.all(color: AppColors.borderSubtle),
-                        ),
-                        child: Text(
-                          "v1.0.0 (Build 6)",
-                          style: AppTypography.overline.copyWith(
-                            color: AppColors.primary,
-                            fontWeight: FontWeight.bold,
-                            letterSpacing: 0.5,
-                          ),
-                        ),
-                      ),
+                      const SizedBox(height: 4),
+                      const AppVersionBadge(),
                     ],
                   ),
                 ),
@@ -343,7 +343,9 @@ class _MoreScreenState extends State<MoreScreen> {
               ],
             ),
           ),
-        );
+        ],
+      ),
+    );
       },
     );
   }

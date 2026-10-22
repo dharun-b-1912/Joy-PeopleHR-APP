@@ -5,6 +5,7 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../config/supabase_config.dart';
 import '../../firebase_options.dart';
@@ -44,7 +45,7 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   if (message.notification == null && (title.isNotEmpty || body.isNotEmpty)) {
     try {
       final localNotifications = FlutterLocalNotificationsPlugin();
-      const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
+      const androidInit = AndroidInitializationSettings('@drawable/ic_stat_notify');
       const initSettings = InitializationSettings(android: androidInit);
       await localNotifications.initialize(initSettings);
 
@@ -72,14 +73,19 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
             channel.id,
             channel.name,
             channelDescription: channel.description,
-            icon: '@mipmap/ic_launcher',
+            icon: '@drawable/ic_stat_notify',
             importance: Importance.max,
             priority: Priority.high,
             playSound: true,
             enableVibration: true,
             enableLights: true,
-            fullScreenIntent: true,
+            styleInformation: BigTextStyleInformation(
+              body,
+              contentTitle: title,
+              summaryText: 'JOY PeopleHR',
+            ),
             category: AndroidNotificationCategory.message,
+            visibility: NotificationVisibility.public,
           ),
         ),
         payload: jsonEncode(message.data),
@@ -102,6 +108,8 @@ class PushNotificationService {
   String? get fcmToken => _fcmToken;
   bool _isInitialized = false;
   bool get isInitialized => _isInitialized;
+  bool _isLocalNotificationsInitialized = false;
+  bool get isLocalNotificationsInitialized => _isLocalNotificationsInitialized;
 
   static const AndroidNotificationChannel _channel = AndroidNotificationChannel(
     'joy_peoplehr_high_importance',
@@ -122,6 +130,114 @@ class PushNotificationService {
   /// Callback for opening specific screens from notifications
   static void Function(String screen, {Map<String, dynamic>? params})? onOpenScreen;
 
+  /// Checks if notification permission is currently granted by the user / OS
+  Future<bool> isPermissionGranted() async {
+    if (kIsWeb) return true;
+    try {
+      final status = await Permission.notification.status;
+      return status.isGranted;
+    } catch (e) {
+      secureLog('[PushNotificationService] isPermissionGranted notice: $e');
+      return true;
+    }
+  }
+
+  /// Checks if notification permission has been permanently denied
+  Future<bool> isPermanentlyDenied() async {
+    if (kIsWeb) return false;
+    try {
+      final status = await Permission.notification.status;
+      return status.isPermanentlyDenied;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Opens the device app settings screen so user can manually enable notifications
+  Future<bool> openSettings() async {
+    return await openAppSettings();
+  }
+
+  /// Explicitly requests notification permission from the user on Android (13+) and iOS
+  Future<bool> requestNotificationPermission() async {
+    if (kIsWeb) return true;
+    try {
+      // 1. Android 13+ local notifications permission
+      final androidImpl =
+          _localNotifications.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
+      final androidGranted = await androidImpl?.requestNotificationsPermission();
+
+      // 2. iOS local notifications permission
+      final iosImpl =
+          _localNotifications.resolvePlatformSpecificImplementation<IOSFlutterLocalNotificationsPlugin>();
+      final iosGranted = await iosImpl?.requestPermissions(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
+
+      // 3. Permission handler (triggers native OS permission dialog)
+      final status = await Permission.notification.request();
+
+      // 4. Firebase Messaging permission
+      try {
+        await _fcm.requestPermission(
+          alert: true,
+          badge: true,
+          sound: true,
+        );
+      } catch (_) {}
+
+      final granted = status.isGranted || androidGranted == true || iosGranted == true;
+      secureLog('[PushNotificationService] requestNotificationPermission outcome: granted=$granted, status=$status');
+      return granted;
+    } catch (e) {
+      secureLog('[PushNotificationService] requestNotificationPermission error: $e');
+      return false;
+    }
+  }
+
+  /// Initializes the local notification plugin and high-importance notification channel immediately
+  Future<void> initLocalNotifications() async {
+    if (_isLocalNotificationsInitialized || kIsWeb) return;
+
+    try {
+      const androidInit = AndroidInitializationSettings('@drawable/ic_stat_notify');
+      const iosInit = DarwinInitializationSettings(
+        requestAlertPermission: true,
+        requestBadgePermission: true,
+        requestSoundPermission: true,
+      );
+
+      const initSettings = InitializationSettings(
+        android: androidInit,
+        iOS: iosInit,
+      );
+
+      await _localNotifications.initialize(
+        initSettings,
+        onDidReceiveNotificationResponse: (NotificationResponse response) {
+          if (response.payload != null && response.payload!.isNotEmpty) {
+            try {
+              final data = jsonDecode(response.payload!) as Map<String, dynamic>;
+              _handleNotificationNavigation(data);
+            } catch (_) {}
+          }
+        },
+      );
+
+      // Create Android High Importance Channel
+      final androidImplementation =
+          _localNotifications.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
+      await androidImplementation?.createNotificationChannel(_channel);
+
+      _isLocalNotificationsInitialized = true;
+      secureLog('[PushNotificationService] Local notification system initialized with high-importance channel.');
+    } catch (e) {
+      secureLog('[PushNotificationService] Local notification init notice: $e');
+    }
+  }
+
   Future<void> initialize() async {
     if (_isInitialized) return;
     if (kIsWeb) {
@@ -136,78 +252,33 @@ class PushNotificationService {
     }
 
     try {
-      // 1. Set background messaging handler
-      FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+      // 1. Initialize local notifications first so alerts & tray work immediately
+      await initLocalNotifications();
 
-      // 2. Request user permissions (iOS + Android 13+)
-      final settings = await _fcm.requestPermission(
-        alert: true,
-        announcement: false,
-        badge: true,
-        carPlay: false,
-        criticalAlert: false,
-        provisional: false,
-        sound: true,
-      );
+      // 2. Set background messaging handler
+      try {
+        FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+      } catch (e) {
+        secureLog('[PushNotificationService] onBackgroundMessage notice: $e');
+      }
 
-      secureLog('[PushNotificationService] Notification authorization status: ${settings.authorizationStatus}');
+      // 3. Request user permissions (iOS + Android 13+)
+      try {
+        await requestNotificationPermission();
+      } catch (e) {
+        secureLog('[PushNotificationService] requestNotificationPermission notice: $e');
+      }
 
-      // 3. Configure local notifications for foreground popups and system tray
-      if (!kIsWeb) {
-        const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
-        const iosInit = DarwinInitializationSettings(
-          requestAlertPermission: true,
-          requestBadgePermission: true,
-          requestSoundPermission: true,
-        );
-
-        const initSettings = InitializationSettings(
-          android: androidInit,
-          iOS: iosInit,
-        );
-
-        await _localNotifications.initialize(
-          initSettings,
-          onDidReceiveNotificationResponse: (NotificationResponse response) {
-            if (response.payload != null && response.payload!.isNotEmpty) {
-              try {
-                final data = jsonDecode(response.payload!) as Map<String, dynamic>;
-                _handleNotificationNavigation(data);
-              } catch (_) {}
-            }
-          },
-        );
-
-        // Explicitly request notification permissions on Android 13+
-        final androidImplementation =
-            _localNotifications.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
-        await androidImplementation?.requestNotificationsPermission();
-
-        // Create Android High Importance Channel
-        await androidImplementation?.createNotificationChannel(_channel);
-
-        // Set iOS foreground presentation options
+      // 4. Set iOS foreground presentation options
+      try {
         await _fcm.setForegroundNotificationPresentationOptions(
           alert: true,
           badge: true,
           sound: true,
         );
-      }
+      } catch (_) {}
 
-      // 4. Retrieve and sync FCM Token
-      await _syncFcmToken();
-
-      // 5. Subscribe to FCM topics (all_employees, all, etc.)
-      await _subscribeToTopics();
-
-      // Listen to token refresh events
-      _fcm.onTokenRefresh.listen((newToken) {
-        _fcmToken = newToken;
-        _saveTokenToSupabase(newToken);
-        _syncTokenToUpstash(newToken);
-      });
-
-      // 6. Setup Foreground Notification Listener
+      // 5. Setup Foreground Notification Listener
       FirebaseMessaging.onMessage.listen((RemoteMessage message) {
         secureLog('[PushNotificationService] Foreground message: ${message.notification?.title}');
         _showForegroundNotification(message);
@@ -215,19 +286,32 @@ class PushNotificationService {
         _showInAppBanner(message);
       });
 
-      // 7. Setup Background / Terminated Click Listeners
+      // 6. Setup Background / Terminated Click Listeners
       FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
         secureLog('[PushNotificationService] Notification clicked from background: ${message.data}');
         _storeNotification(message);
         _handleNotificationNavigation(message.data);
       });
 
-      // Check if opened from a terminated state
       final initialMessage = await _fcm.getInitialMessage();
       if (initialMessage != null) {
         secureLog('[PushNotificationService] Opened from terminated notification: ${initialMessage.data}');
         _storeNotification(initialMessage);
         _handleNotificationNavigation(initialMessage.data);
+      }
+
+      // 7. Retrieve and sync FCM Token (safe & resilient)
+      try {
+        await _syncFcmToken();
+        await _subscribeToTopics();
+
+        _fcm.onTokenRefresh.listen((newToken) {
+          _fcmToken = newToken;
+          _saveTokenToSupabase(newToken);
+          _syncTokenToUpstash(newToken);
+        });
+      } catch (e) {
+        secureLog('[PushNotificationService] Token sync / topic subscription notice: $e');
       }
 
       // 8. Re-sync topics and token whenever user logs in or switches
@@ -259,6 +343,7 @@ class PushNotificationService {
       secureLog('[PushNotificationService] Push notifications initialized successfully.');
     } catch (e) {
       secureLog('[PushNotificationService] Initialization error: $e');
+      _isInitialized = true;
     }
   }
 
@@ -310,7 +395,21 @@ class PushNotificationService {
       final user = UserService.instance.currentUser;
       if (SupabaseConfig.isConfigured) {
         final authUid = Supabase.instance.client.auth.currentUser?.id;
-        final employeeId = user.resolvedEmployeeId;
+        String employeeId = user.resolvedEmployeeId;
+
+        // Fallback: If user.resolvedEmployeeId is still resolving, resolve directly from DB by auth user ID
+        if (employeeId.isEmpty && authUid != null && authUid.isNotEmpty) {
+          try {
+            final empRes = await Supabase.instance.client
+                .from('employees')
+                .select('id')
+                .eq('user_id', authUid)
+                .maybeSingle();
+            if (empRes != null && empRes['id'] != null) {
+              employeeId = empRes['id'].toString();
+            }
+          } catch (_) {}
+        }
 
         // 1. Sync to employee_device_tokens table
         try {
@@ -323,7 +422,7 @@ class PushNotificationService {
               'updated_at': DateTime.now().toIso8601String(),
             }
           ], onConflict: 'fcm_token');
-          secureLog('[PushNotificationService] Token synced to employee_device_tokens');
+          secureLog('[PushNotificationService] Token synced to employee_device_tokens for employee: $employeeId, authUser: $authUid');
         } catch (e) {
           secureLog('[PushNotificationService] employee_device_tokens upsert notice: $e');
         }
@@ -351,6 +450,38 @@ class PushNotificationService {
       }
     } catch (e) {
       secureLog('[PushNotificationService] Error caching token: $e');
+    }
+  }
+
+  /// Cleanly unregisters token and unsubscribes from personal topics on logout
+  Future<void> onLogout() async {
+    try {
+      final user = UserService.instance.currentUser;
+      final empId = user.resolvedEmployeeId;
+      final authUid = Supabase.instance.client.auth.currentUser?.id;
+
+      if (_fcmToken != null && SupabaseConfig.isConfigured) {
+        try {
+          await Supabase.instance.client
+              .from('employee_device_tokens')
+              .delete()
+              .eq('fcm_token', _fcmToken!);
+          secureLog('[PushNotificationService] Unregistered device token on logout');
+        } catch (_) {}
+      }
+
+      if (empId.isNotEmpty) {
+        try {
+          await _fcm.unsubscribeFromTopic('emp_$empId');
+        } catch (_) {}
+      }
+      if (authUid != null && authUid.isNotEmpty) {
+        try {
+          await _fcm.unsubscribeFromTopic('user_$authUid');
+        } catch (_) {}
+      }
+    } catch (e) {
+      secureLog('[PushNotificationService] onLogout notice: $e');
     }
   }
 
@@ -403,7 +534,10 @@ class PushNotificationService {
     final title = message.notification?.title ?? message.data['title'] ?? 'JOY PeopleHR';
     final body = message.notification?.body ?? message.data['body'] ?? message.data['message'] ?? '';
 
-    if ((message.notification != null || body.isNotEmpty) && !kIsWeb && _isInitialized) {
+    if ((message.notification != null || body.isNotEmpty) && !kIsWeb) {
+      if (!_isLocalNotificationsInitialized) {
+        initLocalNotifications();
+      }
       // Safe 32-bit signed integer ID
       final int notifId = (message.messageId?.hashCode ?? title.hashCode) & 0x7FFFFFFF;
       try {
@@ -416,13 +550,19 @@ class PushNotificationService {
               _channel.id,
               _channel.name,
               channelDescription: _channel.description,
-              icon: '@mipmap/ic_launcher',
+              icon: '@drawable/ic_stat_notify',
               importance: Importance.max,
               priority: Priority.high,
               playSound: true,
               enableVibration: true,
               enableLights: true,
+              styleInformation: BigTextStyleInformation(
+                body,
+                contentTitle: title,
+                summaryText: 'JOY PeopleHR',
+              ),
               category: AndroidNotificationCategory.message,
+              visibility: NotificationVisibility.public,
             ),
             iOS: const DarwinNotificationDetails(
               presentAlert: true,
@@ -487,10 +627,15 @@ class PushNotificationService {
       if (data != null) ...data,
     };
 
-    if (!kIsWeb && _isInitialized) {
+    if (!kIsWeb) {
+      if (!_isLocalNotificationsInitialized) {
+        await initLocalNotifications();
+      }
       try {
+        // Deterministic ID derived from title and route collapses duplicate push alerts
+        final int notifId = (title + route).hashCode & 0x7FFFFFFF;
         await _localNotifications.show(
-          DateTime.now().millisecondsSinceEpoch.remainder(100000),
+          notifId,
           title,
           body,
           NotificationDetails(
@@ -498,12 +643,19 @@ class PushNotificationService {
               _channel.id,
               _channel.name,
               channelDescription: _channel.description,
-              icon: '@mipmap/ic_launcher',
+              icon: '@drawable/ic_stat_notify',
               importance: Importance.max,
               priority: Priority.high,
               playSound: true,
               enableVibration: true,
               enableLights: true,
+              styleInformation: BigTextStyleInformation(
+                body,
+                contentTitle: title,
+                summaryText: 'JOY PeopleHR',
+              ),
+              category: AndroidNotificationCategory.message,
+              visibility: NotificationVisibility.public,
             ),
             iOS: const DarwinNotificationDetails(
               presentAlert: true,

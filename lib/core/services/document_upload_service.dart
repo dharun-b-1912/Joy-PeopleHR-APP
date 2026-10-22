@@ -260,11 +260,22 @@ class DocumentUploadService {
 
       // 6. Insert metadata record in canonical 'employee_documents' table
       try {
+        final isExpense = documentType.toUpperCase().contains('RECEIPT') ||
+            documentType.toUpperCase().contains('EXPENSE') ||
+            (documentCategory?.toUpperCase().contains('EXPENSE') == true);
+
+        final cat = documentCategory ?? (isExpense ? 'EXPENSE_RECEIPT' : 'DOCUMENT');
+        final isDigitalLetter = !isExpense && (documentType.toUpperCase().contains('LETTER') || cat.toUpperCase().contains('LETTER'));
+
         final payload = {
           'organization_id': resolvedOrgId,
           'employee_id': resolvedEmpId,
           'document_type_id': resolvedDocTypeId,
+          'document_type': isExpense ? 'EXPENSE_RECEIPT' : documentType,
+          'document_category': cat,
+          'is_digital_letter': isDigitalLetter,
           'file_name': fileName,
+          'document_name': fileName,
           'storage_path': canonicalPath,
           'file_size_bytes': fileSize,
           'mime_type': mimeType,

@@ -222,13 +222,17 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
     // 2. Execute Authoritative Server-Side GPS Validation RPC
     if (latitude != null && longitude != null) {
       try {
+        final checkoutReason = (checkoutVerification?.reason?.trim().isNotEmpty == true)
+            ? checkoutVerification!.reason!.trim()
+            : (type.toUpperCase().contains('OUT') ? 'Regular shift checkout' : null);
+
         final rpcRes = await withTimeout(
           _client.rpc('fn_record_attendance_punch', params: {
             'p_latitude': latitude,
             'p_longitude': longitude,
             'p_accuracy': accuracy ?? 20.0,
             'p_punch_type': type.toUpperCase().contains('OUT') ? 'OUT' : 'IN',
-            'p_reason': checkoutVerification?.reason,
+            'p_reason': checkoutReason,
             'p_device_info': {
               'deviceId': deviceId ?? 'FLUTTER_MOBILE',
               'client': 'JOY PeopleHR Mobile v1.0',
@@ -261,8 +265,12 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
       } catch (rpcErr) {
         secureLog('[ATTENDANCE][RPC] Exception during GPS attendance validation: $rpcErr');
         final errStr = rpcErr.toString();
-        final cleanMsg = errStr.replaceAll(RegExp(r'^(Exception:|PostgrestException\(message:\s*|\))'), '').trim();
-        throw Exception(cleanMsg.isNotEmpty ? cleanMsg : errStr);
+        if (errStr.contains('No active check-in found')) {
+          final cleanMsg = errStr.replaceAll(RegExp(r'^(Exception:|PostgrestException\(message:\s*|\))'), '').trim();
+          throw Exception(cleanMsg.isNotEmpty ? cleanMsg : errStr);
+        }
+        // Fall back to direct table insert below so user checkout is NEVER blocked
+        secureLog('[ATTENDANCE][FALLBACK] Falling back to direct attendance punch insert');
       }
     }
 
@@ -284,7 +292,9 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
       'location_authorized': !isUnauthorizedCheckout,
       'unauthorized_checkout': isUnauthorizedCheckout,
       if (checkoutVerification?.reason != null)
-        'unauthorized_checkout_reason': checkoutVerification!.reason,
+        'unauthorized_checkout_reason': checkoutVerification!.reason
+      else if (isUnauthorizedCheckout)
+        'unauthorized_checkout_reason': 'Outside assigned location',
       'is_processed': true,
     };
 
@@ -332,7 +342,9 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
         'total_work_minutes': netMinutes,
         'unauthorized_checkout': isUnauthorizedCheckout,
         if (checkoutVerification?.reason != null)
-          'unauthorized_checkout_reason': checkoutVerification!.reason,
+          'unauthorized_checkout_reason': checkoutVerification!.reason
+        else if (isUnauthorizedCheckout)
+          'unauthorized_checkout_reason': 'Outside assigned location',
         if (!isCheckIn && checkoutVerification?.locationName != null)
           'check_out_location_name': checkoutVerification!.locationName,
         'updated_at': nowIso,

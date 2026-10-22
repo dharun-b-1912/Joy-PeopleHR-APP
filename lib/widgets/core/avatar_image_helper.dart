@@ -41,10 +41,9 @@ String resolveAvatarUrl(String url, {AvatarVariant variant = AvatarVariant.mediu
     return url;
   }
 
-  // Supabase Image Transformations fallback
+  // Supabase Image Transformations fallback: specify width and cover resize without forcing square distortion
   final queryParams = Map<String, String>.from(uri.queryParameters);
-  queryParams['width'] = variant.dimension.toString();
-  queryParams['height'] = variant.dimension.toString();
+  queryParams['width'] = (variant.dimension * 2).toString();
   queryParams['resize'] = 'cover';
   queryParams['quality'] = '90';
   return uri.replace(queryParameters: queryParams).toString();
@@ -64,10 +63,10 @@ ImageProvider? getAvatarImageProvider(
     final resolvedUrl = resolveAvatarUrl(trimmed, variant: variant);
     final netImage = NetworkImage(resolvedUrl);
 
-    // Apply ResizeImage for memory efficiency and pixel-perfect rendering on native
-    if (!kIsWeb && (targetWidth != null || targetHeight != null || variant != AvatarVariant.master)) {
+    // Apply ResizeImage with width only to maintain authentic portrait/landscape aspect ratio
+    if (!kIsWeb && (targetWidth != null || variant != AvatarVariant.master)) {
       final finalWidth = targetWidth ?? (variant.dimension * 2).clamp(96, 1024);
-      return ResizeImage(netImage, width: finalWidth, height: finalWidth);
+      return ResizeImage(netImage, width: finalWidth);
     }
     return netImage;
   }
@@ -77,8 +76,8 @@ ImageProvider? getAvatarImageProvider(
       final base64String = trimmed.split(',').last;
       final bytes = base64Decode(base64String);
       final memImage = MemoryImage(bytes);
-      if (!kIsWeb && (targetWidth != null || targetHeight != null)) {
-        return ResizeImage(memImage, width: targetWidth, height: targetHeight);
+      if (!kIsWeb && targetWidth != null) {
+        return ResizeImage(memImage, width: targetWidth);
       }
       return memImage;
     } catch (_) {
@@ -91,8 +90,8 @@ ImageProvider? getAvatarImageProvider(
       final file = File(trimmed);
       if (file.existsSync()) {
         final fileImage = FileImage(file);
-        if (targetWidth != null || targetHeight != null) {
-          return ResizeImage(fileImage, width: targetWidth, height: targetHeight);
+        if (targetWidth != null) {
+          return ResizeImage(fileImage, width: targetWidth);
         }
         return fileImage;
       }
@@ -109,8 +108,9 @@ Widget buildAvatarHeroWidget(String? pathOrUrl, String fallbackInitials) {
       final resolvedUrl = resolveAvatarUrl(trimmed, variant: AvatarVariant.master);
       return Image.network(
         resolvedUrl,
+        cacheWidth: 1080,
         fit: BoxFit.cover,
-        alignment: const Alignment(0.0, -0.25),
+        alignment: const Alignment(0.0, -0.20),
         filterQuality: FilterQuality.high,
         errorBuilder: (_, __, ___) => _buildFallbackHero(fallbackInitials),
       );
@@ -120,8 +120,9 @@ Widget buildAvatarHeroWidget(String? pathOrUrl, String fallbackInitials) {
         final bytes = base64Decode(base64String);
         return Image.memory(
           bytes,
+          cacheWidth: 1080,
           fit: BoxFit.cover,
-          alignment: const Alignment(0.0, -0.25),
+          alignment: const Alignment(0.0, -0.20),
           filterQuality: FilterQuality.high,
           errorBuilder: (_, __, ___) => _buildFallbackHero(fallbackInitials),
         );
@@ -132,8 +133,9 @@ Widget buildAvatarHeroWidget(String? pathOrUrl, String fallbackInitials) {
         if (file.existsSync()) {
           return Image.file(
             file,
+            cacheWidth: 1080,
             fit: BoxFit.cover,
-            alignment: const Alignment(0.0, -0.25),
+            alignment: const Alignment(0.0, -0.20),
             filterQuality: FilterQuality.high,
             errorBuilder: (_, __, ___) => _buildFallbackHero(fallbackInitials),
           );
@@ -187,6 +189,8 @@ class WorkforceAvatar extends StatelessWidget {
   Widget build(BuildContext context) {
     final hasImage = pathOrUrl != null && pathOrUrl!.trim().isNotEmpty;
     final trimmed = hasImage ? pathOrUrl!.trim() : '';
+    // Use 3x pixel ratio for retina sharpness without distorting aspect ratio
+    final int cacheDim = (size * 3).clamp(96, 768).round();
 
     Widget? imageWidget;
     if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
@@ -195,8 +199,9 @@ class WorkforceAvatar extends StatelessWidget {
         resolvedUrl,
         width: size,
         height: size,
+        cacheWidth: cacheDim,
         fit: BoxFit.cover,
-        alignment: const Alignment(0.0, -0.25),
+        alignment: const Alignment(0.0, -0.20),
         gaplessPlayback: true,
         filterQuality: FilterQuality.high,
         errorBuilder: (_, __, ___) => _buildInitials(),
@@ -209,8 +214,9 @@ class WorkforceAvatar extends StatelessWidget {
           bytes,
           width: size,
           height: size,
+          cacheWidth: cacheDim,
           fit: BoxFit.cover,
-          alignment: const Alignment(0.0, -0.25),
+          alignment: const Alignment(0.0, -0.20),
           gaplessPlayback: true,
           filterQuality: FilterQuality.high,
           errorBuilder: (_, __, ___) => _buildInitials(),
@@ -226,8 +232,9 @@ class WorkforceAvatar extends StatelessWidget {
             file,
             width: size,
             height: size,
+            cacheWidth: cacheDim,
             fit: BoxFit.cover,
-            alignment: const Alignment(0.0, -0.25),
+            alignment: const Alignment(0.0, -0.20),
             gaplessPlayback: true,
             filterQuality: FilterQuality.high,
             errorBuilder: (_, __, ___) => _buildInitials(),

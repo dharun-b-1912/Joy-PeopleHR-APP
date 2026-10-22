@@ -89,7 +89,10 @@ class EmployeeProfileMapper {
       'date_of_hire',
       'hire_date',
     ]) ?? _first(profile, emp, ['date_of_joining', 'joining_date', 'doj']);
-    final campus = _first(employment, emp, [
+    var campus = _first(employment, emp, [
+          'site_name',
+          'site',
+          'plant_name',
           'location_name',
           'campus',
           'work_location',
@@ -97,6 +100,9 @@ class EmployeeProfileMapper {
         ]) ??
         _s(emp['branch_name']) ??
         '';
+    if (campus.trim().toLowerCase() == 'carenow') {
+      campus = '';
+    }
 
     final designation = _first(employment, emp, [
           'designation_title',
@@ -271,10 +277,34 @@ class EmployeeProfileMapper {
       );
     }
 
+    final rawEmpCode = _s(emp['employee_code']);
+    final isCodeValid = rawEmpCode != null &&
+        rawEmpCode.trim().isNotEmpty &&
+        !RegExp(r'^[0-9a-fA-F-]{36}$').hasMatch(rawEmpCode.trim());
+    final employeeCode = isCodeValid ? rawEmpCode.trim() : '';
+    if (!isCodeValid) {
+      // Diagnostic log for admin/developers
+      // ignore: avoid_print
+      print('[DIAGNOSTICS] MISSING_EMPLOYEE_CODE for employee UUID: ${_s(emp['id'])}');
+    }
+
+    String resolvedCampus = '';
+    if (campus.isNotEmpty && campus.trim().toLowerCase() != 'carenow') {
+      resolvedCampus = campus;
+    } else if (deduplicatedLocations.isNotEmpty) {
+      final primary = deduplicatedLocations.firstWhere(
+        (l) => l.isPrimary,
+        orElse: () => deduplicatedLocations.first,
+      );
+      if (primary.name.trim().toLowerCase() != 'carenow' && primary.name != 'Work Location') {
+        resolvedCampus = primary.name;
+      }
+    }
+
     return UserModel(
       name: displayName.isNotEmpty ? displayName : 'Employee',
       firstName: firstName.isNotEmpty ? firstName : displayName.split(' ').first,
-      employeeId: _s(emp['employee_code']) ?? _s(emp['id']) ?? '',
+      employeeId: employeeCode,
       employeeUuid: _s(emp['id']),
       companyUuid: _s(emp['company_id']),
       designation: designation,
@@ -282,7 +312,7 @@ class EmployeeProfileMapper {
       unit: unit,
       role: role ?? 'EMPLOYEE',
       machinePin: _first(profile, emp, ['machine_pin', 'pin', 'biometric_pin']) ?? '',
-      campus: campus.isNotEmpty ? campus : defaultApprovedLocation.name,
+      campus: resolvedCampus,
       approvedLocation: defaultApprovedLocation,
       shiftStart: shiftStart,
       shiftEnd: shiftEnd,
@@ -393,15 +423,26 @@ class EmployeeProfileMapper {
     List<String> keys,
   ) {
     for (final k in keys) {
-      final v = primary[k] ?? fallback[k];
-      if (v != null) {
-        if (v is Map) {
-          final extracted = v['name'] ?? v['title'] ?? v['department_name'] ?? v['designation_title'];
+      final v1 = primary[k];
+      if (v1 != null) {
+        if (v1 is Map) {
+          final extracted = v1['name'] ?? v1['title'] ?? v1['department_name'] ?? v1['designation_title'];
           if (extracted != null && extracted.toString().trim().isNotEmpty) {
             return extracted.toString().trim();
           }
-        } else if (v.toString().trim().isNotEmpty) {
-          return v.toString().trim();
+        } else if (v1.toString().trim().isNotEmpty) {
+          return v1.toString().trim();
+        }
+      }
+      final v2 = fallback[k];
+      if (v2 != null) {
+        if (v2 is Map) {
+          final extracted = v2['name'] ?? v2['title'] ?? v2['department_name'] ?? v2['designation_title'];
+          if (extracted != null && extracted.toString().trim().isNotEmpty) {
+            return extracted.toString().trim();
+          }
+        } else if (v2.toString().trim().isNotEmpty) {
+          return v2.toString().trim();
         }
       }
     }

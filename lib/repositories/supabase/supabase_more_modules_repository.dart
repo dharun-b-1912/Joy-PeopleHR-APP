@@ -6,6 +6,7 @@ import '../../core/services/shift_duration_calculator.dart';
 import '../../core/services/user_service.dart';
 import '../../core/utils/query_timeout.dart';
 import '../../core/utils/secure_log.dart';
+import '../../core/utils/validators.dart';
 import '../../models/employee_models.dart';
 import '../interfaces/employee_repository.dart';
 
@@ -636,16 +637,81 @@ class SupabaseMoreModulesRepository implements IMoreModulesRepository {
         );
 
         for (final row in rows) {
+          final docCategory = (row['document_category'] ?? row['category'] ?? '').toString().toUpperCase();
+          final docType = (row['document_type'] ?? '').toString().toUpperCase();
+          final letterType = (row['letter_type'] ?? '').toString().toUpperCase();
+          final fileName = (row['file_name'] ?? row['name'] ?? '').toString();
+          final bool? isDigitalLetter = row['is_digital_letter'] as bool?;
+
+          // 1. Strict Classification: Reject any expense receipts, bills, or attachments
+          if (docCategory.contains('EXPENSE') ||
+              docCategory.contains('RECEIPT') ||
+              docType.contains('EXPENSE') ||
+              docType.contains('RECEIPT') ||
+              fileName.toLowerCase().contains('receipt') ||
+              isDigitalLetter == false) {
+            continue;
+          }
+
+          // 2. Reject payslips, attendance proofs, and personal identity documents
+          if (docCategory.contains('PAYSLIP') ||
+              docType.contains('PAYSLIP') ||
+              docCategory.contains('ATTENDANCE') ||
+              docType.contains('ATTENDANCE') ||
+              docCategory.contains('IDENTITY') ||
+              docCategory.contains('KYC') ||
+              docType.contains('AADHAAR') ||
+              docType.contains('PAN')) {
+            continue;
+          }
+
+          // 3. Reject generic screenshots not marked as digital letters
+          if (fileName.toLowerCase().startsWith('screenshot_') && isDigitalLetter != true && letterType.isEmpty) {
+            continue;
+          }
+
+          // 4. Must be explicitly categorized as a digital letter or HR official letter
+          final isExplicitLetter = isDigitalLetter == true ||
+              letterType.isNotEmpty ||
+              docCategory.contains('LETTER') ||
+              docType.contains('LETTER') ||
+              docCategory == 'OFFICIAL_DOCUMENT' ||
+              docType == 'OFFICIAL_DOCUMENT';
+
+          if (!isExplicitLetter) {
+            continue;
+          }
+
           final id = row['id']?.toString() ?? '';
-          final fileName = row['file_name']?.toString() ?? 'Official Document';
+
+          // 5. Human-readable display title (Issue 13: avoid ugly raw screenshot/hash filenames)
+          String cleanTitle = (row['title'] ?? row['document_name'] ?? row['name'] ?? '').toString().trim();
+          if (cleanTitle.isEmpty || cleanTitle.toLowerCase().startsWith('screenshot_')) {
+            if (letterType.isNotEmpty) {
+              cleanTitle = 'Official HR $letterType';
+            } else if (docCategory.isNotEmpty && docCategory != 'DOCUMENT') {
+              cleanTitle = 'Official HR $docCategory';
+            } else {
+              cleanTitle = 'Official HR Document';
+            }
+          }
+
+          // 6. Category label
+          String cleanCategory = 'HR Letter';
+          if (letterType.isNotEmpty) {
+            cleanCategory = letterType;
+          } else if (docCategory.isNotEmpty) {
+            cleanCategory = docCategory.replaceAll('_', ' ');
+          }
+
           result.add(DigitalLetterModel(
             id: id,
-            title: fileName,
-            category: 'Document',
-            issueDate: DateTime.tryParse(row['created_at']?.toString() ?? '') ?? DateTime.now(),
-            documentRef: 'REF-$id',
-            documentUrl: row['storage_path']?.toString(),
-            fileName: fileName,
+            title: cleanTitle,
+            category: cleanCategory,
+            issueDate: DateTime.tryParse(row['issued_date']?.toString() ?? row['created_at']?.toString() ?? '') ?? DateTime.now(),
+            documentRef: row['reference_number']?.toString() ?? row['letter_number']?.toString() ?? 'LET-${id.substring(0, id.length > 8 ? 8 : id.length)}',
+            documentUrl: row['storage_path']?.toString() ?? row['file_url']?.toString(),
+            fileName: fileName.isNotEmpty ? fileName : '$cleanTitle.pdf',
           ));
         }
       } catch (e) {
@@ -724,6 +790,24 @@ class SupabaseMoreModulesRepository implements IMoreModulesRepository {
         if (authUid != null && authUid.isNotEmpty) authUid,
       }.where((s) => s.isNotEmpty).toSet();
 
+      // Resolve human-readable employee code (never UUID)
+      String? authoritativeEmpCode = user.hasValidEmployeeCode ? user.employeeCode : null;
+      if (authoritativeEmpCode == null || _isValidUuid(authoritativeEmpCode)) {
+        try {
+          final empRow = await withTimeout(
+            _client
+                .from('employees')
+                .select('employee_code')
+                .eq('id', empId)
+                .maybeSingle(),
+          );
+          final code = empRow?['employee_code']?.toString();
+          if (code != null && code.isNotEmpty && !_isValidUuid(code)) {
+            authoritativeEmpCode = code;
+          }
+        } catch (_) {}
+      }
+
       List<dynamic> rows = [];
       final validUuids = candidateIds.where(_isValidUuid).toList();
 
@@ -743,12 +827,6 @@ class SupabaseMoreModulesRepository implements IMoreModulesRepository {
           secureLog('[Payslips] canonical payslips query notice: $e');
         }
       }
-
-      // 2. Fallback: payslips table is empty for this employee — no synthesized payslips.
-      // notification_events does NOT have event_type, metadata, or resource_id columns
-      // so event-based payslip synthesis is not possible with the canonical schema.
-      // Canonical notification_events columns: id, organization_id, recipient_user_id,
-      // channel, title, message, action_url, is_read, is_sent, sent_at, created_at.
 
       return rows.map<PayslipModel>((row) {
         final lineItem = row['payroll_line_items'] is Map ? row['payroll_line_items'] as Map : null;
@@ -774,9 +852,57 @@ class SupabaseMoreModulesRepository implements IMoreModulesRepository {
         final earningsMap = lineItem?['earnings_breakdown'] is Map ? lineItem!['earnings_breakdown'] as Map : {};
         final deductionsMap = lineItem?['deductions_breakdown'] is Map ? lineItem!['deductions_breakdown'] as Map : {};
 
-        return PayslipModel(
+        final earningsList = <Map<String, dynamic>>[];
+        earningsMap.forEach((k, v) {
+          final amt = (v is num) ? v.toDouble() : (double.tryParse(v?.toString() ?? '') ?? 0.0);
+          earningsList.add({'name': k.toString(), 'amount': amt});
+        });
+
+        final deductionsList = <Map<String, dynamic>>[];
+        deductionsMap.forEach((k, v) {
+          final amt = (v is num) ? v.toDouble() : (double.tryParse(v?.toString() ?? '') ?? 0.0);
+          deductionsList.add({'name': k.toString(), 'amount': amt});
+        });
+
+        double findAmount(Map map, List<String> patterns) {
+          for (final entry in map.entries) {
+            final keyStr = entry.key.toString().toLowerCase();
+            for (final pat in patterns) {
+              if (keyStr.contains(pat.toLowerCase())) {
+                final val = entry.value;
+                return (val is num) ? val.toDouble() : (double.tryParse(val?.toString() ?? '') ?? 0.0);
+              }
+            }
+          }
+          return 0.0;
+        }
+
+        final basicVal = findAmount(earningsMap, ['basic']);
+        final hraVal = findAmount(earningsMap, ['hra', 'house rent']);
+        final specialVal = findAmount(earningsMap, ['special']);
+        final pfVal = findAmount(deductionsMap, ['pf', 'provident']);
+        final ptVal = findAmount(deductionsMap, ['pt', 'professional']);
+        final tdsVal = findAmount(deductionsMap, ['tds', 'income tax']);
+
+        final payableDaysVal = (lineItem?['payable_days'] as num?)?.toDouble() ?? 30.0;
+        final lopDaysVal = (lineItem?['lop_days'] as num?)?.toDouble() ?? 0.0;
+        final totalWorkingDaysVal = (lineItem?['total_working_days'] as num?)?.toInt() ?? 30;
+
+        final resolvedRowEmpId = row['employee_id']?.toString() ?? empId;
+        final empCode = authoritativeEmpCode ??
+            (row['employee_code'] != null && !_isValidUuid(row['employee_code'].toString())
+                ? row['employee_code'].toString()
+                : null);
+
+        if (empCode == null || _isValidUuid(empCode)) {
+          secureLog('[Payslip] MISSING_EMPLOYEE_CODE: No valid human-readable employee code for payslip ${row['id']}');
+        }
+
+        final model = PayslipModel(
           id: row['id']?.toString() ?? '',
           employeeId: empId,
+          employeeUuid: _isValidUuid(resolvedRowEmpId) ? resolvedRowEmpId : (_isValidUuid(empId) ? empId : null),
+          employeeCode: empCode ?? '',
           employeeName: user.name.isNotEmpty ? user.name : '—',
           designation: user.designation.isNotEmpty ? user.designation : '—',
           monthYear: monthStr.isNotEmpty ? '$monthStr $yearVal' : '$yearVal',
@@ -785,16 +911,24 @@ class SupabaseMoreModulesRepository implements IMoreModulesRepository {
           netPay: '₹${netD.toStringAsFixed(0)}',
           payDate: row['published_at']?.toString() ?? row['pay_date']?.toString() ?? '—',
           pdfUrl: row['storage_path']?.toString() ?? row['pdf_url']?.toString() ?? '',
-          basicSalary: (earningsMap['Basic'] ?? earningsMap['basic'] ?? row['basic_salary'] as num?)?.toDouble() ?? 0.0,
-          hra: (earningsMap['HRA'] ?? earningsMap['hra'] ?? row['hra'] as num?)?.toDouble() ?? 0.0,
-          specialAllowance:
-              (earningsMap['Special Allowance'] ?? earningsMap['special_allowance'] ?? row['special_allowance'] as num?)?.toDouble() ?? 0.0,
-          pfDeduction: (deductionsMap['PF'] ?? deductionsMap['pf'] ?? row['pf_deduction'] as num?)?.toDouble() ?? 0.0,
-          profTaxDeduction:
-              (deductionsMap['PT'] ?? deductionsMap['prof_tax'] ?? row['prof_tax_deduction'] as num?)?.toDouble() ?? 0.0,
-          incomeTaxDeduction:
-              (deductionsMap['TDS'] ?? deductionsMap['income_tax'] ?? row['income_tax_deduction'] as num?)?.toDouble() ?? 0.0,
+          basicSalary: basicVal > 0 ? basicVal : ((row['basic_salary'] as num?)?.toDouble() ?? 0.0),
+          hra: hraVal > 0 ? hraVal : ((row['hra'] as num?)?.toDouble() ?? 0.0),
+          specialAllowance: specialVal > 0 ? specialVal : ((row['special_allowance'] as num?)?.toDouble() ?? 0.0),
+          pfDeduction: pfVal > 0 ? pfVal : ((row['pf_deduction'] as num?)?.toDouble() ?? 0.0),
+          profTaxDeduction: ptVal > 0 ? ptVal : ((row['prof_tax_deduction'] as num?)?.toDouble() ?? 0.0),
+          incomeTaxDeduction: tdsVal > 0 ? tdsVal : ((row['income_tax_deduction'] as num?)?.toDouble() ?? 0.0),
+          payableDays: payableDaysVal,
+          lopDays: lopDaysVal,
+          totalWorkingDays: totalWorkingDaysVal,
+          earningsComponents: earningsList,
+          deductionsComponents: deductionsList,
         );
+
+        if (!model.validateCalculations()) {
+          secureLog('[Payslip] PAYSLIP_CALCULATION_MISMATCH: Gross=$grossD, Deductions=$deductionsD, Net=$netD on payslip ${model.id}');
+        }
+
+        return model;
       }).toList();
     } catch (e) {
       secureLog('[Payslips] getPayslips notice: $e');
@@ -812,61 +946,101 @@ class SupabaseMoreModulesRepository implements IMoreModulesRepository {
       final empId = _resolveEmployeeId(employeeId);
       List<ExpenseClaimModel> result = [];
 
-      // Query canonical employee_requests table where request_type = 'EXPENSE'
+      // 1. Primary: Query canonical expense_claims table (shared with Web HR Portal)
       try {
         final rows = await withTimeout(
           _client
-              .from('employee_requests')
+              .from('expense_claims')
               .select()
               .eq('employee_id', empId)
-              .eq('request_type', 'EXPENSE')
-              .order('created_at', ascending: false),
+              .order('submitted_at', ascending: false),
         );
 
         for (final row in rows) {
           final rawStatus = (row['status']?.toString() ?? '').toUpperCase();
           ExpenseStatus status = ExpenseStatus.pending;
           if (rawStatus == 'APPROVED' ||
-              rawStatus == 'RESOLVED' ||
+              rawStatus == 'REIMBURSED' ||
               rawStatus == 'PAID' ||
               rawStatus == 'SETTLED') {
             status = ExpenseStatus.approved;
-          } else if (rawStatus == 'REJECTED') {
+          } else if (rawStatus == 'REJECTED' || rawStatus == 'CANCELLED') {
             status = ExpenseStatus.rejected;
           }
 
-          final rawDesc = row['description']?.toString() ?? '';
-          double parsedAmount = (row['amount'] as num?)?.toDouble() ?? 0.0;
-          if (parsedAmount == 0.0 && rawDesc.isNotEmpty) {
-            final amtMatch = RegExp(r'\[Amount:\s*₹?([\d,]+(?:\.\d+)?)\]', caseSensitive: false).firstMatch(rawDesc);
-            if (amtMatch != null) {
-              parsedAmount = double.tryParse(amtMatch.group(1)!.replaceAll(',', '')) ?? 0.0;
-            }
-          }
-          String? parsedReceiptUrl;
-          final recMatch = RegExp(r'\[Receipt:\s*([^\]]+)\]', caseSensitive: false).firstMatch(rawDesc);
-          if (recMatch != null) {
-            parsedReceiptUrl = recMatch.group(1)?.trim();
-          }
-          final cleanDesc = rawDesc
-              .replaceAll(RegExp(r'\s*\[Amount:[^\]]*\]'), '')
-              .replaceAll(RegExp(r'\s*\[Receipt:[^\]]*\]'), '')
-              .trim();
-
           result.add(ExpenseClaimModel(
             id: row['id']?.toString() ?? '',
-            title: (row['subject'] ?? row['title'])?.toString() ?? 'Expense Claim',
-            category: 'Reimbursement',
-            amount: parsedAmount,
-            date: DateTime.tryParse(row['created_at']?.toString() ?? '') ??
+            title: (row['description'] ?? row['category'] ?? 'Expense Claim').toString(),
+            category: row['category']?.toString() ?? 'Reimbursement',
+            amount: (row['amount'] as num?)?.toDouble() ?? 0.0,
+            date: DateTime.tryParse(row['expense_date']?.toString() ?? row['submitted_at']?.toString() ?? '') ??
                 DateTime.now(),
             status: status,
-            description: cleanDesc,
-            receiptUrl: parsedReceiptUrl,
+            description: row['description']?.toString() ?? '',
+            receiptUrl: row['receipt_url']?.toString(),
           ));
         }
       } catch (e) {
-        secureLog('[Claims] employee_requests expense query notice: $e');
+        secureLog('[Claims] expense_claims query notice: $e');
+      }
+
+      // 2. Fallback: Query legacy employee_requests table if expense_claims had no records
+      if (result.isEmpty) {
+        try {
+          final rows = await withTimeout(
+            _client
+                .from('employee_requests')
+                .select()
+                .eq('employee_id', empId)
+                .eq('request_type', 'EXPENSE')
+                .order('created_at', ascending: false),
+          );
+
+          for (final row in rows) {
+            final rawStatus = (row['status']?.toString() ?? '').toUpperCase();
+            ExpenseStatus status = ExpenseStatus.pending;
+            if (rawStatus == 'APPROVED' ||
+                rawStatus == 'RESOLVED' ||
+                rawStatus == 'PAID' ||
+                rawStatus == 'SETTLED') {
+              status = ExpenseStatus.approved;
+            } else if (rawStatus == 'REJECTED') {
+              status = ExpenseStatus.rejected;
+            }
+
+            final rawDesc = row['description']?.toString() ?? '';
+            double parsedAmount = (row['amount'] as num?)?.toDouble() ?? 0.0;
+            if (parsedAmount == 0.0 && rawDesc.isNotEmpty) {
+              final amtMatch = RegExp(r'\[Amount:\s*₹?([\d,]+(?:\.\d+)?)\]', caseSensitive: false).firstMatch(rawDesc);
+              if (amtMatch != null) {
+                parsedAmount = double.tryParse(amtMatch.group(1)!.replaceAll(',', '')) ?? 0.0;
+              }
+            }
+            String? parsedReceiptUrl;
+            final recMatch = RegExp(r'\[Receipt:\s*([^\]]+)\]', caseSensitive: false).firstMatch(rawDesc);
+            if (recMatch != null) {
+              parsedReceiptUrl = recMatch.group(1)?.trim();
+            }
+            final cleanDesc = rawDesc
+                .replaceAll(RegExp(r'\s*\[Amount:[^\]]*\]'), '')
+                .replaceAll(RegExp(r'\s*\[Receipt:[^\]]*\]'), '')
+                .trim();
+
+            result.add(ExpenseClaimModel(
+              id: row['id']?.toString() ?? '',
+              title: (row['subject'] ?? row['title'])?.toString() ?? 'Expense Claim',
+              category: 'Reimbursement',
+              amount: parsedAmount,
+              date: DateTime.tryParse(row['created_at']?.toString() ?? '') ??
+                  DateTime.now(),
+              status: status,
+              description: cleanDesc,
+              receiptUrl: parsedReceiptUrl,
+            ));
+          }
+        } catch (e) {
+          secureLog('[Claims] employee_requests expense query notice: $e');
+        }
       }
 
       return result;
@@ -891,10 +1065,53 @@ class SupabaseMoreModulesRepository implements IMoreModulesRepository {
               ? user.organizationId!
               : '');
 
-      // Insert into canonical employee_requests table
+      final claimUuid = _isValidUuid(claim.id) ? claim.id : Validators.generateUuid();
+      final claimNumber = 'EXP-${DateTime.now().millisecondsSinceEpoch.toString().substring(7)}';
+      final todayDate = DateTime.now().toIso8601String().split('T').first;
+
+      // 1. Insert into canonical expense_claims table (shared with Web HR Portal)
+      try {
+        final expensePayload = <String, dynamic>{
+          'id': claimUuid,
+          'claim_number': claimNumber,
+          if (_isValidUuid(tenantId)) 'tenant_id': tenantId,
+          if (_isValidUuid(tenantId)) 'organization_id': tenantId,
+          'employee_id': empId,
+          'employee_code': user.hasValidEmployeeCode ? user.employeeCode : '',
+          'employee_name': user.name,
+          'department': user.department,
+          'category': claim.category.isNotEmpty ? claim.category.toUpperCase() : 'OTHER',
+          'amount': claim.amount,
+          'currency': 'INR',
+          'expense_date': todayDate,
+          'description': claim.description.isNotEmpty ? claim.description : claim.title,
+          'receipt_url': claim.receiptUrl,
+          'receipt_filename': claim.receiptUrl?.split('/').last,
+          'status': 'PENDING',
+          'submitted_at': DateTime.now().toIso8601String(),
+        };
+        await _client.from('expense_claims').insert(expensePayload);
+        secureLog('[Claims] Inserted canonical expense into expense_claims: $claimUuid');
+
+        // Broadcast realtime sync event
+        try {
+          await RealtimeOutboxService.insertEvent(
+            entityType: 'expense_claims',
+            eventType: 'expense.submitted',
+            entityId: claimUuid,
+            tenantId: tenantId,
+            actorId: empId,
+            payload: expensePayload,
+          );
+        } catch (_) {}
+      } catch (e) {
+        secureLog('[Claims] expense_claims insert notice: $e');
+      }
+
+      // 2. Insert into unified employee_requests table
       try {
         final reqPayload = <String, dynamic>{
-          if (_isValidUuid(claim.id)) 'id': claim.id,
+          if (_isValidUuid(claimUuid)) 'id': claimUuid,
           if (_isValidUuid(tenantId)) 'organization_id': tenantId,
           'employee_id': empId,
           'request_type': 'EXPENSE',

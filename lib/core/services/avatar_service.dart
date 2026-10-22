@@ -1,7 +1,8 @@
-import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../config/supabase_config.dart';
 import '../utils/secure_log.dart';
+import 'media_compression_service.dart';
 import 'user_service.dart';
 
 class AvatarService {
@@ -155,11 +156,29 @@ class AvatarService {
       final canonicalPath = '$orgId/$employeeUuid/documents/avatar_$fileTimestamp.jpg';
       const targetBucket = canonicalBucket;
 
-      secureLog('[AvatarService] Uploading avatar to $targetBucket at $canonicalPath');
+      Uint8List bytesToUpload = imageBytes;
+      if (!kIsWeb && imageBytes.lengthInBytes > 250 * 1024) {
+        try {
+          final compResult = await MediaCompressionService.instance.compressReceiptImage(
+            inputBytes: imageBytes,
+            fileName: 'avatar.jpg',
+            targetQuality: 88,
+            maxDimension: 1024,
+          );
+          if (compResult.wasCompressed) {
+            bytesToUpload = compResult.bytes;
+            secureLog('[AvatarService] Avatar compressed for upload: ${compResult.summary}');
+          }
+        } catch (e) {
+          secureLog('[AvatarService] Avatar pre-compression notice: $e');
+        }
+      }
+
+      secureLog('[AvatarService] Uploading avatar to $targetBucket at $canonicalPath (${bytesToUpload.lengthInBytes} bytes)');
 
       await client.storage.from(targetBucket).uploadBinary(
         canonicalPath,
-        imageBytes,
+        bytesToUpload,
         fileOptions: const FileOptions(
           contentType: 'image/jpeg',
           upsert: true,

@@ -101,6 +101,7 @@ class VirtualIdCard extends StatelessWidget {
                                   ? ClipOval(
                                       child: Image.network(
                                         user.companyLogoUrl!,
+                                        cacheWidth: 120,
                                         fit: BoxFit.cover,
                                         errorBuilder: (_, __, ___) => const Center(
                                           child: Icon(

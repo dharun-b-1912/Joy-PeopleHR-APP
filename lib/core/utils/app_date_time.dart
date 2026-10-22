@@ -86,4 +86,94 @@ class AppDateTime {
     final s = (duration.inSeconds % 60).toString().padLeft(2, '0');
     return '$h:$m:$s';
   }
+
+  static const List<String> _shortMonths = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+  ];
+
+  static const List<String> _fullMonths = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'
+  ];
+
+  /// Returns 3-letter month abbreviation (1 = Jan, 12 = Dec)
+  static String shortMonth(int month) {
+    if (month >= 1 && month <= 12) return _shortMonths[month - 1];
+    return '';
+  }
+
+  /// Returns full month name (1 = January, 12 = December)
+  static String fullMonth(int month) {
+    if (month >= 1 && month <= 12) return _fullMonths[month - 1];
+    return '';
+  }
+
+  /// Formats any raw date/timestamp into "DD Mon YYYY" (e.g. "01 Aug 2026")
+  static String formatDate(dynamic raw, [String fallback = '—']) {
+    if (raw == null) return fallback;
+    final str = raw.toString().trim();
+    if (str.isEmpty || str == 'null' || str == '—') return fallback;
+
+    // Already in human format e.g. "01 Aug 2026" or "1 Aug 2026"
+    final humanMatch = RegExp(r'^\d{1,2}\s+[A-Za-z]{3,}\s+\d{4}$').firstMatch(str);
+    if (humanMatch != null) return str;
+
+    DateTime? dt;
+    if (raw is DateTime) {
+      dt = raw;
+    } else {
+      dt = DateTime.tryParse(str);
+    }
+
+    if (dt != null) {
+      final ist = toIST(dt);
+      final day = ist.day.toString().padLeft(2, '0');
+      final month = shortMonth(ist.month);
+      return '$day $month ${ist.year}';
+    }
+
+    // Try parsing YYYY-MM-DD
+    final dateOnlyMatch = RegExp(r'^(\d{4})-(\d{1,2})-(\d{1,2})').firstMatch(str);
+    if (dateOnlyMatch != null) {
+      final y = int.parse(dateOnlyMatch.group(1)!);
+      final m = int.parse(dateOnlyMatch.group(2)!);
+      final d = int.parse(dateOnlyMatch.group(3)!);
+      return '${d.toString().padLeft(2, '0')} ${shortMonth(m)} $y';
+    }
+
+    return str;
+  }
+
+  /// Specifically formats pay date ensuring no ISO string is shown to employees
+  static String formatPayDate(dynamic raw, [String fallback = '—']) {
+    return formatDate(raw, fallback);
+  }
+
+  /// Formats payroll period (e.g. "2026-07" -> "July 2026", "July 2026" -> "July 2026")
+  static String formatPeriod(dynamic raw, [String fallback = 'Current Month']) {
+    if (raw == null) return fallback;
+    final str = raw.toString().trim();
+    if (str.isEmpty || str == 'null') return fallback;
+
+    // Check YYYY-MM format
+    final ymMatch = RegExp(r'^(\d{4})-(\d{1,2})$').firstMatch(str);
+    if (ymMatch != null) {
+      final year = ymMatch.group(1)!;
+      final m = int.parse(ymMatch.group(2)!);
+      return '${fullMonth(m)} $year';
+    }
+
+    // Check Month Year format (already e.g. "July 2026")
+    final myMatch = RegExp(r'^[A-Za-z]+\s+\d{4}$').firstMatch(str);
+    if (myMatch != null) return str;
+
+    // If ISO date string is passed, extract Month Year
+    final dt = DateTime.tryParse(str);
+    if (dt != null) {
+      return '${fullMonth(dt.month)} ${dt.year}';
+    }
+
+    return str;
+  }
 }

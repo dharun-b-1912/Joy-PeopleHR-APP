@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import '../../../../core/services/app_version_service.dart';
 import '../../../../core/services/employee_realtime_service.dart';
 import '../../../../core/services/sensitive_data_auth_service.dart';
 import '../../../../core/services/user_service.dart';
@@ -456,9 +457,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
       final picker = ImagePicker();
       final XFile? picked = await picker.pickImage(
         source: source,
-        maxWidth: 2400,
-        maxHeight: 2400,
-        imageQuality: 98,
+        maxWidth: 1200,
+        maxHeight: 1200,
+        imageQuality: 88,
       );
       if (picked != null && mounted) {
         final bytes = await picked.readAsBytes();
@@ -700,7 +701,20 @@ class _ProfileScreenState extends State<ProfileScreen> {
         final managerName =
             user.reportsToName?.isNotEmpty == true ? user.reportsToName! : '—';
 
-        final campusName = user.campus.isNotEmpty ? user.campus : '—';
+        final String campusName;
+        if (user.campus.isNotEmpty && user.campus.toLowerCase() != 'carenow' && user.campus != '—') {
+          campusName = user.campus;
+        } else if (user.assignedLocations.isNotEmpty &&
+            user.assignedLocations.first.name.toLowerCase() != 'carenow' &&
+            user.assignedLocations.first.name != 'Work Location') {
+          campusName = user.assignedLocations.first.name;
+        } else if (user.approvedLocation.name.isNotEmpty &&
+            user.approvedLocation.name.toLowerCase() != 'carenow' &&
+            user.approvedLocation.name != 'Work Location') {
+          campusName = user.approvedLocation.name;
+        } else {
+          campusName = "Not assigned";
+        }
 
         final addressDisplay = user.address.isNotEmpty ? user.address : '—';
 
@@ -710,7 +724,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         final dojDisplay =
             user.joiningDate?.isNotEmpty == true ? user.joiningDate! : '—';
 
-        final empIdDisplay = user.employeeId.isNotEmpty ? user.employeeId : '—';
+        final empIdDisplay = user.displayEmployeeId;
 
         final deptDisplay = user.department.isNotEmpty
             ? (user.unit?.isNotEmpty == true ? '${user.department} / ${user.unit}' : user.department)
@@ -738,32 +752,43 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
         return Scaffold(
           backgroundColor: AppColors.scaffoldBg,
-          body: SafeArea(
-            top: false,
-            bottom: true,
-            child: RefreshIndicator(
-              color: AppColors.primary,
-              backgroundColor: Colors.white,
-              edgeOffset: MediaQuery.paddingOf(context).top,
-              displacement: 40,
-              onRefresh: _handleRefresh,
-              child: SingleChildScrollView(
-                physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
-              padding: const EdgeInsets.only(
-                bottom: AppSpacing.bottomNavClearance + 48,
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  AppHeader(
-                    subtitle: deptDisplay != '—'
-                        ? deptDisplay
-                        : (user.companyName?.isNotEmpty == true
-                            ? user.companyName!
-                            : 'Employee Profile'),
-                    title: "Profile",
-                    rightAction: _buildRefreshButton(),
+          body: Stack(
+            children: [
+              Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                height: 340,
+                child: Container(
+                  decoration: const BoxDecoration(
+                    gradient: AppColors.emeraldAuraHeader,
                   ),
+                ),
+              ),
+              RefreshIndicator(
+                color: AppColors.primary,
+                backgroundColor: Colors.white,
+                edgeOffset: MediaQuery.paddingOf(context).top,
+                displacement: 40,
+                onRefresh: _handleRefresh,
+                child: SingleChildScrollView(
+                  physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
+                  padding: const EdgeInsets.only(
+                    bottom: AppSpacing.bottomNavClearance + 48,
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      AppHeader(
+                        transparent: true,
+                        subtitle: deptDisplay != '—'
+                            ? deptDisplay
+                            : (user.companyName?.isNotEmpty == true
+                                ? user.companyName!
+                                : 'Employee Profile'),
+                        title: "Profile",
+                        rightAction: _buildRefreshButton(),
+                      ),
                   Padding(
                     padding: const EdgeInsets.symmetric(
                       horizontal: AppSpacing.screenHorizontal,
@@ -974,7 +999,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                         fontWeight: FontWeight.bold,
                                       ),
                                     ),
-                                    if (campusName != '—') ...[
+                                    if (campusName != 'Not assigned' && campusName != '—') ...[
                                       const SizedBox(height: 2),
                                       Text(
                                         campusName,
@@ -1003,6 +1028,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           child: Column(
                             children: [
                               _buildKeyValueRow("Employee ID", empIdDisplay),
+                              _buildKeyValueRow("Official Email", workEmailDisplay),
                               _buildKeyValueRow(
                                   "Department / Unit", deptDisplay),
                               _buildKeyValueRow(
@@ -1868,23 +1894,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                   fontWeight: FontWeight.w600,
                                 ),
                               ),
-                              const SizedBox(height: 2),
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-                                decoration: BoxDecoration(
-                                  color: AppColors.slateBg,
-                                  borderRadius: AppRadius.borderPill,
-                                  border: Border.all(color: AppColors.borderSubtle),
-                                ),
-                                child: Text(
-                                  "v1.0.0 (Build 6)",
-                                  style: AppTypography.overline.copyWith(
-                                    color: AppColors.primary,
-                                    fontWeight: FontWeight.bold,
-                                    letterSpacing: 0.5,
-                                  ),
-                                ),
-                              ),
+                              const SizedBox(height: 4),
+                              const AppVersionBadge(),
                             ],
                           ),
                         ),
@@ -1898,8 +1909,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
               ),
               ),
             ),
-          ),
-        );
+          ],
+        ),
+      );
       },
     );
   }

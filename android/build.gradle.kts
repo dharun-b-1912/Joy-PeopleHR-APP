@@ -28,6 +28,9 @@ subprojects {
             if (requested.group == "androidx.core") {
                 useVersion("1.15.0")
             }
+            if (requested.group == "org.jetbrains.kotlin") {
+                useVersion("2.1.0")
+            }
         }
     }
 }

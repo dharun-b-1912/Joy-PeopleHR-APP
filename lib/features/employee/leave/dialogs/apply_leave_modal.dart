@@ -175,6 +175,11 @@ class _ApplyLeaveModalState extends State<ApplyLeaveModal> {
       return;
     }
 
+    if (_reasonController.text.trim().isEmpty) {
+      setState(() => _errorText = "Please provide a reason for your leave request.");
+      return;
+    }
+
     setState(() => _isSubmitting = true);
 
     try {
@@ -210,8 +215,9 @@ class _ApplyLeaveModalState extends State<ApplyLeaveModal> {
       }
     } catch (e) {
       if (mounted) {
+        final cleanMsg = e.toString().replaceFirst(RegExp(r'^Exception:\s*'), '');
         setState(() {
-          _errorText = "Error submitting leave: $e";
+          _errorText = cleanMsg;
           _isSubmitting = false;
         });
       }

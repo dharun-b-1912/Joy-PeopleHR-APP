@@ -130,8 +130,9 @@ class _ProfilePhotoEditorDialogState extends State<ProfilePhotoEditorDialog> {
                             height: 190,
                             child: Image.memory(
                               widget.imageBytes,
+                              cacheWidth: 600,
                               fit: BoxFit.cover,
-                              alignment: const Alignment(0.0, -0.15),
+                              alignment: const Alignment(0.0, -0.20),
                               filterQuality: FilterQuality.high,
                             ),
                           ),

@@ -1,5 +1,8 @@
 import 'dart:convert';
 import 'dart:typed_data';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import '../config/supabase_config.dart';
+import '../utils/secure_log.dart';
 import '../../models/employee_models.dart';
 import '../../models/hrms_models.dart';
 import 'file_download_service.dart';
@@ -11,13 +14,38 @@ import 'file_download_service.dart';
 class PayslipPdfService {
   /// Generates PDF bytes and triggers direct download/save to user's device
   static Future<bool> generateAndDownload(PayslipModel payslip, {UserModel? user}) async {
-    final bytes = generatePdfBytes(payslip, user: user);
-    final cleanMonth = payslip.monthYear.replaceAll(' ', '_');
-    final empCode = payslip.employeeId.isNotEmpty
-        ? payslip.employeeId
-        : (user?.employeeId.isNotEmpty == true ? user!.employeeId : 'Employee');
+    final cleanMonth = payslip.formattedPeriod.replaceAll(' ', '_');
+    final empCode = payslip.displayEmployeeId != 'Employee ID unavailable'
+        ? payslip.displayEmployeeId
+        : (user != null && user.displayEmployeeId != 'Employee ID unavailable'
+            ? user.displayEmployeeId
+            : 'Employee');
     final fileName = "Payslip_${cleanMonth}_$empCode.pdf";
 
+    // 1. Try authoritative signed storage URL if storage_path is present
+    if (payslip.pdfUrl.isNotEmpty && SupabaseConfig.isConfigured) {
+      try {
+        String downloadUrl = payslip.pdfUrl;
+        if (!downloadUrl.startsWith('http')) {
+          final res = await Supabase.instance.client.storage
+              .from('payslips')
+              .createSignedUrl(payslip.pdfUrl, 300);
+          downloadUrl = res;
+        }
+        if (downloadUrl.isNotEmpty) {
+          final ok = await FileDownloadService.downloadFromUrl(
+            url: downloadUrl,
+            fileName: fileName,
+          );
+          if (ok) return true;
+        }
+      } catch (e) {
+        secureLog('[PayslipPdfService] Direct storage download notice: $e');
+      }
+    }
+
+    // 2. Generate unified vector PDF offline with 100% data reconciliation
+    final bytes = generatePdfBytes(payslip, user: user);
     return await FileDownloadService.downloadBytes(
       fileName: fileName,
       bytes: bytes,
@@ -30,51 +58,67 @@ class PayslipPdfService {
     // 1. Company Name (The employee's actual employing company, not the SaaS platform)
     final companyName = user?.companyName?.isNotEmpty == true
         ? user!.companyName!
-        : (user?.organizationName?.isNotEmpty == true ? user!.organizationName! : '—');
+        : (user?.organizationName?.isNotEmpty == true ? user!.organizationName! : 'JOY CORPORATE SOLUTIONS');
 
     // 2. Employee Profile Details
     final empName = payslip.employeeName.isNotEmpty
         ? payslip.employeeName
         : (user?.name.isNotEmpty == true ? user!.name : '—');
-    final empCode = payslip.employeeId.isNotEmpty
-        ? payslip.employeeId
-        : (user?.employeeId.isNotEmpty == true ? user!.employeeId : '—');
+    final empCode = payslip.displayEmployeeId != 'Employee ID unavailable'
+        ? payslip.displayEmployeeId
+        : (user != null && user.displayEmployeeId != 'Employee ID unavailable'
+            ? user.displayEmployeeId
+            : '—');
     final dept = user?.department.isNotEmpty == true ? user!.department : '—';
     final desig = payslip.designation.isNotEmpty
         ? payslip.designation
         : (user?.designation.isNotEmpty == true ? user!.designation : '—');
-    final payDate = payslip.payDate.isNotEmpty ? payslip.payDate : '—';
-    final payPeriod = payslip.monthYear.isNotEmpty ? payslip.monthYear : '—';
+    final payDate = payslip.formattedPayDate.isNotEmpty ? payslip.formattedPayDate : '—';
+    final payPeriod = payslip.formattedPeriod.isNotEmpty ? payslip.formattedPeriod : '—';
 
-    // 3. Financial Computations
-    final basic = payslip.basicSalary;
-    final hra = payslip.hra;
-    final special = payslip.specialAllowance;
-    double gross = _parseCurrency(payslip.grossEarnings);
-    if (gross <= 0 && (basic > 0 || hra > 0 || special > 0)) {
-      gross = basic + hra + special;
+    // 3. Financial Computations & Dynamic Component Resolution
+    final earningsList = <Map<String, dynamic>>[];
+    if (payslip.earningsComponents.isNotEmpty) {
+      for (final c in payslip.earningsComponents) {
+        final amt = (c['amount'] is num) ? (c['amount'] as num).toDouble() : (double.tryParse(c['amount']?.toString() ?? '') ?? 0.0);
+        earningsList.add({'name': c['name']?.toString() ?? 'Earnings', 'amount': amt});
+      }
+    } else {
+      if (payslip.basicSalary > 0) earningsList.add({'name': 'Basic Salary', 'amount': payslip.basicSalary});
+      if (payslip.hra > 0) earningsList.add({'name': 'House Rent Allowance (HRA)', 'amount': payslip.hra});
+      if (payslip.specialAllowance > 0) earningsList.add({'name': 'Special Allowance', 'amount': payslip.specialAllowance});
     }
 
-    final pf = payslip.pfDeduction;
-    final pt = payslip.profTaxDeduction;
-    final incomeTax = payslip.incomeTaxDeduction;
-    
-    // Parse deductions and net pay from payslip model or calculate
-    double totalDeductions = _parseCurrency(payslip.deductions);
-    if (totalDeductions <= 0 && (pf > 0 || pt > 0 || incomeTax > 0)) {
-      totalDeductions = pf + pt + incomeTax;
+    final deductionsList = <Map<String, dynamic>>[];
+    if (payslip.deductionsComponents.isNotEmpty) {
+      for (final c in payslip.deductionsComponents) {
+        final amt = (c['amount'] is num) ? (c['amount'] as num).toDouble() : (double.tryParse(c['amount']?.toString() ?? '') ?? 0.0);
+        deductionsList.add({'name': c['name']?.toString() ?? 'Deduction', 'amount': amt});
+      }
+    } else {
+      if (payslip.pfDeduction > 0) deductionsList.add({'name': 'Provident Fund (EPF)', 'amount': payslip.pfDeduction});
+      if (payslip.profTaxDeduction > 0) deductionsList.add({'name': 'Professional Tax (PT)', 'amount': payslip.profTaxDeduction});
+      if (payslip.incomeTaxDeduction > 0) deductionsList.add({'name': 'Income Tax (TDS)', 'amount': payslip.incomeTaxDeduction});
     }
-    
-    // Compute exact TDS as residual if needed
-    final tds = (totalDeductions - pf - pt) > 0 ? (totalDeductions - pf - pt) : incomeTax;
-    
-    double netPay = _parseCurrency(payslip.netPay);
-    if (netPay <= 0 && gross > 0) {
-      netPay = gross - totalDeductions;
+
+    // Authoritative math: Gross = sum of all earnings, Deductions = sum of all deductions
+    double gross = earningsList.fold(0.0, (s, e) => s + (e['amount'] as double));
+    if (gross <= 0) gross = _parseCurrency(payslip.grossEarnings);
+
+    double totalDeductions = deductionsList.fold(0.0, (s, d) => s + (d['amount'] as double));
+    if (totalDeductions <= 0 && payslip.deductions.isNotEmpty) {
+      totalDeductions = _parseCurrency(payslip.deductions);
     }
+
+    double netPay = gross - totalDeductions;
+    if (netPay <= 0) netPay = _parseCurrency(payslip.netPay);
 
     final netPayStr = "Rs. ${_formatInr(netPay.toInt())}";
     final netInWords = _numberToWordsIndian(netPay.toInt());
+
+    // Attendance inputs
+    final payableDaysStr = "${payslip.payableDays % 1 == 0 ? payslip.payableDays.toInt() : payslip.payableDays} Days";
+    final lopDaysStr = "${payslip.lopDays % 1 == 0 ? payslip.lopDays.toInt() : payslip.lopDays} Days";
 
     // 4. Vector PDF Content Stream (Page A4: 595 x 842 pt)
     final sb = StringBuffer();
@@ -101,33 +145,33 @@ class PayslipPdfService {
     sb.writeln("q 0.85 0.85 0.85 RG 1 w 40 730 m 555 730 l S Q");
 
     // --- EMPLOYEE DETAILS CARD (Background & Border) ---
-    sb.writeln("q 0.96 0.97 0.98 rg 0.86 0.88 0.90 RG 1 w 40 635 515 85 re B Q");
+    sb.writeln("q 0.96 0.97 0.98 rg 0.86 0.88 0.90 RG 1 w 40 630 515 90 re B Q");
 
     // Column 1: Labels & Values
-    writeText(55, 698, "F2", 8.5, 0.45, 0.45, 0.45, "EMPLOYEE NAME:");
-    writeText(155, 698, "F2", 9.0, 0.1, 0.1, 0.1, empName);
+    writeText(55, 702, "F2", 8.5, 0.45, 0.45, 0.45, "EMPLOYEE NAME:");
+    writeText(155, 702, "F2", 9.0, 0.1, 0.1, 0.1, empName);
 
-    writeText(55, 680, "F2", 8.5, 0.45, 0.45, 0.45, "EMPLOYEE ID:");
-    writeText(155, 680, "F1", 9.0, 0.1, 0.1, 0.1, empCode);
+    writeText(55, 684, "F2", 8.5, 0.45, 0.45, 0.45, "EMPLOYEE ID:");
+    writeText(155, 684, "F1", 9.0, 0.1, 0.1, 0.1, empCode);
 
-    writeText(55, 662, "F2", 8.5, 0.45, 0.45, 0.45, "DEPARTMENT:");
-    writeText(155, 662, "F1", 9.0, 0.1, 0.1, 0.1, dept);
+    writeText(55, 666, "F2", 8.5, 0.45, 0.45, 0.45, "DEPARTMENT:");
+    writeText(155, 666, "F1", 9.0, 0.1, 0.1, 0.1, dept);
 
-    writeText(55, 644, "F2", 8.5, 0.45, 0.45, 0.45, "DESIGNATION:");
-    writeText(155, 644, "F1", 9.0, 0.1, 0.1, 0.1, desig);
+    writeText(55, 648, "F2", 8.5, 0.45, 0.45, 0.45, "DESIGNATION:");
+    writeText(155, 648, "F1", 9.0, 0.1, 0.1, 0.1, desig);
 
     // Column 2: Labels & Values
-    writeText(330, 698, "F2", 8.5, 0.45, 0.45, 0.45, "PAYABLE DAYS:");
-    writeText(430, 698, "F1", 9.0, 0.1, 0.1, 0.1, "30 Days");
+    writeText(330, 702, "F2", 8.5, 0.45, 0.45, 0.45, "PAYABLE DAYS:");
+    writeText(430, 702, "F1", 9.0, 0.1, 0.1, 0.1, "$payableDaysStr (LOP: $lopDaysStr)");
 
-    writeText(330, 680, "F2", 8.5, 0.45, 0.45, 0.45, "PAYMENT MODE:");
-    writeText(430, 680, "F2", 9.0, 0.05, 0.45, 0.25, "Direct Transfer (Settled)");
+    writeText(330, 684, "F2", 8.5, 0.45, 0.45, 0.45, "PAYMENT MODE:");
+    writeText(430, 684, "F2", 9.0, 0.05, 0.45, 0.25, "Direct Transfer (Settled)");
 
-    writeText(330, 662, "F2", 8.5, 0.45, 0.45, 0.45, "CURRENCY:");
-    writeText(430, 662, "F1", 9.0, 0.1, 0.1, 0.1, "INR (Indian Rupee)");
+    writeText(330, 666, "F2", 8.5, 0.45, 0.45, 0.45, "CURRENCY:");
+    writeText(430, 666, "F1", 9.0, 0.1, 0.1, 0.1, "INR (Indian Rupee)");
 
-    writeText(330, 644, "F2", 8.5, 0.45, 0.45, 0.45, "STATEMENT REF:");
-    writeText(430, 644, "F1", 8.5, 0.3, 0.3, 0.3, "PS-$payPeriod-$empCode");
+    writeText(330, 648, "F2", 8.5, 0.45, 0.45, 0.45, "STATEMENT REF:");
+    writeText(430, 648, "F1", 8.5, 0.3, 0.3, 0.3, "PS-$payPeriod-$empCode");
 
     // --- EARNINGS & DEDUCTIONS DUAL TABLES ---
     // Earnings Table Header (Teal / Emerald)
@@ -140,53 +184,70 @@ class PayslipPdfService {
     writeText(315, 605, "F2", 9.5, 1.0, 1.0, 1.0, "DEDUCTIONS");
     writeText(485, 605, "F2", 9.5, 1.0, 1.0, 1.0, "AMOUNT");
 
-    // Row 1 (Zebra Light Background)
-    sb.writeln("q 0.97 0.97 0.97 rg 40 576 250 22 re f 305 576 250 22 re f Q");
-    writeText(50, 583, "F1", 9.0, 0.15, 0.15, 0.15, "Basic Salary");
-    writeText(220, 583, "F2", 9.0, 0.1, 0.1, 0.1, "Rs. ${_formatInr(basic.toInt())}");
-    writeText(315, 583, "F1", 9.0, 0.15, 0.15, 0.15, "Provident Fund (EPF)");
-    writeText(485, 583, "F2", 9.0, 0.1, 0.1, 0.1, "Rs. ${_formatInr(pf.toInt())}");
+    // Dynamic Symmetrical Row Rendering
+    final maxRows = [earningsList.length, deductionsList.length, 3].reduce((a, b) => a > b ? a : b);
+    const rowHeight = 22.0;
+    const tableTopY = 576.0;
 
-    // Row 2 (White Background)
-    writeText(50, 561, "F1", 9.0, 0.15, 0.15, 0.15, "House Rent Allowance (HRA)");
-    writeText(220, 561, "F2", 9.0, 0.1, 0.1, 0.1, "Rs. ${_formatInr(hra.toInt())}");
-    writeText(315, 561, "F1", 9.0, 0.15, 0.15, 0.15, "Professional Tax (PT)");
-    writeText(485, 561, "F2", 9.0, 0.1, 0.1, 0.1, "Rs. ${_formatInr(pt.toInt())}");
+    for (int i = 0; i < maxRows; i++) {
+      final currentY = tableTopY - (i * rowHeight);
+      final isZebra = i % 2 == 0;
+      if (isZebra) {
+        sb.writeln("q 0.97 0.97 0.97 rg 40 ${currentY.toInt()} 250 ${rowHeight.toInt()} re f 305 ${currentY.toInt()} 250 ${rowHeight.toInt()} re f Q");
+      }
 
-    // Row 3 (Zebra Light Background)
-    sb.writeln("q 0.97 0.97 0.97 rg 40 532 250 22 re f 305 532 250 22 re f Q");
-    writeText(50, 539, "F1", 9.0, 0.15, 0.15, 0.15, "Special Allowance");
-    writeText(220, 539, "F2", 9.0, 0.1, 0.1, 0.1, "Rs. ${_formatInr(special.toInt())}");
-    writeText(315, 539, "F1", 9.0, 0.15, 0.15, 0.15, "Income Tax (TDS)");
-    writeText(485, 539, "F2", 9.0, 0.1, 0.1, 0.1, "Rs. ${_formatInr(tds.toInt())}");
+      final textY = currentY + 7;
 
+      // Earnings Col
+      if (i < earningsList.length) {
+        final e = earningsList[i];
+        writeText(50, textY, "F1", 9.0, 0.15, 0.15, 0.15, e['name'] as String);
+        writeText(220, textY, "F2", 9.0, 0.1, 0.1, 0.1, "Rs. ${_formatInr((e['amount'] as double).toInt())}");
+      }
+
+      // Deductions Col
+      if (i < deductionsList.length) {
+        final d = deductionsList[i];
+        writeText(315, textY, "F1", 9.0, 0.15, 0.15, 0.15, d['name'] as String);
+        writeText(485, textY, "F2", 9.0, 0.1, 0.1, 0.1, "Rs. ${_formatInr((d['amount'] as double).toInt())}");
+      } else if (i == 0 && deductionsList.isEmpty) {
+        writeText(315, textY, "F1", 9.0, 0.45, 0.45, 0.45, "Nil Deductions");
+        writeText(485, textY, "F2", 9.0, 0.45, 0.45, 0.45, "Rs. 0");
+      }
+    }
+
+    final tableTotalHeight = maxRows * rowHeight;
+    final tableBottomY = tableTopY - tableTotalHeight + rowHeight;
     // Table Outlines
-    sb.writeln("q 0.85 0.85 0.85 RG 1 w 40 532 250 88 re S 305 532 250 88 re S Q");
+    sb.writeln("q 0.85 0.85 0.85 RG 1 w 40 ${tableBottomY.toInt()} 250 ${tableTotalHeight.toInt()} re S 305 ${tableBottomY.toInt()} 250 ${tableTotalHeight.toInt()} re S Q");
 
     // --- TOTALS BAR ---
-    sb.writeln("q 0.93 0.95 0.96 rg 0.75 0.75 0.75 RG 1 w 40 505 250 24 re B 305 505 250 24 re B Q");
-    writeText(50, 513, "F2", 9.5, 0.05, 0.36, 0.23, "Gross Salary Earnings:");
-    writeText(215, 513, "F2", 9.5, 0.05, 0.36, 0.23, "Rs. ${_formatInr(gross.toInt())}");
-    writeText(315, 513, "F2", 9.5, 0.75, 0.20, 0.20, "Total Deductions:");
-    writeText(480, 513, "F2", 9.5, 0.75, 0.20, 0.20, "Rs. ${_formatInr(totalDeductions.toInt())}");
+    final totalsBarY = tableTopY - tableTotalHeight - 5;
+    sb.writeln("q 0.93 0.95 0.96 rg 0.75 0.75 0.75 RG 1 w 40 ${totalsBarY.toInt()} 250 24 re B 305 ${totalsBarY.toInt()} 250 24 re B Q");
+    writeText(50, totalsBarY + 8, "F2", 9.5, 0.05, 0.36, 0.23, "Gross Salary Earnings:");
+    writeText(215, totalsBarY + 8, "F2", 9.5, 0.05, 0.36, 0.23, "Rs. ${_formatInr(gross.toInt())}");
+    writeText(315, totalsBarY + 8, "F2", 9.5, 0.75, 0.20, 0.20, "Total Deductions:");
+    writeText(480, totalsBarY + 8, "F2", 9.5, 0.75, 0.20, 0.20, "Rs. ${_formatInr(totalDeductions.toInt())}");
 
     // --- NET PAYABLE SALARY HIGHLIGHT BOX ---
-    sb.writeln("q 0.05 0.36 0.23 rg 40 425 515 62 re f Q");
-    writeText(55, 465, "F2", 11.0, 1.0, 1.0, 1.0, "NET PAYABLE SALARY TRANSFERRED:");
-    writeText(370, 461, "F2", 16.0, 1.0, 1.0, 1.0, netPayStr);
-    writeText(55, 440, "F1", 9.0, 0.85, 0.95, 0.90, "Amount in Words: $netInWords");
+    final netBoxY = totalsBarY - 70;
+    sb.writeln("q 0.05 0.36 0.23 rg 40 ${netBoxY.toInt()} 515 58 re f Q");
+    writeText(55, netBoxY + 36, "F2", 11.0, 1.0, 1.0, 1.0, "NET PAYABLE SALARY TRANSFERRED:");
+    writeText(370, netBoxY + 32, "F2", 16.0, 1.0, 1.0, 1.0, netPayStr);
+    writeText(55, netBoxY + 14, "F1", 9.0, 0.85, 0.95, 0.90, "Amount in Words: $netInWords");
 
     // --- LEGAL & STATUTORY FOOTER ---
-    writeText(40, 385, "F1", 8.0, 0.45, 0.45, 0.45, "*** This is a computer-generated payslip and does not require a physical signature. ***");
-    writeText(40, 372, "F1", 7.5, 0.55, 0.55, 0.55, "Authorized by $companyName • Generated on: ${DateTime.now().toUtc().toIso8601String().substring(0, 10)}");
-    writeText(40, 360, "F1", 7.5, 0.55, 0.55, 0.55, "JOY PeopleHR Enterprise Compensation Engine • Authenticated Digital Record");
+    final footerY = netBoxY - 45;
+    writeText(40, footerY, "F1", 8.0, 0.45, 0.45, 0.45, "*** This is a computer-generated payslip and does not require a physical signature. ***");
+    writeText(40, footerY - 13, "F1", 7.5, 0.55, 0.55, 0.55, "Authorized by $companyName • Generated on: ${DateTime.now().toUtc().toIso8601String().substring(0, 10)}");
+    writeText(40, footerY - 25, "F1", 7.5, 0.55, 0.55, 0.55, "JOY PeopleHR Enterprise Compensation Engine • Authenticated Digital Record");
 
     // Divider Line
-    sb.writeln("q 0.85 0.85 0.85 RG 1 w 40 345 m 555 345 l S Q");
+    sb.writeln("q 0.85 0.85 0.85 RG 1 w 40 ${(footerY - 40).toInt()} m 555 ${(footerY - 40).toInt()} l S Q");
 
     // Signatory Block
-    writeText(390, 305, "F2", 9.0, 0.2, 0.2, 0.2, "For $companyName");
-    writeText(390, 275, "F1", 8.0, 0.4, 0.4, 0.4, "Authorized Signatory");
+    writeText(390, footerY - 75, "F2", 9.0, 0.2, 0.2, 0.2, "For $companyName");
+    writeText(390, footerY - 105, "F1", 8.0, 0.4, 0.4, 0.4, "Authorized Signatory");
 
     final streamContent = sb.toString();
     final streamBytes = utf8.encode(streamContent);

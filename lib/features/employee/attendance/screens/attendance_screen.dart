@@ -66,34 +66,48 @@ class _AttendanceScreenState extends State<AttendanceScreen> with SingleTickerPr
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.scaffoldBg,
-      body: ListenableBuilder(
-        listenable: AttendanceDetailController.instance,
-        builder: (context, _) {
-          final controller = AttendanceDetailController.instance;
-          final timesheets = controller.timesheets;
-          final regularizations = controller.regularizations;
-          final selectedMonth = controller.selectedMonth;
-          final monthName = _getMonthName(selectedMonth.month);
+      body: Stack(
+        children: [
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            height: 280,
+            child: Container(
+              decoration: const BoxDecoration(
+                gradient: AppColors.emeraldAuraHeader,
+              ),
+            ),
+          ),
+          ListenableBuilder(
+            listenable: AttendanceDetailController.instance,
+            builder: (context, _) {
+              final controller = AttendanceDetailController.instance;
+              final timesheets = controller.timesheets;
+              final regularizations = controller.regularizations;
+              final selectedMonth = controller.selectedMonth;
+              final monthName = _getMonthName(selectedMonth.month);
 
-          return RefreshIndicator(
-            onRefresh: () async {
-              await Future.wait([
-                controller.refresh(),
-                AttendanceService.instance.fetchTodayAttendance(),
-              ]);
-            },
-            color: AppColors.primary,
-            backgroundColor: Colors.white,
-            child: SingleChildScrollView(
-              physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
-              padding: const EdgeInsets.only(bottom: AppSpacing.bottomNavClearance),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                const AppHeader(
-                  subtitle: "Attendance & Timesheet",
-                  title: "Attendance",
-                ),
+              return RefreshIndicator(
+                onRefresh: () async {
+                  await Future.wait([
+                    controller.refresh(),
+                    AttendanceService.instance.fetchTodayAttendance(),
+                  ]);
+                },
+                color: AppColors.primary,
+                backgroundColor: Colors.white,
+                child: SingleChildScrollView(
+                  physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
+                  padding: const EdgeInsets.only(bottom: AppSpacing.bottomNavClearance),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                    const AppHeader(
+                      transparent: true,
+                      subtitle: "Attendance & Timesheet",
+                      title: "Attendance",
+                    ),
                 AppSpacing.gapMD,
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: AppSpacing.screenHorizontal),
@@ -823,10 +837,12 @@ class _AttendanceScreenState extends State<AttendanceScreen> with SingleTickerPr
               ],
             ),
           ),
-        );
-      },
-    ),
-  );
+          );
+        },
+      ),
+    ],
+  ),
+);
 }
 
   Widget _buildLegendItem(String label, Color dotColor) {

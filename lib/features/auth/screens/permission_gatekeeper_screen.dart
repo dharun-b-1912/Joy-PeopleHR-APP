@@ -2,7 +2,6 @@ import 'dart:async';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:permission_handler/permission_handler.dart';
 import '../../../core/services/push_notification_service.dart';
 import '../../../core/theme/klarna_tokens.dart';
 import '../../../core/utils/secure_log.dart';
@@ -72,14 +71,12 @@ class _PermissionGatekeeperScreenState extends State<PermissionGatekeeperScreen>
     });
 
     // Check notification
-    // On Android 13+ we can check via permission_handler
     try {
-      final notifPerm = await Permission.notification.status;
+      final hasNotif = await PushNotificationService.instance.isPermissionGranted();
       setState(() {
-        _isNotificationGranted = notifPerm.isGranted;
+        _isNotificationGranted = hasNotif;
       });
     } catch (_) {
-      // permission_handler may not be available, assume granted on older Android
       setState(() {
         _isNotificationGranted = true;
       });
@@ -107,9 +104,7 @@ class _PermissionGatekeeperScreenState extends State<PermissionGatekeeperScreen>
       // 1. Check if GPS hardware/service is enabled
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
-        // Open device location settings
         await Geolocator.openLocationSettings();
-        // Wait for user to return
         await Future.delayed(const Duration(seconds: 2));
         serviceEnabled = await Geolocator.isLocationServiceEnabled();
         if (!serviceEnabled) {
@@ -125,9 +120,8 @@ class _PermissionGatekeeperScreenState extends State<PermissionGatekeeperScreen>
       LocationPermission permission = await Geolocator.checkPermission();
 
       if (permission == LocationPermission.deniedForever) {
-        // Permanently denied — must open app settings
         setState(() {
-          _errorMessage = 'Location permission was permanently denied. Please enable it in App Settings.';
+          _errorMessage = 'Location permission is permanently denied. Please tap "Open Settings" below.';
           _isRequesting = false;
         });
         await Geolocator.openAppSettings();
@@ -135,7 +129,6 @@ class _PermissionGatekeeperScreenState extends State<PermissionGatekeeperScreen>
       }
 
       if (permission == LocationPermission.denied) {
-        // Request permission
         permission = await Geolocator.requestPermission();
       }
 
@@ -171,35 +164,37 @@ class _PermissionGatekeeperScreenState extends State<PermissionGatekeeperScreen>
     });
 
     try {
-      // Use the FCM service which already handles permission request
-      await PushNotificationService.instance.initialize();
+      final isPermanentlyDenied = await PushNotificationService.instance.isPermanentlyDenied();
+      if (isPermanentlyDenied) {
+        setState(() {
+          _errorMessage = 'Notification permission is disabled in App Settings. Please tap "Open Settings" below.';
+          _isRequesting = false;
+        });
+        await PushNotificationService.instance.openSettings();
+        return;
+      }
 
-      // Check via permission_handler
-      try {
-        final status = await Permission.notification.status;
-        if (status.isGranted) {
-          setState(() {
-            _isNotificationGranted = true;
-            _errorMessage = null;
-            _isRequesting = false;
-          });
-          _checkAllGranted();
-          return;
-        }
+      final granted = await PushNotificationService.instance.requestNotificationPermission();
+      if (granted) {
+        setState(() {
+          _isNotificationGranted = true;
+          _errorMessage = null;
+          _isRequesting = false;
+        });
 
-        // Request again if not granted
-        final result = await Permission.notification.request();
-        if (result.isGranted) {
-          setState(() {
-            _isNotificationGranted = true;
-            _errorMessage = null;
-            _isRequesting = false;
-          });
-          _checkAllGranted();
-          return;
-        }
-      } catch (_) {
-        // permission_handler not available — FCM init already requested
+        // Trigger welcome confirmation in notification tray
+        PushNotificationService.instance.triggerTestNotification(
+          title: "🔔 Notifications Enabled",
+          body: "You're all set to receive HR announcements, leave approvals, and payslip alerts.",
+          route: "home",
+        );
+
+        _checkAllGranted();
+        return;
+      }
+
+      final checkAgain = await PushNotificationService.instance.isPermissionGranted();
+      if (checkAgain) {
         setState(() {
           _isNotificationGranted = true;
           _errorMessage = null;
@@ -209,8 +204,18 @@ class _PermissionGatekeeperScreenState extends State<PermissionGatekeeperScreen>
         return;
       }
 
+      final deniedNow = await PushNotificationService.instance.isPermanentlyDenied();
+      if (deniedNow) {
+        setState(() {
+          _errorMessage = 'Notification permission is disabled. Tap "Open Settings" to enable.';
+          _isRequesting = false;
+        });
+        await PushNotificationService.instance.openSettings();
+        return;
+      }
+
       setState(() {
-        _errorMessage = 'Notification permission is required to receive work updates. Please grant it.';
+        _errorMessage = 'Notification permission is required to receive company alerts and payslips. Please grant it.';
         _isRequesting = false;
       });
     } catch (e) {
@@ -321,23 +326,48 @@ class _PermissionGatekeeperScreenState extends State<PermissionGatekeeperScreen>
                           color: AppColors.statusError.withValues(alpha: 0.2),
                         ),
                       ),
-                      child: Row(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Icon(
-                            CupertinoIcons.exclamationmark_circle_fill,
-                            size: 18,
-                            color: AppColors.statusError,
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Text(
-                              _errorMessage!,
-                              style: AppTypography.caption.copyWith(
+                          Row(
+                            children: [
+                              const Icon(
+                                CupertinoIcons.exclamationmark_circle_fill,
+                                size: 18,
                                 color: AppColors.statusError,
-                                fontWeight: FontWeight.w600,
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Text(
+                                  _errorMessage!,
+                                  style: AppTypography.caption.copyWith(
+                                    color: AppColors.statusError,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          if (_errorMessage!.contains("Settings")) ...[
+                            const SizedBox(height: 8),
+                            Align(
+                              alignment: Alignment.centerRight,
+                              child: TextButton.icon(
+                                style: TextButton.styleFrom(
+                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                                  visualDensity: VisualDensity.compact,
+                                ),
+                                icon: const Icon(CupertinoIcons.gear, size: 14, color: AppColors.primary),
+                                label: const Text(
+                                  "Open Settings",
+                                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppColors.primary),
+                                ),
+                                onPressed: () async {
+                                  await PushNotificationService.instance.openSettings();
+                                },
                               ),
                             ),
-                          ),
+                          ],
                         ],
                       ),
                     ),

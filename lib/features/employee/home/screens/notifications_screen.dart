@@ -28,12 +28,24 @@ class NotificationsScreen extends StatefulWidget {
 }
 
 class _NotificationsScreenState extends State<NotificationsScreen> {
+  bool _isNotificationPermissionGranted = true;
+
   @override
   void initState() {
     super.initState();
+    _checkPermission();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       NotificationController.instance.loadNotifications();
     });
+  }
+
+  Future<void> _checkPermission() async {
+    final granted = await PushNotificationService.instance.isPermissionGranted();
+    if (mounted) {
+      setState(() {
+        _isNotificationPermissionGranted = granted;
+      });
+    }
   }
 
   void _handleFCMNotificationTap(dynamic item) {
@@ -291,6 +303,66 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                     ],
                   ),
                 ),
+                if (!_isNotificationPermissionGranted)
+                  Container(
+                    margin: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: AppColors.alertBg,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: AppColors.alertFg.withValues(alpha: 0.3)),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(CupertinoIcons.bell_slash_fill, color: AppColors.alertFg, size: 20),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                "Notifications Disabled",
+                                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: AppColors.alertFg),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                "Enable notifications to receive payslip releases and approval updates in the notification tray.",
+                                style: TextStyle(fontSize: 11, color: AppColors.alertFg.withValues(alpha: 0.85)),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppColors.primary,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                            minimumSize: Size.zero,
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          ),
+                          onPressed: () async {
+                            final permanentlyDenied = await PushNotificationService.instance.isPermanentlyDenied();
+                            if (permanentlyDenied) {
+                              await PushNotificationService.instance.openSettings();
+                            } else {
+                              final granted = await PushNotificationService.instance.requestNotificationPermission();
+                              if (granted) {
+                                PushNotificationService.instance.triggerTestNotification(
+                                  title: "🔔 Notifications Enabled",
+                                  body: "You're all set to receive HR alerts and payslips.",
+                                  route: "home",
+                                );
+                              }
+                            }
+                            _checkPermission();
+                          },
+                          child: const Text("Enable", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                        ),
+                      ],
+                    ),
+                  ),
                 Expanded(
                   child: ListenableBuilder(
                     listenable: LocalNotificationStore.instance,
@@ -299,8 +371,14 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                       final localNotifs = LocalNotificationStore.instance.notifications;
                       final allNotifications = <_UnifiedNotification>[];
 
-                      // Add Supabase notifications
+                      final seenKeys = <String>{};
+
+                      // Add Supabase notifications (deduplicating identical business events)
                       for (final n in notifications) {
+                        final key = '${n.title.trim().toLowerCase()}|${n.message.trim().toLowerCase()}';
+                        if (seenKeys.contains(key)) continue;
+                        seenKeys.add(key);
+
                         allNotifications.add(_UnifiedNotification(
                           id: n.id,
                           title: n.title,
@@ -313,23 +391,22 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                         ));
                       }
 
-                      // Add local FCM notifications (skip duplicates)
+                      // Add local FCM notifications (deduplicating against Supabase and earlier pushes)
                       for (final ln in localNotifs) {
-                        final isDuplicate = allNotifications.any((existing) =>
-                            existing.title == ln.title && existing.body == ln.body &&
-                            existing.timestamp.difference(ln.timestamp).abs().inSeconds < 10);
-                        if (!isDuplicate) {
-                          allNotifications.add(_UnifiedNotification(
-                            id: ln.id,
-                            title: ln.title,
-                            body: ln.body,
-                            timestamp: ln.timestamp,
-                            isRead: ln.isRead,
-                            icon: CupertinoIcons.bell_fill,
-                            source: 'push',
-                            onTap: () => _handleFCMNotificationTap(ln),
-                          ));
-                        }
+                        final key = '${ln.title.trim().toLowerCase()}|${ln.body.trim().toLowerCase()}';
+                        if (seenKeys.contains(key)) continue;
+                        seenKeys.add(key);
+
+                        allNotifications.add(_UnifiedNotification(
+                          id: ln.id,
+                          title: ln.title,
+                          body: ln.body,
+                          timestamp: ln.timestamp,
+                          isRead: ln.isRead,
+                          icon: CupertinoIcons.bell_fill,
+                          source: 'push',
+                          onTap: () => _handleFCMNotificationTap(ln),
+                        ));
                       }
 
                       // Sort by newest first

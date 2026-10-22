@@ -2,16 +2,17 @@ import 'dart:typed_data';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:photo_view/photo_view.dart';
-import 'package:url_launcher/url_launcher.dart';
 import '../../../../core/controllers/employee_controller.dart';
 import '../../../../core/services/document_upload_service.dart';
 import '../../../../core/services/file_download_service.dart';
 import '../../../../core/services/user_service.dart';
 import '../../../../core/theme/klarna_tokens.dart';
+import '../../../../core/utils/validators.dart';
 import '../../../../models/employee_models.dart';
 import '../../../../widgets/core/app_button.dart';
 import '../../../../widgets/core/app_card.dart';
 import '../../../../widgets/core/status_chip.dart';
+import 'document_full_view_screen.dart';
 
 class DigitalLetterViewerScreen extends StatefulWidget {
   final DigitalLetterModel letter;
@@ -67,7 +68,7 @@ class _DigitalLetterViewerScreenState extends State<DigitalLetterViewerScreen> {
 
     try {
       final rawUrl = _resolvedUrl ?? _currentLetter.documentUrl ?? '';
-      final cleanName = '${_currentLetter.title.replaceAll(RegExp(r'[^a-zA-Z0-9._ -]'), '_')}.pdf';
+      final cleanName = Validators.sanitizeFileName(_currentLetter.title);
 
       bool downloaded = false;
       if (_fileBytes != null && _fileBytes!.isNotEmpty) {
@@ -75,7 +76,7 @@ class _DigitalLetterViewerScreenState extends State<DigitalLetterViewerScreen> {
           fileName: cleanName,
           bytes: _fileBytes!,
         );
-      } else if (rawUrl.startsWith('http')) {
+      } else if (rawUrl.isNotEmpty) {
         downloaded = await FileDownloadService.downloadFromUrl(
           url: rawUrl,
           fileName: cleanName,
@@ -288,21 +289,25 @@ class _DigitalLetterViewerScreenState extends State<DigitalLetterViewerScreen> {
 
             Row(
               children: [
-                if (_resolvedUrl != null && _resolvedUrl!.startsWith('http')) ...[
+                if (_resolvedUrl != null || _fileBytes != null || letter.documentUrl != null) ...[
                   Expanded(
                     child: AppButton(
                       label: "Full View",
                       icon: CupertinoIcons.arrow_up_right_square,
                       variant: AppButtonVariant.secondaryPill,
-                      onPressed: () async {
-                        final rawUrl = _resolvedUrl ?? letter.documentUrl ?? '';
-                        final uri = Uri.parse(rawUrl);
-                        if (await canLaunchUrl(uri)) {
-                          await launchUrl(uri, mode: LaunchMode.externalApplication);
-                        } else {
-                          final cleanName = '${letter.title.replaceAll(RegExp(r'[^a-zA-Z0-9._ -]'), '_')}.pdf';
-                          FileDownloadService.downloadFromUrl(url: rawUrl, fileName: cleanName);
-                        }
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          CupertinoPageRoute(
+                            builder: (_) => DocumentFullViewScreen(
+                              documentId: letter.id,
+                              title: letter.title,
+                              documentUrl: _resolvedUrl ?? letter.documentUrl,
+                              fileBytes: _fileBytes,
+                              fileName: letter.fileName ?? letter.title,
+                            ),
+                          ),
+                        );
                       },
                     ),
                   ),

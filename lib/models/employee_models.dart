@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../core/utils/app_date_time.dart';
 
 // --- LEAVE MODELS ---
 enum LeaveType { casual, sick, earned, maternity, paternity }
@@ -166,6 +167,52 @@ class LeaveRequestModel {
     this.isHalfDay = false,
     this.halfDaySession,
   });
+
+  LeaveRequestModel copyWith({
+    String? id,
+    String? employeeId,
+    LeaveType? type,
+    String? leaveTypeId,
+    String? leaveTypeCode,
+    String? leaveTypeName,
+    DateTime? startDate,
+    DateTime? endDate,
+    double? daysCount,
+    String? reason,
+    LeaveStatus? status,
+    DateTime? createdAt,
+    String? approverId,
+    String? approverName,
+    String? managerId,
+    String? managerName,
+    String? currentApproverName,
+    String? rejectionReason,
+    bool? isHalfDay,
+    String? halfDaySession,
+  }) {
+    return LeaveRequestModel(
+      id: id ?? this.id,
+      employeeId: employeeId ?? this.employeeId,
+      type: type ?? this.type,
+      leaveTypeId: leaveTypeId ?? this.leaveTypeId,
+      leaveTypeCode: leaveTypeCode ?? this.leaveTypeCode,
+      leaveTypeName: leaveTypeName ?? this.leaveTypeName,
+      startDate: startDate ?? this.startDate,
+      endDate: endDate ?? this.endDate,
+      daysCount: daysCount ?? this.daysCount,
+      reason: reason ?? this.reason,
+      status: status ?? this.status,
+      createdAt: createdAt ?? this.createdAt,
+      approverId: approverId ?? this.approverId,
+      approverName: approverName ?? this.approverName,
+      managerId: managerId ?? this.managerId,
+      managerName: managerName ?? this.managerName,
+      currentApproverName: currentApproverName ?? this.currentApproverName,
+      rejectionReason: rejectionReason ?? this.rejectionReason,
+      isHalfDay: isHalfDay ?? this.isHalfDay,
+      halfDaySession: halfDaySession ?? this.halfDaySession,
+    );
+  }
 }
 
 // --- ATTENDANCE & REGULARIZATION MODELS ---
@@ -438,6 +485,8 @@ class ShiftRosterModel {
 class PayslipModel {
   final String id;
   final String employeeId;
+  final String employeeCode;
+  final String? employeeUuid;
   final String employeeName;
   final String designation;
   final String monthYear;
@@ -452,10 +501,17 @@ class PayslipModel {
   final double pfDeduction;
   final double profTaxDeduction;
   final double incomeTaxDeduction;
+  final double payableDays;
+  final double lopDays;
+  final int totalWorkingDays;
+  final List<Map<String, dynamic>> earningsComponents;
+  final List<Map<String, dynamic>> deductionsComponents;
 
   const PayslipModel({
     required this.id,
     this.employeeId = "",
+    this.employeeCode = "",
+    this.employeeUuid,
     this.employeeName = "",
     this.designation = "",
     required this.monthYear,
@@ -470,7 +526,82 @@ class PayslipModel {
     this.pfDeduction = 0.0,
     this.profTaxDeduction = 0.0,
     this.incomeTaxDeduction = 0.0,
+    this.payableDays = 30.0,
+    this.lopDays = 0.0,
+    this.totalWorkingDays = 30,
+    this.earningsComponents = const [],
+    this.deductionsComponents = const [],
   });
+
+  /// Guaranteed employee-facing code (e.g. "JCS-017").
+  /// Never displays database UUID.
+  String get displayEmployeeId {
+    final code = employeeCode.trim().isNotEmpty ? employeeCode.trim() : employeeId.trim();
+    if (code.isEmpty || RegExp(r'^[0-9a-fA-F-]{36}$').hasMatch(code)) {
+      return 'Employee ID unavailable';
+    }
+    return code;
+  }
+
+  /// Formatted pay date (e.g. "01 Aug 2026")
+  String get formattedPayDate => AppDateTime.formatPayDate(payDate);
+
+  /// Formatted period title (e.g. "July 2026")
+  String get formattedPeriod => AppDateTime.formatPeriod(monthYear);
+
+  /// Whether this payslip has a valid human-readable employee code (not a UUID)
+  bool get hasValidEmployeeCode =>
+      displayEmployeeId != 'Employee ID unavailable';
+
+  /// Sum of earnings components (authoritative dynamic components first, fallback to individual fields)
+  double get calculatedGross {
+    if (earningsComponents.isNotEmpty) {
+      return earningsComponents.fold(0.0, (sum, item) {
+        final amt = item['amount'];
+        final val = (amt is num) ? amt.toDouble() : (double.tryParse(amt?.toString() ?? '') ?? 0.0);
+        return sum + val;
+      });
+    }
+    return basicSalary + hra + specialAllowance;
+  }
+
+  /// Sum of deductions components
+  double get calculatedDeductions {
+    if (deductionsComponents.isNotEmpty) {
+      return deductionsComponents.fold(0.0, (sum, item) {
+        final amt = item['amount'];
+        final val = (amt is num) ? amt.toDouble() : (double.tryParse(amt?.toString() ?? '') ?? 0.0);
+        return sum + val;
+      });
+    }
+    return pfDeduction + profTaxDeduction + incomeTaxDeduction;
+  }
+
+  /// Net pay calculated from components
+  double get calculatedNetPay => calculatedGross - calculatedDeductions;
+
+  /// Validates: SUM(earnings) == gross, SUM(deductions) == deductions, gross - deductions == netPay
+  bool validateCalculations() {
+    final grossNum = double.tryParse(grossEarnings.replaceAll(RegExp(r'[^0-9.]'), '')) ?? 0.0;
+    final dedNum = double.tryParse(deductions.replaceAll(RegExp(r'[^0-9.]'), '')) ?? 0.0;
+    final netNum = double.tryParse(netPay.replaceAll(RegExp(r'[^0-9.]'), '')) ?? 0.0;
+
+    // Component level validation if components are populated
+    if (calculatedGross > 0 && (calculatedGross - grossNum).abs() > 1.0) {
+      return false;
+    }
+    if (calculatedDeductions > 0 && (calculatedDeductions - dedNum).abs() > 1.0) {
+      return false;
+    }
+
+    if (grossNum > 0 && dedNum >= 0 && netNum > 0) {
+      final expectedNet = grossNum - dedNum;
+      if ((expectedNet - netNum).abs() > 1.0) {
+        return false;
+      }
+    }
+    return true;
+  }
 }
 
 

@@ -177,10 +177,12 @@ class LeaveController extends ChangeNotifier {
       );
 
       await _leaveRepository.applyLeave(newReq);
+      _errorMessage = null;
       await _loadData();
       return true;
     } catch (e) {
-      _errorMessage = "Failed to apply leave: $e";
+      final msg = e.toString().replaceFirst(RegExp(r'^Exception:\s*'), '');
+      _errorMessage = msg.startsWith('Failed to apply leave:') ? msg : 'Failed to apply leave: $msg';
       notifyListeners();
       return false;
     }

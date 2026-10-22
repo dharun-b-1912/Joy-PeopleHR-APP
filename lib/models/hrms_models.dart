@@ -372,6 +372,22 @@ class UserModel {
   String get resolvedEmployeeId =>
       (employeeUuid?.isNotEmpty == true) ? employeeUuid! : (employeeId.isNotEmpty ? employeeId : dataId);
 
+  /// Human-readable employee code (e.g. "JCS-017")
+  String get employeeCode => employeeId;
+
+  /// Returns employee-facing Employee ID or "Employee ID unavailable" if missing or a UUID
+  String get displayEmployeeId {
+    final code = employeeId.trim();
+    if (code.isEmpty || RegExp(r'^[0-9a-fA-F-]{36}$').hasMatch(code)) {
+      return 'Employee ID unavailable';
+    }
+    return code;
+  }
+
+  /// Whether the user has a valid configured human-readable employee code (not a UUID)
+  bool get hasValidEmployeeCode =>
+      displayEmployeeId != 'Employee ID unavailable';
+
   bool get canAccessTeam => false;
   bool get canApproveRequests => false;
   bool get canViewTeamAttendance => false;

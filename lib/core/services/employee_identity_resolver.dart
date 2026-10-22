@@ -531,6 +531,114 @@ class EmployeeIdentityResolver {
             } catch (_) {}
           })(),
 
+        // 8i. Reporting Manager & Team Lead (resolves Manager / Supervisor name directly from DB)
+        (() async {
+          try {
+            final mgrId = empRecord?['reporting_manager_id']?.toString();
+            String? resolvedMgr;
+            if (mgrId != null && mgrId.isNotEmpty) {
+              final mgrRow = await withTimeout(
+                client
+                    .from('employees')
+                    .select('id, first_name, last_name, display_name, employee_code')
+                    .eq('id', mgrId)
+                    .maybeSingle(),
+                timeout: fastTimeout,
+              );
+              if (mgrRow != null) {
+                final dName = (mgrRow['display_name']?.toString() ?? '').trim();
+                final fName = (mgrRow['first_name']?.toString() ?? '').trim();
+                final lName = (mgrRow['last_name']?.toString() ?? '').trim();
+                resolvedMgr = dName.isNotEmpty ? dName : '$fName $lName'.trim();
+              }
+            }
+
+            // Check if there is a Team Lead or Department Supervisor
+            String? resolvedTl = empRecord?['team_lead_name']?.toString().trim();
+            final tlId = empRecord?['team_lead_id']?.toString().trim();
+            if (tlId != null && tlId.isNotEmpty && (resolvedTl == null || resolvedTl.isEmpty)) {
+              final tlRow = await withTimeout(
+                client
+                    .from('employees')
+                    .select('id, first_name, last_name, display_name, employee_code')
+                    .eq('id', tlId)
+                    .maybeSingle(),
+                timeout: fastTimeout,
+              );
+              if (tlRow != null) {
+                final dName = (tlRow['display_name']?.toString() ?? '').trim();
+                final fName = (tlRow['first_name']?.toString() ?? '').trim();
+                final lName = (tlRow['last_name']?.toString() ?? '').trim();
+                resolvedTl = dName.isNotEmpty ? dName : '$fName $lName'.trim();
+              }
+            }
+
+            // If no specific TL, check department head
+            if ((resolvedTl == null || resolvedTl.isEmpty) && deptId != null && deptId.isNotEmpty) {
+              try {
+                final deptHeadRow = await withTimeout(
+                  client.from('departments').select('head_employee_id').eq('id', deptId).maybeSingle(),
+                  timeout: fastTimeout,
+                );
+                final headEmpId = deptHeadRow?['head_employee_id']?.toString().trim();
+                if (headEmpId != null && headEmpId.isNotEmpty && headEmpId != mgrId) {
+                  final headRow = await withTimeout(
+                    client
+                        .from('employees')
+                        .select('id, first_name, last_name, display_name, employee_code')
+                        .eq('id', headEmpId)
+                        .maybeSingle(),
+                    timeout: fastTimeout,
+                  );
+                  if (headRow != null) {
+                    final dName = (headRow['display_name']?.toString() ?? '').trim();
+                    final fName = (headRow['first_name']?.toString() ?? '').trim();
+                    final lName = (headRow['last_name']?.toString() ?? '').trim();
+                    resolvedTl = dName.isNotEmpty ? dName : '$fName $lName'.trim();
+                  }
+                }
+              } catch (_) {}
+            }
+
+            // Combine into clean two-name display
+            String combinedDisplay = '';
+            if (resolvedMgr != null && resolvedMgr.isNotEmpty &&
+                resolvedTl != null && resolvedTl.isNotEmpty &&
+                resolvedMgr.toLowerCase() != resolvedTl.toLowerCase()) {
+              combinedDisplay = '$resolvedMgr (Manager) / $resolvedTl (TL)';
+            } else if (resolvedMgr != null && resolvedMgr.isNotEmpty) {
+              combinedDisplay = resolvedMgr;
+            } else if (resolvedTl != null && resolvedTl.isNotEmpty) {
+              combinedDisplay = '$resolvedTl (Supervisor)';
+            }
+
+            if (combinedDisplay.isNotEmpty) {
+              empRecord!['reporting_manager_name'] = combinedDisplay;
+              empRecord['reports_to_name'] = combinedDisplay;
+              empRecord['manager_name'] = combinedDisplay;
+              if (empRecord['employment'] is Map) {
+                final empMap = Map<String, dynamic>.from(empRecord['employment'] as Map);
+                empMap['reporting_manager_name'] = combinedDisplay;
+                empMap['reports_to_name'] = combinedDisplay;
+                empMap['manager_name'] = combinedDisplay;
+                if (mgrId != null) empMap['reporting_manager_id'] = mgrId;
+                if (tlId != null) empMap['team_lead_id'] = tlId;
+                empRecord['employment'] = empMap;
+              } else {
+                empRecord['employment'] = {
+                  'reporting_manager_name': combinedDisplay,
+                  'reports_to_name': combinedDisplay,
+                  'manager_name': combinedDisplay,
+                  if (mgrId != null) 'reporting_manager_id': mgrId,
+                  if (tlId != null) 'team_lead_id': tlId,
+                };
+              }
+            }
+          } catch (e) {
+            secureLog('[Identity] Reporting manager lookup notice: $e');
+          }
+        })(),
+
         // 9. Shift schedule (direct shift_id + active shift assignment)
         (() async {
           if (shiftId != null && shiftId.isNotEmpty) {

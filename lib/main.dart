@@ -22,6 +22,8 @@ import 'package:workforce_os/widgets/floating_bottom_nav.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
 import 'package:workforce_os/core/services/push_notification_service.dart';
+import 'package:workforce_os/core/services/app_version_service.dart';
+import 'package:workforce_os/core/services/app_update_service.dart';
 import 'package:workforce_os/core/services/crash_reporting_service.dart';
 import 'package:workforce_os/core/config/app_env.dart';
 import 'package:workforce_os/features/auth/screens/permission_gatekeeper_screen.dart';
@@ -60,10 +62,13 @@ void main() async {
   };
 
   AppEnv.verifyConfiguration();
+  await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
       statusBarIconBrightness: Brightness.dark,
+      systemNavigationBarColor: Colors.transparent,
+      systemNavigationBarIconBrightness: Brightness.dark,
     ),
   );
 
@@ -107,6 +112,7 @@ Future<void> _initializePlatformServices() async {
   logProcess('SERVICES', 'Initializing AttendanceService & LocationService');
   AttendanceService.instance.initializeSession();
   LocationService.instance.initialize();
+  await AppVersionService.instance.init();
 }
 
 class JoyPeopleHRApp extends StatelessWidget {
@@ -266,8 +272,10 @@ class _AuthGatekeeperState extends State<AuthGatekeeper> {
           try {
             final locPerm = await Geolocator.checkPermission();
             final isServiceEnabled = await Geolocator.isLocationServiceEnabled();
-            return isServiceEnabled &&
+            final hasLoc = isServiceEnabled &&
                 (locPerm == LocationPermission.always || locPerm == LocationPermission.whileInUse);
+            final hasNotif = await PushNotificationService.instance.isPermissionGranted();
+            return hasLoc && hasNotif;
           } catch (e) {
             secureLog('[AuthGatekeeper] Permission check notice: $e');
             return false;
@@ -313,8 +321,10 @@ class _AuthGatekeeperState extends State<AuthGatekeeper> {
                       try {
                         final locPerm = await Geolocator.checkPermission();
                         final isServiceEnabled = await Geolocator.isLocationServiceEnabled();
-                        hasPerms = isServiceEnabled &&
+                        final hasLoc = isServiceEnabled &&
                             (locPerm == LocationPermission.always || locPerm == LocationPermission.whileInUse);
+                        final hasNotif = await PushNotificationService.instance.isPermissionGranted();
+                        hasPerms = hasLoc && hasNotif;
                       } catch (_) {}
                     }
                     final curUser = UserService.instance.currentUser;
@@ -416,7 +426,16 @@ class _StartupSplashScreenState extends State<_StartupSplashScreen> with SingleT
                         'assets/images/app_logo.png',
                         width: 60,
                         height: 60,
+                        cacheWidth: 180,
+                        cacheHeight: 180,
                         fit: BoxFit.contain,
+                        errorBuilder: (context, error, stackTrace) {
+                          return const Icon(
+                            CupertinoIcons.person_2_fill,
+                            color: Color(0xFF07563D),
+                            size: 36,
+                          );
+                        },
                       ),
                     ),
                   ),
@@ -504,6 +523,13 @@ class _MainTabShellState extends State<MainTabShell> {
         setState(() => _currentIndex = tabIndex);
       }
     };
+
+    // Evaluate in-app updates seamlessly on startup
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        AppUpdateService.instance.checkAndShowUpdateDialog(context);
+      }
+    });
   }
 
   @override

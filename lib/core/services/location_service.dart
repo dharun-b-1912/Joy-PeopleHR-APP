@@ -927,42 +927,16 @@ class LocationService extends ChangeNotifier {
     // 5. Employee is OUTSIDE all authorized geofences
     // Check if they're reasonably close to any location (within 500m) but outside geofence
     if (minDistance <= 500 && nearestLocation.allowedRadiusMeters > 0) {
-      // Close to a location but outside geofence — still classify as that location
-      // with a note that they're slightly outside
-      if (isMainOffice) {
-        secureLog('[CHECKOUT-VERIFY] Near main office but outside geofence (${minDistance.round()}m) → main_office');
-        return CheckoutLocationVerification(
-          status: CheckoutLocationStatus.mainOffice,
-          locationName: '${nearestLocation.name} (outside geofence)',
-          latitude: position.latitude,
-          longitude: position.longitude,
-          accuracyMeters: position.accuracy,
-          distanceToNearestMeters: minDistance,
-          matchedLocation: nearestLocation,
-        );
-      } else if (nearestLocation.isPrimary) {
-        secureLog('[CHECKOUT-VERIFY] Near assigned location but outside geofence → assigned_location');
-        return CheckoutLocationVerification(
-          status: CheckoutLocationStatus.assignedLocation,
-          locationName: '${nearestLocation.name} (outside geofence)',
-          latitude: position.latitude,
-          longitude: position.longitude,
-          accuracyMeters: position.accuracy,
-          distanceToNearestMeters: minDistance,
-          matchedLocation: nearestLocation,
-        );
-      } else {
-        secureLog('[CHECKOUT-VERIFY] Near other authorized location but outside geofence → other_authorized');
-        return CheckoutLocationVerification(
-          status: CheckoutLocationStatus.otherAuthorized,
-          locationName: '${nearestLocation.name} (outside geofence)',
-          latitude: position.latitude,
-          longitude: position.longitude,
-          accuracyMeters: position.accuracy,
-          distanceToNearestMeters: minDistance,
-          matchedLocation: nearestLocation,
-        );
-      }
+      secureLog('[CHECKOUT-VERIFY] Outside geofence (${minDistance.round()}m from ${nearestLocation.name}) → unauthorized');
+      return CheckoutLocationVerification(
+        status: CheckoutLocationStatus.unauthorized,
+        locationName: '${nearestLocation.name} (${minDistance.round()}m outside geofence)',
+        latitude: position.latitude,
+        longitude: position.longitude,
+        accuracyMeters: position.accuracy,
+        distanceToNearestMeters: minDistance,
+        matchedLocation: nearestLocation,
+      );
     }
 
     // 6. Truly unknown location — far from all authorized locations

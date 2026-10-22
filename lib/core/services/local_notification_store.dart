@@ -54,11 +54,11 @@ class LocalNotificationStore extends ChangeNotifier {
       source: 'push',
     );
 
-    // Deduplicate by title+body within last 5 seconds
+    // Deduplicate by title+body within last 24 hours
     final recentDuplicate = _notifications.any((n) =>
-        n.title == title &&
-        n.body == body &&
-        DateTime.now().difference(n.timestamp).inSeconds < 5);
+        n.title.trim().toLowerCase() == title.trim().toLowerCase() &&
+        n.body.trim().toLowerCase() == body.trim().toLowerCase() &&
+        DateTime.now().difference(n.timestamp).inHours < 24);
     if (recentDuplicate) return;
 
     _notifications.insert(0, notification);

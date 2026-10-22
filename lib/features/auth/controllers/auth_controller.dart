@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../../core/services/push_notification_service.dart';
 import '../../../core/services/user_service.dart';
 import '../../../core/utils/validators.dart';
 import '../../../models/hrms_models.dart';
@@ -106,6 +107,9 @@ class AuthController extends ChangeNotifier {
   }
 
   Future<void> logout() async {
+    try {
+      await PushNotificationService.instance.onLogout();
+    } catch (_) {}
     await _authRepository.signOut();
     notifyListeners();
   }

@@ -1,4 +1,3 @@
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import '../../../core/theme/klarna_tokens.dart';
 
@@ -27,7 +26,16 @@ class AuthHeader extends StatelessWidget {
           ),
           child: Image.asset(
             'assets/images/app_logo.png',
+            cacheWidth: 200,
+            cacheHeight: 200,
             fit: BoxFit.contain,
+            errorBuilder: (context, error, stackTrace) {
+              return const Icon(
+                Icons.people_alt_rounded,
+                color: Color(0xFF07563D),
+                size: 44,
+              );
+            },
           ),
         ),
         AppSpacing.gapMD,
