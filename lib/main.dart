@@ -8,6 +8,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:workforce_os/core/config/supabase_config.dart';
 import 'package:workforce_os/core/services/attendance_service.dart';
 import 'package:workforce_os/core/services/location_service.dart';
+import 'package:workforce_os/core/services/shift_tracking_service.dart';
 import 'package:workforce_os/core/services/user_service.dart';
 import 'package:workforce_os/core/theme/klarna_tokens.dart';
 import 'package:workforce_os/core/utils/secure_log.dart';
@@ -17,6 +18,7 @@ import 'package:workforce_os/features/employee/home/screens/employee_home_screen
 import 'package:workforce_os/features/employee/leave/screens/leave_screen.dart';
 import 'package:workforce_os/features/employee/more/screens/more_screen.dart';
 import 'package:workforce_os/features/employee/profile/screens/profile_screen.dart';
+import 'package:workforce_os/features/employee/lms/screens/employee_lms_catalog_screen.dart';
 import 'package:workforce_os/repositories/supabase/supabase_auth_repository.dart';
 import 'package:workforce_os/widgets/floating_bottom_nav.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -84,6 +86,14 @@ void main() async {
     logError('SUPABASE', e, st, 'Supabase.initialize failed');
   }
 
+  // Preload cached user session from disk before mounting UI
+  final preloadedUser = await UserService.instance.loadCachedUser();
+  if (preloadedUser != null) {
+    logProcess('BOOT', 'Preloaded cached user from disk: ${preloadedUser.name} (${preloadedUser.employeeId})');
+  } else {
+    logProcess('BOOT', 'No preloaded user found on device disk');
+  }
+
   // Launch UI immediately after Supabase init; initialize telemetry & push non-blockingly
   unawaited(_initializePlatformServices());
 
@@ -109,9 +119,10 @@ Future<void> _initializePlatformServices() async {
     secureLog('[Push] Initialization notice: $e');
   }
 
-  logProcess('SERVICES', 'Initializing AttendanceService & LocationService');
+  logProcess('SERVICES', 'Initializing AttendanceService, LocationService & ShiftTrackingService');
   AttendanceService.instance.initializeSession();
   LocationService.instance.initialize();
+  ShiftTrackingService.instance.initialize();
   await AppVersionService.instance.init();
 }
 
@@ -213,14 +224,20 @@ class AuthGatekeeper extends StatefulWidget {
 }
 
 class _AuthGatekeeperState extends State<AuthGatekeeper> {
-  bool _isCheckingSession = true;
-  bool _isAuthenticated = false;
+  late bool _isCheckingSession;
+  late bool _isAuthenticated;
   bool _permissionsGranted = false;
+  bool _isCheckingSessionRunning = false;
   StreamSubscription<AuthState>? _authSubscription;
 
   @override
   void initState() {
     super.initState();
+    // Fast path: if user was preloaded from disk in main(), start immediately authenticated
+    final isAlreadyLogged = UserService.instance.isLoggedIn && UserService.instance.currentUser.name != 'Guest';
+    _isAuthenticated = isAlreadyLogged;
+    _isCheckingSession = !isAlreadyLogged;
+
     UserService.instance.addListener(_onUserChanged);
     _checkSession();
     _listenToAuthChanges();
@@ -235,19 +252,33 @@ class _AuthGatekeeperState extends State<AuthGatekeeper> {
 
   void _listenToAuthChanges() {
     _authSubscription = Supabase.instance.client.auth.onAuthStateChange.listen(
-      (data) {
+      (data) async {
         final event = data.event;
-        logProcess('AUTH', 'Supabase AuthChangeEvent: ${event.name}', data: {
-          'hasSession': data.session != null,
-          'email': data.session?.user.email ?? 'none',
-        });
+        final hasSess = data.session != null;
+        logProcess('AUTH', 'onAuthStateChange: ${event.name} (hasSession=$hasSess, reason=${data.signOutReason})');
         if (!mounted) return;
 
-        if (event == AuthChangeEvent.signedOut) {
-          UserService.instance.clearUser();
-          setState(() {
-            _isAuthenticated = false;
-          });
+        if (event == AuthChangeEvent.signedIn ||
+            event == AuthChangeEvent.tokenRefreshed ||
+            event == AuthChangeEvent.initialSession) {
+          if (!_isAuthenticated && data.session != null) {
+            _checkSession();
+          }
+        } else if (event == AuthChangeEvent.signedOut) {
+          // Never clear local persistent session on involuntary signedOut events!
+          // Gotrue emits involuntary signedOut on cold boot, network disconnects,
+          // or during token refresh delays.
+          // Explicit user-initiated signouts are handled via SupabaseAuthRepository.signOut()
+          // which directly invokes UserService.instance.clearUser().
+          // Only on web with an explicit user-initiated signout (e.g. from another tab) do we clear.
+          if (kIsWeb && data.signOutReason == SignOutReason.userInitiated) {
+            await UserService.instance.clearUser();
+            if (mounted) {
+              setState(() {
+                _isAuthenticated = false;
+              });
+            }
+          }
         }
       },
     );
@@ -255,52 +286,86 @@ class _AuthGatekeeperState extends State<AuthGatekeeper> {
 
   void _onUserChanged() {
     if (mounted) {
+      final isLogged = UserService.instance.isLoggedIn && UserService.instance.currentUser.name != 'Guest';
       setState(() {
-        _isAuthenticated = UserService.instance.isLoggedIn;
+        _isAuthenticated = isLogged;
+        if (isLogged) {
+          _isCheckingSession = false;
+        }
       });
     }
   }
 
   Future<void> _checkSession() async {
-    logProcess('AUTH', 'Checking existing Supabase session...');
-    bool hasPermissions = kIsWeb;
+    if (_isCheckingSessionRunning) return;
+    _isCheckingSessionRunning = true;
 
-    final results = await Future.wait<dynamic>([
-      SupabaseAuthRepository().restoreSession(),
-      if (!kIsWeb)
-        (() async {
-          try {
-            final locPerm = await Geolocator.checkPermission();
-            final isServiceEnabled = await Geolocator.isLocationServiceEnabled();
-            final hasLoc = isServiceEnabled &&
-                (locPerm == LocationPermission.always || locPerm == LocationPermission.whileInUse);
-            final hasNotif = await PushNotificationService.instance.isPermissionGranted();
-            return hasLoc && hasNotif;
-          } catch (e) {
-            secureLog('[AuthGatekeeper] Permission check notice: $e');
-            return false;
-          }
-        })(),
-    ]);
+    try {
+      logProcess('AUTH', 'Checking existing session & device cache...');
+      bool hasPermissions = kIsWeb;
 
-    final user = results[0];
-    if (!kIsWeb && results.length > 1) {
-      hasPermissions = results[1] == true;
-    }
+      // 1. Load locally cached user model immediately (0ms latency, works offline)
+      final cached = await UserService.instance.loadCachedUser();
+      final isPersisted = await UserService.instance.isSessionPersisted();
+      final hasLocalUser = cached != null ||
+          isPersisted ||
+          (UserService.instance.isLoggedIn && UserService.instance.currentUser.name != 'Guest');
 
-    logProcess('AUTH', 'Session restore complete', data: {
-      'isAuthenticated': user != null || UserService.instance.isLoggedIn,
-      'name': user?.name ?? UserService.instance.currentUser.name,
-      'employeeId': user?.employeeId ?? UserService.instance.currentUser.employeeId,
-      'permissionsGranted': hasPermissions,
-    });
+      // If local user is already found on disk, mark as authenticated right away
+      if (hasLocalUser && mounted) {
+        setState(() {
+          _isAuthenticated = true;
+          _isCheckingSession = false;
+        });
+      }
 
-    if (mounted) {
-      setState(() {
-        _isCheckingSession = false;
-        _isAuthenticated = user != null || UserService.instance.isLoggedIn;
-        _permissionsGranted = hasPermissions;
+      final results = await Future.wait<dynamic>([
+        SupabaseAuthRepository().restoreSession(),
+        if (!kIsWeb)
+          (() async {
+            try {
+              final locPerm = await Geolocator.checkPermission();
+              final isServiceEnabled = await Geolocator.isLocationServiceEnabled();
+              final hasLoc = isServiceEnabled &&
+                  (locPerm == LocationPermission.always || locPerm == LocationPermission.whileInUse);
+              final hasNotif = await PushNotificationService.instance.isPermissionGranted();
+              return hasLoc && hasNotif;
+            } catch (e) {
+              secureLog('[AuthGatekeeper] Permission check notice: $e');
+              return false;
+            }
+          })(),
+      ]);
+
+      final user = results[0];
+      if (!kIsWeb && results.length > 1) {
+        // If permissions were already verified earlier, preserve them unless explicitly revoked
+        hasPermissions = results[1] == true || _permissionsGranted;
+      }
+
+      // If user came from restoreSession OR local disk cache was present OR user was already logged in,
+      // KEEP USER AUTHENTICATED! Never downgrade an active session on transient Wi-Fi/LTE network drops.
+      final isAuth = _isAuthenticated ||
+          user != null ||
+          (UserService.instance.isLoggedIn && UserService.instance.currentUser.name != 'Guest') ||
+          hasLocalUser;
+
+      logProcess('AUTH', 'Session restore complete', data: {
+        'isAuthenticated': isAuth,
+        'name': user?.name ?? UserService.instance.currentUser.name,
+        'employeeId': user?.employeeId ?? UserService.instance.currentUser.employeeId,
+        'permissionsGranted': hasPermissions,
       });
+
+      if (mounted) {
+        setState(() {
+          _isCheckingSession = false;
+          _isAuthenticated = isAuth;
+          _permissionsGranted = hasPermissions;
+        });
+      }
+    } finally {
+      _isCheckingSessionRunning = false;
     }
   }
 
@@ -328,6 +393,7 @@ class _AuthGatekeeperState extends State<AuthGatekeeper> {
                       } catch (_) {}
                     }
                     final curUser = UserService.instance.currentUser;
+                    await UserService.instance.persistUser(curUser);
                     logProcess('AUTH', 'Login succeeded → entering app shell', data: {
                       'name': curUser.name,
                       'employeeId': curUser.employeeId,
@@ -521,6 +587,16 @@ class _MainTabShellState extends State<MainTabShell> {
     PushNotificationService.onNavigateToTab = (int tabIndex) {
       if (mounted && tabIndex >= 0 && tabIndex < _getTabs().length) {
         setState(() => _currentIndex = tabIndex);
+      }
+    };
+
+    PushNotificationService.onOpenScreen = (String screen, {Map<String, dynamic>? params}) {
+      if (mounted) {
+        if (screen == 'lms') {
+          Navigator.of(context).push(
+            CupertinoPageRoute(builder: (_) => const EmployeeLmsCatalogScreen()),
+          );
+        }
       }
     };
 

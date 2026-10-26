@@ -59,19 +59,38 @@ class ApprovedWorkLocation {
       code: json['code']?.toString() ?? json['location_code']?.toString(),
       locationType: json['location_type']?.toString() ?? 'OFFICE',
       address: json['address']?.toString() ?? json['address_line1']?.toString(),
-      latitude: ((json['latitude'] ?? 0.0) as num).toDouble(),
-      longitude: ((json['longitude'] ?? 0.0) as num).toDouble(),
-      allowedRadiusMeters: ((json['allowed_radius_meters'] ??
-              json['geofence_radius_meters'] ??
-              json['geo_fence_radius_meters'] ??
-              json['radius_meters'] ??
-              json['radius']) as num?)
-          ?.toDouble() ??
-          0.0,
-      accuracyRequirementMeters: ((json['accuracy_requirement_meters'] ?? 50.0) as num).toDouble(),
+      latitude: (json['latitude'] is num
+          ? (json['latitude'] as num).toDouble()
+          : (double.tryParse(json['latitude']?.toString() ?? '') ?? 0.0)),
+      longitude: (json['longitude'] is num
+          ? (json['longitude'] as num).toDouble()
+          : (double.tryParse(json['longitude']?.toString() ?? '') ?? 0.0)),
+      allowedRadiusMeters: (json['allowed_radius_meters'] is num
+          ? (json['allowed_radius_meters'] as num).toDouble()
+          : (double.tryParse(json['allowed_radius_meters']?.toString() ?? '') ??
+              (double.tryParse(json['geofence_radius_meters']?.toString() ?? '') ??
+                  (double.tryParse(json['geo_fence_radius_meters']?.toString() ?? '') ??
+                      (double.tryParse(json['radius_meters']?.toString() ?? '') ??
+                          (double.tryParse(json['radius']?.toString() ?? '') ?? 0.0)))))),
+      accuracyRequirementMeters: (json['accuracy_requirement_meters'] is num
+          ? (json['accuracy_requirement_meters'] as num).toDouble()
+          : (double.tryParse(json['accuracy_requirement_meters']?.toString() ?? '') ?? 50.0)),
       isPrimary: json['is_primary'] == true,
     );
   }
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'code': code,
+    'location_type': locationType,
+    'address': address,
+    'latitude': latitude,
+    'longitude': longitude,
+    'allowed_radius_meters': allowedRadiusMeters,
+    'accuracy_requirement_meters': accuracyRequirementMeters,
+    'is_primary': isPrimary,
+  };
 }
 
 /// Checkout Location Verification Result
@@ -219,6 +238,18 @@ class EmergencyContactModel {
     required this.relationship,
     required this.phone,
   });
+
+  Map<String, dynamic> toJson() => {
+    'name': name,
+    'relationship': relationship,
+    'phone': phone,
+  };
+
+  factory EmergencyContactModel.fromJson(Map<String, dynamic> json) => EmergencyContactModel(
+    name: json['name']?.toString() ?? '',
+    relationship: json['relationship']?.toString() ?? '',
+    phone: json['phone']?.toString() ?? '',
+  );
 }
 
 class PayrollStatutoryModel {
@@ -255,6 +286,42 @@ class PayrollStatutoryModel {
     this.rawEsiNumber,
     this.taxRegime,
   });
+
+  Map<String, dynamic> toJson() => {
+    'bank_name': bankName,
+    'branch_name': branchName,
+    'account_number': accountNumber,
+    'raw_account_number': rawAccountNumber,
+    'ifsc_code': ifscCode,
+    'account_holder_name': accountHolderName,
+    'pan_number': panNumber,
+    'raw_pan_number': rawPanNumber,
+    'uan_number': uanNumber,
+    'raw_uan_number': rawUanNumber,
+    'pf_number': pfNumber,
+    'raw_pf_number': rawPfNumber,
+    'esi_number': esiNumber,
+    'raw_esi_number': rawEsiNumber,
+    'tax_regime': taxRegime,
+  };
+
+  factory PayrollStatutoryModel.fromJson(Map<String, dynamic> json) => PayrollStatutoryModel(
+    bankName: json['bank_name']?.toString(),
+    branchName: json['branch_name']?.toString(),
+    accountNumber: json['account_number']?.toString(),
+    rawAccountNumber: json['raw_account_number']?.toString(),
+    ifscCode: json['ifsc_code']?.toString(),
+    accountHolderName: json['account_holder_name']?.toString(),
+    panNumber: json['pan_number']?.toString(),
+    rawPanNumber: json['raw_pan_number']?.toString(),
+    uanNumber: json['uan_number']?.toString(),
+    rawUanNumber: json['raw_uan_number']?.toString(),
+    pfNumber: json['pf_number']?.toString(),
+    rawPfNumber: json['raw_pf_number']?.toString(),
+    esiNumber: json['esi_number']?.toString(),
+    rawEsiNumber: json['raw_esi_number']?.toString(),
+    taxRegime: json['tax_regime']?.toString(),
+  );
 }
 
 class CompanyAssetModel {
@@ -275,6 +342,24 @@ class CompanyAssetModel {
     required this.status,
     this.icon = Icons.laptop_mac,
   });
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'asset_name': assetName,
+    'asset_id': assetId,
+    'category': category,
+    'assigned_date': assignedDate,
+    'status': status,
+  };
+
+  factory CompanyAssetModel.fromJson(Map<String, dynamic> json) => CompanyAssetModel(
+    id: json['id']?.toString() ?? '',
+    assetName: json['asset_name']?.toString() ?? '',
+    assetId: json['asset_id']?.toString() ?? '',
+    category: json['category']?.toString() ?? '',
+    assignedDate: json['assigned_date']?.toString() ?? '',
+    status: json['status']?.toString() ?? '',
+  );
 }
 
 class UserModel {
@@ -464,6 +549,90 @@ class UserModel {
       assignedLocations: assignedLocations ?? this.assignedLocations,
     );
   }
+
+  Map<String, dynamic> toJson() => {
+    'name': name,
+    'first_name': firstName,
+    'employee_id': employeeId,
+    'employee_uuid': employeeUuid,
+    'company_uuid': companyUuid,
+    'designation': designation,
+    'department': department,
+    'unit': unit,
+    'role': role,
+    'machine_pin': machinePin,
+    'campus': campus,
+    'approved_location': approvedLocation.toJson(),
+    'shift_start': shiftStart,
+    'shift_end': shiftEnd,
+    'shift_name': shiftName,
+    'leave_balance_days': leaveBalanceDays,
+    'reports_to_id': reportsToId,
+    'reports_to_name': reportsToName,
+    'company_id': companyId,
+    'company_name': companyName,
+    'company_logo_url': companyLogoUrl,
+    'employment_type': employmentType,
+    'status': status,
+    'joining_date': joiningDate,
+    'personal_email': personalEmail,
+    'office_email': officeEmail,
+    'contact_number': contactNumber,
+    'address': address,
+    'emergency_contact': emergencyContact?.toJson(),
+    'payroll_statutory': payrollStatutory?.toJson(),
+    'profile_image': profileImage,
+    'assigned_assets': assignedAssets.map((a) => a.toJson()).toList(),
+    'assigned_locations': assignedLocations.map((l) => l.toJson()).toList(),
+  };
+
+  factory UserModel.fromJson(Map<String, dynamic> json) => UserModel(
+    name: json['name']?.toString() ?? '',
+    firstName: json['first_name']?.toString() ?? '',
+    employeeId: json['employee_id']?.toString() ?? '',
+    employeeUuid: json['employee_uuid']?.toString(),
+    companyUuid: json['company_uuid']?.toString(),
+    designation: json['designation']?.toString() ?? '',
+    department: json['department']?.toString() ?? '',
+    unit: json['unit']?.toString(),
+    role: json['role']?.toString() ?? 'EMPLOYEE',
+    machinePin: json['machine_pin']?.toString() ?? '',
+    campus: json['campus']?.toString() ?? '',
+    approvedLocation: json['approved_location'] is Map
+        ? ApprovedWorkLocation.fromJson(Map<String, dynamic>.from(json['approved_location']))
+        : const ApprovedWorkLocation(name: 'Office', latitude: 0, longitude: 0, allowedRadiusMeters: 100),
+    shiftStart: json['shift_start']?.toString() ?? '09:30 AM',
+    shiftEnd: json['shift_end']?.toString() ?? '06:30 PM',
+    shiftName: json['shift_name']?.toString(),
+    leaveBalanceDays: (json['leave_balance_days'] is num
+        ? (json['leave_balance_days'] as num).toDouble()
+        : (double.tryParse(json['leave_balance_days']?.toString() ?? '') ?? 0.0)),
+    reportsToId: json['reports_to_id']?.toString(),
+    reportsToName: json['reports_to_name']?.toString(),
+    companyId: json['company_id']?.toString() ?? '',
+    companyName: json['company_name']?.toString(),
+    companyLogoUrl: json['company_logo_url']?.toString(),
+    employmentType: json['employment_type']?.toString() ?? 'Full Time',
+    status: json['status']?.toString(),
+    joiningDate: json['joining_date']?.toString(),
+    personalEmail: json['personal_email']?.toString() ?? '',
+    officeEmail: json['office_email']?.toString(),
+    contactNumber: json['contact_number']?.toString() ?? '',
+    address: json['address']?.toString() ?? '',
+    emergencyContact: json['emergency_contact'] is Map
+        ? EmergencyContactModel.fromJson(Map<String, dynamic>.from(json['emergency_contact']))
+        : null,
+    payrollStatutory: json['payroll_statutory'] is Map
+        ? PayrollStatutoryModel.fromJson(Map<String, dynamic>.from(json['payroll_statutory']))
+        : null,
+    profileImage: json['profile_image']?.toString(),
+    assignedAssets: json['assigned_assets'] is List
+        ? (json['assigned_assets'] as List).map((a) => CompanyAssetModel.fromJson(Map<String, dynamic>.from(a))).toList()
+        : const [],
+    assignedLocations: json['assigned_locations'] is List
+        ? (json['assigned_locations'] as List).map((l) => ApprovedWorkLocation.fromJson(Map<String, dynamic>.from(l))).toList()
+        : const [],
+  );
 }
 
 class PoshCommitteeConfigModel {

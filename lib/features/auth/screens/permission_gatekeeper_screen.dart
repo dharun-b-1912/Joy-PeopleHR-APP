@@ -3,6 +3,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import '../../../core/services/push_notification_service.dart';
+import '../../../core/services/shift_tracking_service.dart';
 import '../../../core/theme/klarna_tokens.dart';
 import '../../../core/utils/secure_log.dart';
 import '../../../widgets/core/app_button.dart';
@@ -229,6 +230,8 @@ class _PermissionGatekeeperScreenState extends State<PermissionGatekeeperScreen>
 
   void _checkAllGranted() {
     if (_isLocationGranted && _isNotificationGranted) {
+      // Immediately transmit device GPS to live fleet radar upon permission grant
+      ShiftTrackingService.instance.syncCurrentDeviceLocation();
       Future.delayed(const Duration(milliseconds: 500), () {
         if (mounted) {
           widget.onPermissionsGranted();

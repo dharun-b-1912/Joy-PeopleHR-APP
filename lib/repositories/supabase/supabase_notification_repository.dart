@@ -147,14 +147,60 @@ class SupabaseNotificationRepository implements INotificationRepository {
       // 24-Hour Strict Time Window Cutoff
       final cutoff24h = DateTime.now().subtract(const Duration(hours: 24));
 
-      // 1. Live Announcements & Broadcasts (table: notification_events)
+      // 1. Employee's Own Check-in / Check-out punches (table: attendance_punches)
+      try {
+        if (targetUuid != null) {
+          final punches = await withTimeout(
+            _client
+                .from('attendance_punches')
+                .select('*')
+                .eq('employee_id', targetUuid)
+                .order('punch_time', ascending: false)
+                .limit(5),
+          );
+          for (final p in punches) {
+            final tsStr = p['punch_time']?.toString() ?? p['created_at']?.toString() ?? '';
+            final ts = DateTime.tryParse(tsStr)?.toLocal() ?? DateTime.now();
+            if (ts.isBefore(cutoff24h)) continue;
+
+            final type = (p['punch_type'] ?? '').toString().toUpperCase();
+            final isCheckIn = type.contains('IN') && !type.contains('OUT');
+            final title = isCheckIn ? 'Check-In Recorded' : 'Check-Out Recorded';
+            final source = p['punch_source'] ?? p['source'] ?? 'Mobile';
+            final subtitle = isCheckIn
+                ? 'Check-in verified via $source'
+                : 'Check-out recorded via $source';
+
+            aggregated.add(
+              _ActivitySortItem(
+                ActivityItemModel(
+                  id: p['id']?.toString() ?? 'punch-$tsStr',
+                  title: title,
+                  subtitle: subtitle,
+                  timeAgo: _relativeTime(ts),
+                  icon: isCheckIn ? CupertinoIcons.check_mark_circled_solid : CupertinoIcons.arrow_right_circle_fill,
+                  iconBg: isCheckIn ? KlarnaWorkForceTokens.iconBgMint : KlarnaWorkForceTokens.iconBgRose,
+                  iconFg: isCheckIn ? KlarnaWorkForceTokens.iconFgMint : KlarnaWorkForceTokens.iconFgRose,
+                  entityType: 'ATTENDANCE',
+                  entityId: p['id']?.toString(),
+                ),
+                ts,
+              ),
+            );
+          }
+        }
+      } catch (e) {
+        secureLog('[RecentActivities] attendance_punches query notice: $e');
+      }
+
+      // 2. Announcements & Targeted Notifications (strictly filtered for this employee)
       try {
         final notifs = await withTimeout(
           _client
               .from('notification_events')
               .select('*')
               .order('created_at', ascending: false)
-              .limit(10),
+              .limit(15),
         );
         for (final notif in notifs) {
           final tsStr = notif['created_at']?.toString() ?? '';
@@ -163,6 +209,38 @@ class SupabaseNotificationRepository implements INotificationRepository {
 
           final title = notif['title']?.toString() ?? 'Notification';
           final subtitle = notif['message']?.toString() ?? notif['body']?.toString() ?? 'Company Event';
+          final meta = notif['metadata'] is Map ? (notif['metadata'] as Map) : const {};
+          final notifEmpId = meta['employee_id']?.toString() ?? meta['target_employee_id']?.toString();
+          final notifEmpCode = meta['employee_code']?.toString();
+          final recipientId = notif['recipient_user_id']?.toString() ?? notif['recipient_employee_id']?.toString();
+
+          final lowerTitle = title.toLowerCase();
+          final lowerSubtitle = subtitle.toLowerCase();
+          final isPunchBroadcast = lowerTitle.contains('check-in') ||
+              lowerTitle.contains('check-out') ||
+              lowerTitle.contains('punch');
+
+          // If this is an attendance punch notification: strictly show ONLY if it belongs to THIS employee
+          if (isPunchBroadcast) {
+            final matchesEmp = (targetUuid != null && notifEmpId == targetUuid) ||
+                (user.employeeId.isNotEmpty && notifEmpCode == user.employeeId) ||
+                (user.name.isNotEmpty && lowerSubtitle.contains(user.name.toLowerCase()));
+            if (!matchesEmp) {
+              // SKIP check-ins from any other employee (e.g. Monishraj A, etc.)
+              continue;
+            }
+          } else {
+            // For general notifications, if a recipient is specified, it MUST match this employee
+            if (recipientId != null && recipientId.isNotEmpty) {
+              final authUid = _client.auth.currentUser?.id;
+              final isMe = (targetUuid != null && recipientId == targetUuid) ||
+                  (user.dataId.isNotEmpty && recipientId == user.dataId) ||
+                  (authUid != null && recipientId == authUid);
+              if (!isMe) {
+                continue;
+              }
+            }
+          }
 
           aggregated.add(
             _ActivitySortItem(
@@ -434,6 +512,9 @@ class SupabaseNotificationRepository implements INotificationRepository {
     }
     if (hay.contains('payslip') || hay.contains('payroll') || hay.contains('payment') || hay.contains('salary')) {
       return CupertinoIcons.doc_text_fill;
+    }
+    if (hay.contains('lms') || hay.contains('training') || hay.contains('course') || channel == 'lms_reminder') {
+      return CupertinoIcons.book_fill;
     }
     if (hay.contains('announce') || hay.contains('broadcast') || channel == 'push') {
       return CupertinoIcons.speaker_2_fill;

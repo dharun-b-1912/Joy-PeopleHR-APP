@@ -1,10 +1,12 @@
 import 'dart:convert';
 import 'dart:io';
+import 'package:battery_plus/battery_plus.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../config/supabase_config.dart';
@@ -20,6 +22,20 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   } catch (_) {}
   secureLog('[PushNotificationService] Background message received: ${message.messageId}');
+
+  // Handle Biometric Punch and Background Shift Tracking Wake-Up Commands
+  final rawAction = (message.data['action'] ?? message.data['type'] ?? '').toString().toUpperCase();
+  if (rawAction == 'START_SHIFT_TRACKING' ||
+      rawAction == 'BIOMETRIC_PUNCH_IN' ||
+      rawAction == 'BIOMETRIC_CHECKIN' ||
+      rawAction == 'CHECK_IN' ||
+      rawAction == 'FETCH_LOCATION') {
+    await _handleBackgroundLocationWakeup(message.data, isStart: true);
+  } else if (rawAction == 'STOP_SHIFT_TRACKING' ||
+      rawAction == 'BIOMETRIC_PUNCH_OUT' ||
+      rawAction == 'CHECK_OUT') {
+    await _handleBackgroundLocationWakeup(message.data, isStart: false);
+  }
 
   final title = message.notification?.title ?? message.data['title'] ?? 'JOY PeopleHR';
   final body = message.notification?.body ?? message.data['body'] ?? message.data['message'] ?? '';
@@ -93,6 +109,140 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
     } catch (e) {
       secureLog('[PushNotificationService] Background local notification error: $e');
     }
+  }
+}
+
+/// Executes background GPS telemetry sync when a Biometric Punch or Shift Tracking trigger arrives
+Future<void> _handleBackgroundLocationWakeup(Map<String, dynamic> data, {required bool isStart}) async {
+  try {
+    if (!SupabaseConfig.isConfigured) return;
+
+    // Ensure Supabase client is available in background isolate
+    try {
+      if (!Supabase.instance.isInitialized) {
+        await Supabase.initialize(
+          url: SupabaseConfig.url,
+          publishableKey: SupabaseConfig.anonKey,
+        );
+      }
+    } catch (_) {}
+
+    final perm = await Geolocator.checkPermission();
+    if (perm == LocationPermission.denied || perm == LocationPermission.deniedForever) {
+      secureLog('[PushNotificationService] Background location wakeup: permission not granted');
+      return;
+    }
+    final isGpsOn = await Geolocator.isLocationServiceEnabled();
+    if (!isGpsOn) {
+      secureLog('[PushNotificationService] Background location wakeup: GPS is turned off on device');
+      return;
+    }
+
+    final supabase = Supabase.instance.client;
+    String? empId = data['employee_id']?.toString();
+    String? orgId = data['organization_id']?.toString();
+
+    // If employee_id is not in data payload, attempt to resolve from current authenticated session
+    if (empId == null || empId.isEmpty) {
+      final authUid = supabase.auth.currentUser?.id;
+      if (authUid != null && authUid.isNotEmpty) {
+        final empRes = await supabase
+            .from('employees')
+            .select('id, organization_id')
+            .eq('user_id', authUid)
+            .maybeSingle();
+        if (empRes != null) {
+          empId = empRes['id']?.toString();
+          orgId ??= empRes['organization_id']?.toString();
+        }
+      }
+    }
+
+    if (empId == null || empId.isEmpty) {
+      secureLog('[PushNotificationService] Background location wakeup: unresolved employee ID');
+      return;
+    }
+    orgId ??= '0c621892-e938-4707-9957-13534ea32c19';
+
+    if (!isStart) {
+      // Check-out / Stop shift tracking: mark status as checked_out
+      await supabase.from('employee_live_locations').update({
+        'status': 'checked_out',
+        'motion_state': 'stationary',
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      }).eq('organization_id', orgId).eq('employee_id', empId);
+      secureLog('[PushNotificationService] Background location wakeup: employee $empId marked checked_out');
+      return;
+    }
+
+    // 1. Fast position retrieval: last known position first
+    Position? pos = await Geolocator.getLastKnownPosition();
+    try {
+      pos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          timeLimit: Duration(seconds: 10),
+        ),
+      );
+    } catch (e) {
+      secureLog('[PushNotificationService] Background high-accuracy GPS acquisition note: $e');
+    }
+
+    if (pos == null) {
+      secureLog('[PushNotificationService] Background location wakeup: could not acquire GPS fix');
+      return;
+    }
+
+    // 2. Read real hardware battery level and charging state
+    int? batteryLevel;
+    bool isCharging = false;
+    try {
+      final battery = Battery();
+      batteryLevel = await battery.batteryLevel;
+      final state = await battery.batteryState;
+      isCharging = (state == BatteryState.charging || state == BatteryState.full);
+    } catch (_) {}
+
+    final nowIso = DateTime.now().toUtc().toIso8601String();
+    final isMoving = pos.speed > 0.8;
+
+    // 3. Upsert into employee_live_locations for the HR Live Dashboard
+    await supabase.from('employee_live_locations').upsert([
+      {
+        'organization_id': orgId,
+        'employee_id': empId,
+        'latitude': pos.latitude,
+        'longitude': pos.longitude,
+        'accuracy_meters': pos.accuracy,
+        'speed_mps': pos.speed,
+        'heading_degrees': pos.heading,
+        'altitude_meters': pos.altitude,
+        'status': isMoving ? 'moving' : 'on_duty',
+        'battery_percentage': batteryLevel,
+        'is_charging': isCharging,
+        'motion_state': isMoving ? 'moving' : 'stationary',
+        'recorded_at': nowIso,
+        'updated_at': nowIso,
+      }
+    ], onConflict: 'organization_id,employee_id');
+
+    // 4. Record breadcrumb waypoint in employee_location_trails
+    await supabase.from('employee_location_trails').insert({
+      'organization_id': orgId,
+      'employee_id': empId,
+      'latitude': pos.latitude,
+      'longitude': pos.longitude,
+      'accuracy_meters': pos.accuracy,
+      'speed_mps': pos.speed,
+      'heading_degrees': pos.heading,
+      'motion_state': isMoving ? 'moving' : 'stationary',
+      'battery_percentage': batteryLevel,
+      'recorded_at': nowIso,
+    });
+
+    secureLog('[PushNotificationService] Background GPS telemetry synced on biometric trigger for employee: $empId (${pos.latitude}, ${pos.longitude})');
+  } catch (e) {
+    secureLog('[PushNotificationService] Background location wakeup error: $e');
   }
 }
 
@@ -771,6 +921,13 @@ class PushNotificationService {
           break;
         case 'announcement_detail':
           onOpenScreen?.call('announcement_detail', params: data);
+          break;
+        case 'lms':
+        case 'courses':
+        case 'training':
+        case 'lms_reminder':
+        case 'LMS_REMINDER':
+          onOpenScreen?.call('lms', params: data);
           break;
 
         default:

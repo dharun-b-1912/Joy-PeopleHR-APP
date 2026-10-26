@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../../../../core/controllers/employee_controller.dart';
 import '../../../../core/services/attendance_service.dart';
 import '../../../../core/services/location_service.dart';
+import '../../../../core/services/shift_tracking_service.dart';
 import '../../../../core/services/user_service.dart';
 import '../../../../core/theme/klarna_tokens.dart';
 import '../../../../models/app_services_catalog.dart';
@@ -28,6 +29,7 @@ import '../../virtual_id/dialogs/virtual_id_card_dialog.dart';
 import '../../../../models/employee_models.dart';
 import '../../../../widgets/attendance/attendance_live_timer.dart';
 import '../../../../core/services/local_notification_store.dart';
+import '../../locations/screens/employee_location_screen.dart';
 import 'notifications_screen.dart';
 
 class HomeDashboardScreen extends StatefulWidget {
@@ -89,6 +91,8 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
     WidgetsBinding.instance.addPostFrameCallback((_) {
       LocationService.instance.evaluateLiveLocation();
       AttendanceService.instance.fetchTodayAttendance();
+      ShiftTrackingService.instance.syncCurrentDeviceLocation();
+      ShiftTrackingService.instance.startShiftTracking();
     });
   }
 
@@ -108,6 +112,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
     if (state == AppLifecycleState.resumed) {
       LocationService.instance.resumeTracking();
       AttendanceService.instance.fetchTodayAttendance();
+      ShiftTrackingService.instance.syncCurrentDeviceLocation();
     } else if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
       LocationService.instance.pauseTracking();
     }
@@ -1221,8 +1226,62 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
                                         ],
                                       ),
                                     ),
-                                  )
-                                 else if (attendanceSession.status == AttendanceStatus.checkedOut)
+                                  ),
+                                  if (isCheckedIn)
+                                    ListenableBuilder(
+                                      listenable: ShiftTrackingService.instance,
+                                      builder: (context, _) {
+                                        final tracking = ShiftTrackingService.instance;
+                                        if (!tracking.isTracking) return const SizedBox.shrink();
+                                        final km = (tracking.cumulativeDistanceMeters / 1000).toStringAsFixed(2);
+                                        final isMoving = tracking.isMoving;
+                                        return Padding(
+                                          padding: const EdgeInsets.only(top: 6),
+                                          child: Material(
+                                            color: Colors.transparent,
+                                            child: InkWell(
+                                              borderRadius: BorderRadius.circular(12),
+                                              onTap: () {
+                                                Navigator.of(context).push(
+                                                  MaterialPageRoute(
+                                                    builder: (_) => const EmployeeLocationScreen(),
+                                                  ),
+                                                );
+                                              },
+                                              child: Container(
+                                                width: double.infinity,
+                                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                                                decoration: BoxDecoration(
+                                                  color: const Color(0xFFF0FDF4),
+                                                  borderRadius: BorderRadius.circular(12),
+                                                  border: Border.all(color: const Color(0xFFBBF7D0)),
+                                                ),
+                                                child: Row(
+                                                  mainAxisAlignment: MainAxisAlignment.center,
+                                                  children: [
+                                                    const Icon(CupertinoIcons.location_fill, size: 12, color: Color(0xFF15803D)),
+                                                    const SizedBox(width: 5),
+                                                    Text(
+                                                      isMoving
+                                                          ? "Shift GPS Moving • ${km}km"
+                                                          : "Shift GPS Active • ${km}km (Stationary)",
+                                                      style: const TextStyle(
+                                                        fontSize: 10.5,
+                                                        fontWeight: FontWeight.w700,
+                                                        color: Color(0xFF15803D),
+                                                      ),
+                                                    ),
+                                                    const SizedBox(width: 4),
+                                                    const Icon(CupertinoIcons.chevron_right, size: 10, color: Color(0xFF15803D)),
+                                                  ],
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        );
+                                      },
+                                    ),
+                                  if (attendanceSession.status == AttendanceStatus.checkedOut)
                                    Container(
                                      width: double.infinity,
                                      padding: const EdgeInsets.symmetric(vertical: 8),

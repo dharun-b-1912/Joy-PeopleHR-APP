@@ -12,9 +12,11 @@ import '../../documents/screens/documents_screen.dart';
 import '../../grievance/screens/complaint_screen.dart';
 import '../../helpdesk/screens/helpdesk_screen.dart';
 import '../../letters/screens/digital_letters_screen.dart';
+import '../../locations/screens/employee_location_screen.dart';
 import '../../payslips/screens/payslips_screen.dart';
 import '../../performance/screens/performance_screen.dart';
 import '../../roster/screens/shift_roster_screen.dart';
+import '../../lms/screens/employee_lms_catalog_screen.dart';
 
 class MoreScreen extends StatefulWidget {
   const MoreScreen({super.key});
@@ -33,6 +35,10 @@ class _MoreScreenState extends State<MoreScreen> {
   void _navigateToModule(BuildContext context, String id) {
     Widget target;
     switch (id) {
+      case 'locations':
+      case 'location':
+        target = const EmployeeLocationScreen();
+        break;
       case 'roster':
         target = const ShiftRosterScreen();
         break;
@@ -64,6 +70,12 @@ class _MoreScreenState extends State<MoreScreen> {
       case 'goals':
         target = const PerformanceScreen();
         break;
+      case 'lms':
+      case 'learning':
+      case 'training':
+      case 'courses':
+        target = const EmployeeLmsCatalogScreen();
+        break;
       default:
         target = const ShiftRosterScreen();
     }
@@ -91,6 +103,16 @@ class _MoreScreenState extends State<MoreScreen> {
                 'fg': AppColors.mintFg,
                 'badge': null,
                 'badgeType': StatusType.info,
+              },
+              {
+                'id': 'locations',
+                'title': 'Locations',
+                'subtitle': 'Live GPS & travel timeline',
+                'icon': CupertinoIcons.location_solid,
+                'bg': AppColors.mintBg,
+                'fg': AppColors.mintFg,
+                'badge': 'Live',
+                'badgeType': StatusType.success,
               },
             ],
           },
@@ -193,6 +215,16 @@ class _MoreScreenState extends State<MoreScreen> {
                 'fg': AppColors.mintFg,
                 'badge': controller.goals.isNotEmpty ? "${controller.goals.length} Goals" : null,
                 'badgeType': StatusType.info,
+              },
+              {
+                'id': 'lms',
+                'title': 'Learning & LMS',
+                'subtitle': 'YouTube courses & assessments',
+                'icon': CupertinoIcons.book_fill,
+                'bg': AppColors.skyBg,
+                'fg': AppColors.skyFg,
+                'badge': 'Training',
+                'badgeType': StatusType.success,
               },
             ],
           },

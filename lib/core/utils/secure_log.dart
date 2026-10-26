@@ -15,6 +15,8 @@ void _ensureLoggerInitialized() {
   _rootLogger.onRecord.listen((LogRecord record) {
     final line = record.message;
     debugPrint(line);
+    // ignore: avoid_print
+    print(line);
     _forwardToTerminalBridge(line);
   });
 }

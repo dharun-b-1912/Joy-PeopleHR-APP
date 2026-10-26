@@ -462,7 +462,7 @@ class EmployeeRealtimeService with WidgetsBindingObserver {
       secureLog('[REALTIME] employees table updated for employee $expectedEmployeeUuid');
 
       // Check status: if employee was terminated/inactive, trigger sign-out
-      final status = (newRecord['status']?.toString() ?? 'active').toLowerCase().trim();
+      final status = (newRecord['employment_status']?.toString() ?? newRecord['status']?.toString() ?? 'active').toLowerCase().trim();
       if (status == 'inactive' ||
           status == 'terminated' ||
           status == 'blocked' ||

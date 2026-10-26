@@ -106,6 +106,9 @@ class LocationService extends ChangeNotifier {
   List<ApprovedWorkLocation> _authorizedLocations = [];
   List<ApprovedWorkLocation> get authorizedLocations => List.unmodifiable(_authorizedLocations);
 
+  List<ApprovedWorkLocation> _allCompanyLocations = [];
+  List<ApprovedWorkLocation> get allCompanyLocations => List.unmodifiable(_allCompanyLocations);
+
   bool _isAcquiring = false;
   bool get isAcquiring => _isAcquiring;
 
@@ -231,6 +234,23 @@ class LocationService extends ChangeNotifier {
 
     if (orgId.isNotEmpty) {
       _subscribeRealtime(orgId);
+
+      // Pre-load all active company work locations across the organization
+      try {
+        final allLocs = await client
+            .from('work_locations')
+            .select('*')
+            .eq('is_active', true)
+            .eq('organization_id', orgId);
+        if (allLocs.isNotEmpty) {
+          _allCompanyLocations = allLocs
+              .map((l) => ApprovedWorkLocation.fromJson(Map<String, dynamic>.from(l as Map)))
+              .toList();
+          secureLog('[GPS] Cached ${_allCompanyLocations.length} total company work location(s)');
+        }
+      } catch (e) {
+        secureLog('[GPS] All work_locations preload notice: $e');
+      }
     }
 
     try {

@@ -420,7 +420,7 @@ class EmployeeIdentityResolver {
               final contactRows = await withTimeout(
                 client
                     .from('employee_emergency_contacts')
-                    .select('contact_name, phone, relationship')
+                    .select()
                     .inFilter('employee_id', effectiveLookupIds)
                     .limit(1),
                 timeout: fastTimeout,
@@ -428,9 +428,9 @@ class EmployeeIdentityResolver {
               if (contactRows.isNotEmpty) {
                 final c = Map<String, dynamic>.from(contactRows.first as Map);
                 emergencyContact = {
-                  'emergency_contact_name': c['contact_name'],
-                  'emergency_contact_phone': c['phone'],
-                  'emergency_contact_relationship': c['relationship'],
+                  'emergency_contact_name': c['contact_name'] ?? c['name'] ?? c['full_name'] ?? c['contact_person'] ?? '',
+                  'emergency_contact_phone': c['phone'] ?? c['contact_phone'] ?? c['phone_number'] ?? c['mobile'] ?? '',
+                  'emergency_contact_relationship': c['relationship'] ?? c['relation'] ?? '',
                 };
               }
             } catch (e) {
@@ -765,7 +765,7 @@ class EmployeeIdentityResolver {
           'first_name': record['first_name'],
           'last_name': record['last_name'],
           'display_name': record['display_name'],
-          'status': 'ACTIVE',
+          'employment_status': 'ACTIVE',
         }, onConflict: 'id');
         secureLog('[Identity] Successfully persisted synthesized employee profile to Supabase database');
       } catch (e) {
