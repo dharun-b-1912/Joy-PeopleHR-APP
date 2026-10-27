@@ -47,6 +47,7 @@ class LmsCourseModel {
   final String youtubeUrl;
   final String thumbnailUrl;
   final int passingPercentage;
+  final int? passingScoreNumber;
   final String description;
   final List<QuizQuestionModel> questions;
 
@@ -71,6 +72,7 @@ class LmsCourseModel {
     required this.youtubeUrl,
     required this.thumbnailUrl,
     required this.passingPercentage,
+    this.passingScoreNumber,
     required this.description,
     required this.questions,
     this.enrollmentId,
@@ -85,11 +87,29 @@ class LmsCourseModel {
   bool get isInProgress => progressPercentage > 0 && !isCompleted && !isFailed;
   bool get isPending => progressPercentage == 0 && !isCompleted && !isFailed;
 
+  int get requiredPassingScore {
+    if (passingScoreNumber != null && passingScoreNumber! > 0) {
+      if (questions.isNotEmpty && passingScoreNumber! > questions.length) {
+        return questions.length;
+      }
+      return passingScoreNumber!;
+    }
+    if (questions.isNotEmpty) {
+      final calculated = (passingPercentage * questions.length / 100).ceil();
+      return calculated < 1 ? 1 : (calculated > questions.length ? questions.length : calculated);
+    }
+    return 0;
+  }
+
   LmsCourseModel copyWith({
     int? progressPercentage,
     double? score,
     String? status,
     DateTime? completedAt,
+    int? passingPercentage,
+    int? passingScoreNumber,
+    bool clearPassingScoreNumber = false,
+    List<QuizQuestionModel>? questions,
   }) {
     return LmsCourseModel(
       id: id,
@@ -104,9 +124,10 @@ class LmsCourseModel {
       videoId: videoId,
       youtubeUrl: youtubeUrl,
       thumbnailUrl: thumbnailUrl,
-      passingPercentage: passingPercentage,
+      passingPercentage: passingPercentage ?? this.passingPercentage,
+      passingScoreNumber: clearPassingScoreNumber ? null : (passingScoreNumber ?? this.passingScoreNumber),
       description: description,
-      questions: questions,
+      questions: questions ?? this.questions,
       enrollmentId: enrollmentId,
       progressPercentage: progressPercentage ?? this.progressPercentage,
       score: score ?? this.score,

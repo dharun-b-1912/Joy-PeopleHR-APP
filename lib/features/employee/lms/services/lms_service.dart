@@ -77,6 +77,7 @@ class LmsService {
         final codeParsed = parseCourseCode(row['code']?.toString());
         String videoId = codeParsed['videoId'];
         int passingPercentage = codeParsed['passingScore'];
+        int? passingScoreNumber;
         String description = '';
         List<QuizQuestionModel> questions = [];
 
@@ -92,6 +93,9 @@ class LmsService {
             }
             if (jsonMap['passingPercentage'] != null) {
               passingPercentage = int.tryParse(jsonMap['passingPercentage'].toString()) ?? passingPercentage;
+            }
+            if (jsonMap['passingScoreNumber'] != null) {
+              passingScoreNumber = int.tryParse(jsonMap['passingScoreNumber'].toString());
             }
             if (jsonMap['description'] != null) {
               description = jsonMap['description'].toString();
@@ -128,6 +132,7 @@ class LmsService {
             youtubeUrl: youtubeUrl,
             thumbnailUrl: thumbnailUrl,
             passingPercentage: passingPercentage,
+            passingScoreNumber: passingScoreNumber,
             description: description,
             questions: questions,
             enrollmentId: enr?['id']?.toString(),
@@ -189,8 +194,10 @@ class LmsService {
   Future<Map<String, dynamic>> submitAssessmentResult(
     String courseId,
     double scorePercentage,
-    int passingThreshold,
-  ) async {
+    int passingThreshold, {
+    int? correctAnswers,
+    int? passingScoreNumber,
+  }) async {
     try {
       if (!SupabaseConfig.isConfigured) {
         return {'passed': false, 'score': scorePercentage};
@@ -200,7 +207,9 @@ class LmsService {
         return {'passed': false, 'score': scorePercentage};
       }
 
-      final passed = scorePercentage >= passingThreshold;
+      final bool passed = (passingScoreNumber != null && correctAnswers != null)
+          ? (correctAnswers >= passingScoreNumber)
+          : (scorePercentage >= passingThreshold);
       final status = passed ? 'COMPLETED' : 'FAILED';
       final completedAt = passed ? DateTime.now().toIso8601String() : null;
 

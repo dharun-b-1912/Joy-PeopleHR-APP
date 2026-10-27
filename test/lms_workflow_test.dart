@@ -141,5 +141,58 @@ void main() {
       expect(isForwardSkip(120.0), isTrue); // Major skip forward!
       expect(isForwardSkip(10.0), isFalse); // Allowed to seek backwards
     });
+
+    test('LmsCourseModel.requiredPassingScore handles explicit numeric score & fallback percentages', () {
+      final sampleQuestions = [
+        const QuizQuestionModel(id: '1', question: 'Q1', options: ['A', 'B'], correctIndex: 0),
+        const QuizQuestionModel(id: '2', question: 'Q2', options: ['A', 'B'], correctIndex: 0),
+        const QuizQuestionModel(id: '3', question: 'Q3', options: ['A', 'B'], correctIndex: 0),
+        const QuizQuestionModel(id: '4', question: 'Q4', options: ['A', 'B'], correctIndex: 0),
+      ];
+
+      // Explicit pass score = 3
+      final courseWithExplicitPass = LmsCourseModel(
+        id: 'c1',
+        organizationId: 'org1',
+        title: 'Safety',
+        code: 'YT:abc:75',
+        category: 'Compliance',
+        isMandatory: true,
+        durationMinutes: 10,
+        isActive: true,
+        videoId: 'abc',
+        youtubeUrl: 'https://www.youtube.com/watch?v=abc',
+        thumbnailUrl: 'https://img.youtube.com/vi/abc/hqdefault.jpg',
+        description: 'Safety guidelines',
+        passingPercentage: 75,
+        passingScoreNumber: 3,
+        questions: sampleQuestions,
+      );
+      expect(courseWithExplicitPass.requiredPassingScore, 3);
+
+      // Explicit pass score clamped to total questions (e.g. 5 on 4 questions)
+      final courseWithClampedPass = courseWithExplicitPass.copyWith(passingScoreNumber: 5);
+      expect(courseWithClampedPass.requiredPassingScore, 4);
+
+      // Fallback: no explicit pass score, 80% of 4 questions = ceil(3.2) = 4
+      final courseFallback80 = courseWithExplicitPass.copyWith(clearPassingScoreNumber: true, passingPercentage: 80);
+      expect(courseFallback80.requiredPassingScore, 4);
+
+      // Fallback: 50% of 4 questions = ceil(2.0) = 2
+      final courseFallback50 = courseWithExplicitPass.copyWith(clearPassingScoreNumber: true, passingPercentage: 50);
+      expect(courseFallback50.requiredPassingScore, 2);
+    });
+
+    test('Numeric assessment evaluation strictly compares correct answers against required score', () {
+      const requiredScore = 3; // HR set: must get at least 3 out of 4 correct
+
+      bool evaluatePass(int correctAnswers) => correctAnswers >= requiredScore;
+
+      expect(evaluatePass(4), isTrue);  // 4/4 -> PASS
+      expect(evaluatePass(3), isTrue);  // 3/4 -> PASS
+      expect(evaluatePass(2), isFalse); // 2/4 -> FAIL
+      expect(evaluatePass(1), isFalse); // 1/4 -> FAIL
+      expect(evaluatePass(0), isFalse); // 0/4 -> FAIL
+    });
   });
 }

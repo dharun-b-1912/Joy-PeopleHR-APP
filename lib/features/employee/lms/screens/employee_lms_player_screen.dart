@@ -529,7 +529,7 @@ class _EmployeeLmsPlayerScreenState extends State<EmployeeLmsPlayerScreen> {
                           ? 'Review Assessment'
                           : _course.isFailed
                               ? 'Re-attempt Assessment'
-                              : 'Take Assessment (${_course.questions.length} Questions)',
+                              : 'Take Assessment (Need ${_course.requiredPassingScore}/${_course.questions.length} to pass)',
                       style: GoogleFonts.inter(fontSize: 15, fontWeight: FontWeight.w800),
                     ),
                     style: ElevatedButton.styleFrom(

@@ -17,6 +17,7 @@ class _EmployeeLmsQuizScreenState extends State<EmployeeLmsQuizScreen> {
   final Map<int, int> _selectedAnswers = {};
   bool _isSubmitting = false;
   Map<String, dynamic>? _quizResult;
+  int? _userCorrectCount;
 
   void _onOptionSelected(int questionIndex, int optionIndex) {
     if (_quizResult != null) return; // Locked once submitted
@@ -54,12 +55,15 @@ class _EmployeeLmsQuizScreenState extends State<EmployeeLmsQuizScreen> {
       widget.course.id,
       scorePercentage,
       widget.course.passingPercentage,
+      correctAnswers: correct,
+      passingScoreNumber: widget.course.requiredPassingScore,
     );
 
     if (mounted) {
       setState(() {
         _isSubmitting = false;
         _quizResult = result;
+        _userCorrectCount = correct;
       });
     }
   }
@@ -68,6 +72,7 @@ class _EmployeeLmsQuizScreenState extends State<EmployeeLmsQuizScreen> {
     setState(() {
       _selectedAnswers.clear();
       _quizResult = null;
+      _userCorrectCount = null;
     });
   }
 
@@ -125,7 +130,7 @@ class _EmployeeLmsQuizScreenState extends State<EmployeeLmsQuizScreen> {
                               borderRadius: BorderRadius.circular(6),
                             ),
                             child: Text(
-                              'Pass Constraint: ${widget.course.passingPercentage}%',
+                              'Pass Mark: ${widget.course.requiredPassingScore}/${questions.length} correct',
                               style: GoogleFonts.inter(
                                 fontSize: 11,
                                 fontWeight: FontWeight.w700,
@@ -135,7 +140,7 @@ class _EmployeeLmsQuizScreenState extends State<EmployeeLmsQuizScreen> {
                           ),
                           const SizedBox(width: 8),
                           Text(
-                            '${questions.length} Questions',
+                            '${questions.length} Questions (${widget.course.passingPercentage}%)',
                             style: GoogleFonts.inter(fontSize: 12, color: Colors.grey.shade600),
                           ),
                         ],
@@ -176,7 +181,9 @@ class _EmployeeLmsQuizScreenState extends State<EmployeeLmsQuizScreen> {
                               ),
                               const SizedBox(height: 2),
                               Text(
-                                'Score: ${_quizResult!['score']}% (Required: ${widget.course.passingPercentage}%)',
+                                isPassed
+                                    ? 'Score: ${_quizResult!['score']}% (${_userCorrectCount ?? 0}/${questions.length} correct) • Course marked Completed!'
+                                    : 'Score: ${_quizResult!['score']}% (${_userCorrectCount ?? 0}/${questions.length} correct) • Required: ${widget.course.requiredPassingScore}/${questions.length} correct to pass',
                                 style: GoogleFonts.inter(
                                   fontSize: 12,
                                   color: isPassed ? Colors.green.shade800 : Colors.red.shade800,
