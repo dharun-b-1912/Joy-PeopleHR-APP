@@ -4,6 +4,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -138,7 +139,7 @@ class PushNotificationService {
       return status.isGranted;
     } catch (e) {
       secureLog('[PushNotificationService] isPermissionGranted notice: $e');
-      return true;
+      return false;
     }
   }
 
@@ -153,9 +154,60 @@ class PushNotificationService {
     }
   }
 
-  /// Opens the device app settings screen so user can manually enable notifications
+  static const MethodChannel _settingsChannel = MethodChannel('com.joypeoplehr.app/settings');
+
+  /// Opens the device app settings screen so user can manually configure permissions
   Future<bool> openSettings() async {
     return await openAppSettings();
+  }
+
+  /// Opens direct App Notification Settings on Android (OnePlus, Oppo ColorOS, Vivo, Realme, Xiaomi)
+  /// where the user can enable "Lock screen", "Banners", and "Show title and body"
+  Future<bool> openNotificationSettings() async {
+    if (kIsWeb) return false;
+    if (Platform.isAndroid) {
+      try {
+        final res = await _settingsChannel.invokeMethod<bool>('openNotificationSettings');
+        if (res == true) return true;
+      } catch (e) {
+        secureLog('[PushNotificationService] openNotificationSettings error: $e');
+      }
+    }
+    return await openAppSettings();
+  }
+
+  /// Opens the high-importance notification channel settings
+  Future<bool> openChannelSettings({String channelId = 'joy_peoplehr_high_importance'}) async {
+    if (kIsWeb) return false;
+    if (Platform.isAndroid) {
+      try {
+        final res = await _settingsChannel.invokeMethod<bool>('openChannelSettings', {'channelId': channelId});
+        if (res == true) return true;
+      } catch (e) {
+        secureLog('[PushNotificationService] openChannelSettings error: $e');
+      }
+    }
+    return await openAppSettings();
+  }
+
+  /// Requests exemption from battery optimizations so the OS (ColorOS/Vivo/Realme) does not kill background notifications
+  Future<bool> requestBatteryOptimizationExemption() async {
+    if (kIsWeb) return false;
+    if (Platform.isAndroid) {
+      try {
+        final res = await _settingsChannel.invokeMethod<bool>('requestIgnoreBatteryOptimizations');
+        if (res == true) return true;
+      } catch (_) {}
+      try {
+        final isIgnored = await Permission.ignoreBatteryOptimizations.isGranted;
+        if (!isIgnored) {
+          final status = await Permission.ignoreBatteryOptimizations.request();
+          return status.isGranted;
+        }
+        return true;
+      } catch (_) {}
+    }
+    return false;
   }
 
   /// Explicitly requests notification permission from the user on Android (13+) and iOS
@@ -187,6 +239,16 @@ class PushNotificationService {
           sound: true,
         );
       } catch (_) {}
+
+      // 5. Request Battery Optimization Exemption on Android (prevents lock screen kills on Oppo/Vivo/OnePlus/Xiaomi)
+      if (Platform.isAndroid) {
+        try {
+          final isIgnored = await Permission.ignoreBatteryOptimizations.isGranted;
+          if (!isIgnored) {
+            await Permission.ignoreBatteryOptimizations.request();
+          }
+        } catch (_) {}
+      }
 
       final granted = status.isGranted || androidGranted == true || iosGranted == true;
       secureLog('[PushNotificationService] requestNotificationPermission outcome: granted=$granted, status=$status');

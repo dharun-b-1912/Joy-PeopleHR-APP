@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import '../../../core/services/push_notification_service.dart';
@@ -170,7 +172,7 @@ class _PermissionGatekeeperScreenState extends State<PermissionGatekeeperScreen>
           _errorMessage = 'Notification permission is disabled in App Settings. Please tap "Open Settings" below.';
           _isRequesting = false;
         });
-        await PushNotificationService.instance.openSettings();
+        await PushNotificationService.instance.openNotificationSettings();
         return;
       }
 
@@ -210,7 +212,7 @@ class _PermissionGatekeeperScreenState extends State<PermissionGatekeeperScreen>
           _errorMessage = 'Notification permission is disabled. Tap "Open Settings" to enable.';
           _isRequesting = false;
         });
-        await PushNotificationService.instance.openSettings();
+        await PushNotificationService.instance.openNotificationSettings();
         return;
       }
 
@@ -363,11 +365,46 @@ class _PermissionGatekeeperScreenState extends State<PermissionGatekeeperScreen>
                                   style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppColors.primary),
                                 ),
                                 onPressed: () async {
-                                  await PushNotificationService.instance.openSettings();
+                                  await PushNotificationService.instance.openNotificationSettings();
                                 },
                               ),
                             ),
                           ],
+                        ],
+                      ),
+                    ),
+                  ],
+
+                  if (!kIsWeb && Platform.isAndroid) ...[
+                    const SizedBox(height: 16),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: AppColors.primary.withValues(alpha: 0.05),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: AppColors.primary.withValues(alpha: 0.15),
+                        ),
+                      ),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Icon(
+                            CupertinoIcons.info_circle_fill,
+                            size: 16,
+                            color: AppColors.primary,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              "OnePlus / Oppo / Vivo / Realme / Xiaomi: Ensure 'Lock screen' and 'Banners' are enabled, and set Lock screen notifications to 'Show title and body'.",
+                              style: AppTypography.caption.copyWith(
+                                color: AppColors.textSecondary,
+                                fontSize: 11,
+                                height: 1.35,
+                              ),
+                            ),
+                          ),
                         ],
                       ),
                     ),
@@ -400,7 +437,8 @@ class _PermissionGatekeeperScreenState extends State<PermissionGatekeeperScreen>
                             : () async {
                                 if (!_isLocationGranted) {
                                   await _requestLocationPermission();
-                                } else if (!_isNotificationGranted) {
+                                }
+                                if (!_isNotificationGranted && mounted) {
                                   await _requestNotificationPermission();
                                 }
                               },

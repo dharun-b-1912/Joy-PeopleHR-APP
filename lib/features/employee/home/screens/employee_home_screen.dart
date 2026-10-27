@@ -28,6 +28,8 @@ import '../../virtual_id/dialogs/virtual_id_card_dialog.dart';
 import '../../../../models/employee_models.dart';
 import '../../../../widgets/attendance/attendance_live_timer.dart';
 import '../../../../core/services/local_notification_store.dart';
+import '../../../../core/services/push_notification_service.dart';
+import 'package:flutter/foundation.dart';
 import 'notifications_screen.dart';
 
 class HomeDashboardScreen extends StatefulWidget {
@@ -45,6 +47,7 @@ class HomeDashboardScreen extends StatefulWidget {
 class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsBindingObserver {
   UserModel get currentUser => UserService.instance.currentUser;
   StreamSubscription<ApprovedWorkLocation>? _geofenceSubscription;
+  bool _isNotificationPermissionGranted = true;
 
   String get _timeBasedGreeting {
     final hour = DateTime.now().hour;
@@ -89,6 +92,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
     WidgetsBinding.instance.addPostFrameCallback((_) {
       LocationService.instance.evaluateLiveLocation();
       AttendanceService.instance.fetchTodayAttendance();
+      _checkNotificationPermission();
     });
   }
 
@@ -106,11 +110,24 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      _checkNotificationPermission();
       LocationService.instance.resumeTracking();
       AttendanceService.instance.fetchTodayAttendance();
     } else if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
       LocationService.instance.pauseTracking();
     }
+  }
+
+  Future<void> _checkNotificationPermission() async {
+    if (kIsWeb) return;
+    try {
+      final granted = await PushNotificationService.instance.isPermissionGranted();
+      if (mounted && _isNotificationPermissionGranted != granted) {
+        setState(() {
+          _isNotificationPermissionGranted = granted;
+        });
+      }
+    } catch (_) {}
   }
 
   void _onStateChange() {
@@ -987,9 +1004,13 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
                       Expanded(
                         child: GestureDetector(
                           behavior: HitTestBehavior.opaque,
-                          onTap: () {
-                            if (locationResult.state == AttendanceGpsState.permissionDenied ||
-                                locationResult.state == AttendanceGpsState.permissionPermanentlyDenied) {
+                          onTap: () async {
+                            if (locationResult.state == AttendanceGpsState.permissionDenied) {
+                              final granted = await LocationService.instance.requestLocationPermission();
+                              if (!granted && mounted) {
+                                await LocationService.instance.openAppSettings();
+                              }
+                            } else if (locationResult.state == AttendanceGpsState.permissionPermanentlyDenied) {
                               LocationService.instance.openAppSettings();
                             } else if (locationResult.state == AttendanceGpsState.locationDisabled) {
                               LocationService.instance.openLocationSettings();
@@ -1303,15 +1324,18 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
                                     crossAxisAlignment: CrossAxisAlignment.start,
                                     children: [
                                       GestureDetector(
-                                        onTap: () {
+                                        onTap: () async {
                                           if (locationResult.state == AttendanceGpsState.locationDisabled) {
                                             LocationService.instance.openLocationSettings();
                                           } else if (locationResult.state == AttendanceGpsState.permissionDenied) {
-                                            LocationService.instance.evaluateLiveLocation();
+                                            final granted = await LocationService.instance.requestLocationPermission();
+                                            if (!granted && mounted) {
+                                              await LocationService.instance.openAppSettings();
+                                            }
                                           } else if (locationResult.state == AttendanceGpsState.permissionPermanentlyDenied) {
                                             LocationService.instance.openAppSettings();
                                           } else {
-                                            LocationService.instance.evaluateLiveLocation();
+                                            LocationService.instance.refreshLocationsAndEvaluate();
                                           }
                                         },
                                         child: Container(
@@ -1548,6 +1572,66 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
                     ],
                   ),
                 ),
+                if (!_isNotificationPermissionGranted && !kIsWeb) ...[
+                  AppSpacing.gapLG,
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFEF2F2),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: const Color(0xFFFCA5A5)),
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(7),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFFEE2E2),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: const Icon(CupertinoIcons.bell_slash_fill, size: 16, color: Color(0xFFDC2626)),
+                        ),
+                        const SizedBox(width: 10),
+                        const Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                "Notifications Disabled",
+                                style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Color(0xFF991B1B)),
+                              ),
+                              SizedBox(height: 2),
+                              Text(
+                                "Enable notifications to receive lock screen check-in alerts and approvals.",
+                                style: TextStyle(fontSize: 10.5, color: Color(0xFF991B1B)),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFFDC2626),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                            minimumSize: Size.zero,
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                            elevation: 0,
+                          ),
+                          onPressed: () async {
+                            final granted = await PushNotificationService.instance.requestNotificationPermission();
+                            if (!granted && mounted) {
+                              await PushNotificationService.instance.openNotificationSettings();
+                            }
+                            await _checkNotificationPermission();
+                          },
+                          child: const Text("Enable", style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
                 AppSpacing.gapXXL,
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
