@@ -77,12 +77,29 @@ class SupabaseNotificationRepository implements INotificationRepository {
           final evId = ev['id']?.toString() ?? 'ev-${ev['created_at']}';
           final createdAt = DateTime.tryParse(ev['created_at']?.toString() ?? '') ?? DateTime.now();
           final isRead = ev['is_read'] == true;
+          final title = _sOr(ev['title'], 'Notification');
+          final message = _sOr(ev['message'], '');
+          final recipient = ev['recipient_user_id']?.toString();
+
+          // Privacy guard: Attendance check-in/late alerts belong exclusively to the designated
+          // Reporting Manager / Supervisor hierarchy and must never leak as generic broadcast alerts!
+          final hay = '$title $message'.toLowerCase();
+          final isAttendanceAlert = hay.contains('check-in') ||
+              hay.contains('checkin') ||
+              hay.contains('check-out') ||
+              hay.contains('checkout') ||
+              hay.contains('late') ||
+              hay.contains('punch');
+
+          if (isAttendanceAlert && (recipient == null || recipient.isEmpty)) {
+            continue;
+          }
 
           list.add(
             NotificationItemModel(
               id: evId,
-              title: _sOr(ev['title'], 'Notification'),
-              message: _sOr(ev['message'], ''),
+              title: title,
+              message: message,
               timestamp: createdAt,
               isRead: isRead,
               icon: _iconForEvent(ev),
@@ -193,12 +210,16 @@ class SupabaseNotificationRepository implements INotificationRepository {
         secureLog('[RecentActivities] attendance_punches query notice: $e');
       }
 
-      // 2. Announcements & Targeted Notifications (strictly filtered for this employee)
+      // 2. Live Announcements & Broadcasts (table: notification_events)
+      // STRICT FILTER: Only broadcast company announcements where recipient_user_id IS NULL.
+      // Supervisor attendance alerts (check-in, check-out, late check-in) are strictly routed
+      // to the Reporting Manager / TL hierarchy via push & inbox, and MUST NEVER be exposed in Recent Activities.
       try {
         final notifs = await withTimeout(
           _client
               .from('notification_events')
               .select('*')
+              .filter('recipient_user_id', 'is', 'null')
               .order('created_at', ascending: false)
               .limit(15),
         );
@@ -240,6 +261,28 @@ class SupabaseNotificationRepository implements INotificationRepository {
                 continue;
               }
             }
+          }
+
+          // Strictly filter out any attendance punch/late/shift notifications from employee Recent Activities
+          final eventType = notif['event_type']?.toString().toLowerCase() ?? '';
+          final category = notif['category']?.toString().toLowerCase() ?? '';
+          if (eventType.startsWith('attendance.') || category.contains('attendance')) {
+            continue;
+          }
+
+          final hay = '$title $subtitle'.toLowerCase();
+          if (hay.contains('check-in') ||
+              hay.contains('checkin') ||
+              hay.contains('check-out') ||
+              hay.contains('checkout') ||
+              hay.contains('checked in') ||
+              hay.contains('checked out') ||
+              hay.contains('late') ||
+              hay.contains('punch') ||
+              hay.contains('attendance') ||
+              hay.contains('biometric') ||
+              hay.contains('shift')) {
+            continue;
           }
 
           aggregated.add(

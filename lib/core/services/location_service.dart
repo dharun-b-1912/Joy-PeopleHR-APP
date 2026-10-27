@@ -757,6 +757,41 @@ class LocationService extends ChangeNotifier {
     return await Geolocator.openLocationSettings();
   }
 
+  /// Actively requests location permissions and verifies GPS service
+  Future<bool> requestLocationPermission() async {
+    if (kIsWeb) return true;
+    try {
+      // 1. Check if GPS hardware service is enabled
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        await Geolocator.openLocationSettings();
+        await Future.delayed(const Duration(milliseconds: 1500));
+        serviceEnabled = await Geolocator.isLocationServiceEnabled();
+        if (!serviceEnabled) return false;
+      }
+
+      // 2. Check and request permission
+      LocationPermission perm = await Geolocator.checkPermission();
+      if (perm == LocationPermission.denied) {
+        perm = await Geolocator.requestPermission();
+      }
+
+      if (perm == LocationPermission.deniedForever) {
+        await Geolocator.openAppSettings();
+        return false;
+      }
+
+      final granted = (perm == LocationPermission.always || perm == LocationPermission.whileInUse);
+      if (granted) {
+        evaluateLiveLocation();
+      }
+      return granted;
+    } catch (e) {
+      secureLog('[LocationService] requestLocationPermission error: $e');
+      return false;
+    }
+  }
+
   /// Cleanly unsubscribe realtime location channels on logout
   void unsubscribeRealtime() {
     _locationChannel?.unsubscribe();

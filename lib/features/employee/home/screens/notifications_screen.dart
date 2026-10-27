@@ -345,7 +345,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                           onPressed: () async {
                             final permanentlyDenied = await PushNotificationService.instance.isPermanentlyDenied();
                             if (permanentlyDenied) {
-                              await PushNotificationService.instance.openSettings();
+                              await PushNotificationService.instance.openNotificationSettings();
                             } else {
                               final granted = await PushNotificationService.instance.requestNotificationPermission();
                               if (granted) {
@@ -354,6 +354,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                                   body: "You're all set to receive HR alerts and payslips.",
                                   route: "home",
                                 );
+                              } else {
+                                await PushNotificationService.instance.openNotificationSettings();
                               }
                             }
                             _checkPermission();
