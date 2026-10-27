@@ -81,8 +81,8 @@ class AppEnv {
   static bool get allowDevAutoLogin => isDev && kDebugMode;
 
   // ── Build Metadata ──────────────────────────────────────────────────
-  static const String versionName = String.fromEnvironment('APP_VERSION', defaultValue: '1.0.9');
-  static const String versionCode = String.fromEnvironment('APP_BUILD_CODE', defaultValue: '14');
+  static const String versionName = String.fromEnvironment('APP_VERSION', defaultValue: '1.1.6');
+  static const String versionCode = String.fromEnvironment('APP_BUILD_CODE', defaultValue: '24');
   static const String commitSha = String.fromEnvironment('GIT_COMMIT_SHA', defaultValue: 'HEAD');
   static const String branch = String.fromEnvironment('GIT_BRANCH', defaultValue: 'main');
   static const String buildTimestamp = String.fromEnvironment('BUILD_TIMESTAMP', defaultValue: '2026-09-12T10:00:00Z');

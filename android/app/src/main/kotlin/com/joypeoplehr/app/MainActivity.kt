@@ -9,6 +9,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import androidx.core.view.WindowCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -17,6 +18,8 @@ class MainActivity : FlutterActivity() {
     private val SETTINGS_CHANNEL = "com.joypeoplehr.app/settings"
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Enforce true Edge-to-Edge across all Android versions (Android 10 - 16+)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         super.onCreate(savedInstanceState)
         createNotificationChannel()
     }

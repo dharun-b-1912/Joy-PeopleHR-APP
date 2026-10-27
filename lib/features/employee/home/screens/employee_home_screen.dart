@@ -1001,10 +1001,9 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
                 ],
               ),
               AppSpacing.gapLG,
-              IntrinsicHeight(
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
                       // 1. Current Location Card (Live Automated Geofence Engine)
                       Expanded(
                         child: GestureDetector(
@@ -1630,7 +1629,6 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
                       ),
                     ],
                   ),
-                ),
                 if (!_isNotificationPermissionGranted && !kIsWeb) ...[
                   AppSpacing.gapLG,
                   Container(
