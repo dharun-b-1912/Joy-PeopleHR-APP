@@ -228,6 +228,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
 
   Future<void> _handleCheckIn() async {
     if (AttendanceService.instance.isProcessing) return;
+    if (AttendanceService.instance.session.isCheckedIn) return;
 
     if (_isTodayWeekOff()) {
       final shouldProceed = await showDialog<bool>(
@@ -1205,104 +1206,101 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
                                                                  icon: CupertinoIcons.exclamationmark_triangle_fill,
                                                                ),
                                 const SizedBox(height: 8),
-                                if (isCheckedIn)
-                                  Container(
-                                    width: double.infinity,
-                                    padding: const EdgeInsets.symmetric(vertical: 8),
-                                    decoration: BoxDecoration(
-                                      color: attendanceSession.isBiometricLocked ? const Color(0xFFEFF6FF) : AppColors.mintBg,
-                                      borderRadius: AppRadius.borderPill,
-                                    ),
-                                    child: Center(
-                                      child: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          Icon(
-                                            attendanceSession.isBiometricLocked
-                                                ? CupertinoIcons.bolt_fill
-                                                : CupertinoIcons.checkmark_alt_circle_fill,
-                                            size: 14,
-                                            color: attendanceSession.isBiometricLocked ? const Color(0xFF2563EB) : AppColors.mintFg,
-                                          ),
-                                          const SizedBox(width: 4),
-                                          Text(
-                                            attendanceSession.isBiometricLocked
-                                                ? (attendanceSession.verificationMethod != null &&
-                                                        attendanceSession.verificationMethod!.isNotEmpty &&
-                                                        attendanceSession.verificationMethod!.toUpperCase() != 'BIOMETRIC'
-                                                    ? "Biometric (${attendanceSession.verificationMethod})"
-                                                    : "Biometric In")
-                                                : "Mobile In",
-                                            style: AppTypography.caption.copyWith(
-                                              fontWeight: FontWeight.w800,
-                                              color: attendanceSession.isBiometricLocked ? const Color(0xFF2563EB) : AppColors.mintFg,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                                  if (isCheckedIn)
-                                    ListenableBuilder(
-                                      listenable: ShiftTrackingService.instance,
-                                      builder: (context, _) {
-                                        final tracking = ShiftTrackingService.instance;
-                                        if (!tracking.isTracking) return const SizedBox.shrink();
-                                        final km = (tracking.cumulativeDistanceMeters / 1000).toStringAsFixed(2);
-                                        final isMoving = tracking.isMoving;
-                                        return Padding(
-                                          padding: const EdgeInsets.only(top: 6),
-                                          child: Material(
-                                            color: Colors.transparent,
-                                            child: InkWell(
-                                              borderRadius: BorderRadius.circular(12),
-                                              onTap: () {
-                                                Navigator.of(context).push(
-                                                  MaterialPageRoute(
-                                                    builder: (_) => const EmployeeLocationScreen(),
-                                                  ),
-                                                );
-                                              },
-                                              child: Container(
-                                                width: double.infinity,
-                                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                                                decoration: BoxDecoration(
-                                                  color: const Color(0xFFF0FDF4),
-                                                  borderRadius: BorderRadius.circular(12),
-                                                  border: Border.all(color: const Color(0xFFBBF7D0)),
-                                                ),
-                                                child: Row(
-                                                  mainAxisAlignment: MainAxisAlignment.center,
-                                                  children: [
-                                                    const Icon(CupertinoIcons.location_fill, size: 12, color: Color(0xFF15803D)),
-                                                    const SizedBox(width: 5),
-                                                    Flexible(
-                                                      child: Text(
-                                                        isMoving
-                                                            ? "Shift GPS • ${km}km"
-                                                            : "GPS Active • ${km}km",
-                                                        maxLines: 1,
-                                                        overflow: TextOverflow.ellipsis,
-                                                        style: const TextStyle(
-                                                          fontSize: 10.5,
-                                                          fontWeight: FontWeight.w700,
-                                                          color: Color(0xFF15803D),
-                                                        ),
-                                                      ),
-                                                    ),
-                                                    const SizedBox(width: 4),
-                                                    const Icon(CupertinoIcons.chevron_right, size: 10, color: Color(0xFF15803D)),
-                                                  ],
-                                                ),
-                                              ),
-                                            ),
-                                          ),
-                                        );
-                                      },
-                                    ),
-                                  if (isCheckedIn)
-                                     const SizedBox.shrink()
-                                   else if (attendanceSession.status == AttendanceStatus.checkedOut)
+                                 if (isCheckedIn) ...[
+                                   Container(
+                                     width: double.infinity,
+                                     padding: const EdgeInsets.symmetric(vertical: 8),
+                                     decoration: BoxDecoration(
+                                       color: attendanceSession.isBiometricLocked ? const Color(0xFFEFF6FF) : AppColors.mintBg,
+                                       borderRadius: AppRadius.borderPill,
+                                     ),
+                                     child: Center(
+                                       child: Row(
+                                         mainAxisSize: MainAxisSize.min,
+                                         children: [
+                                           Icon(
+                                             attendanceSession.isBiometricLocked
+                                                 ? CupertinoIcons.bolt_fill
+                                                 : CupertinoIcons.checkmark_alt_circle_fill,
+                                             size: 14,
+                                             color: attendanceSession.isBiometricLocked ? const Color(0xFF2563EB) : AppColors.mintFg,
+                                           ),
+                                           const SizedBox(width: 4),
+                                           Text(
+                                             attendanceSession.isBiometricLocked
+                                                 ? (attendanceSession.verificationMethod != null &&
+                                                         attendanceSession.verificationMethod!.isNotEmpty &&
+                                                         attendanceSession.verificationMethod!.toUpperCase() != 'BIOMETRIC'
+                                                     ? "Biometric (${attendanceSession.verificationMethod})"
+                                                     : "Biometric In")
+                                                 : "Mobile In",
+                                             style: AppTypography.caption.copyWith(
+                                               fontWeight: FontWeight.w800,
+                                               color: attendanceSession.isBiometricLocked ? const Color(0xFF2563EB) : AppColors.mintFg,
+                                             ),
+                                           ),
+                                         ],
+                                       ),
+                                     ),
+                                   ),
+                                   ListenableBuilder(
+                                     listenable: ShiftTrackingService.instance,
+                                     builder: (context, _) {
+                                       final tracking = ShiftTrackingService.instance;
+                                       if (!tracking.isTracking) return const SizedBox.shrink();
+                                       final km = (tracking.cumulativeDistanceMeters / 1000).toStringAsFixed(2);
+                                       final isMoving = tracking.isMoving;
+                                       return Padding(
+                                         padding: const EdgeInsets.only(top: 6),
+                                         child: Material(
+                                           color: Colors.transparent,
+                                           child: InkWell(
+                                             borderRadius: BorderRadius.circular(12),
+                                             onTap: () {
+                                               Navigator.of(context).push(
+                                                 MaterialPageRoute(
+                                                   builder: (_) => const EmployeeLocationScreen(),
+                                                 ),
+                                               );
+                                             },
+                                             child: Container(
+                                               width: double.infinity,
+                                               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                                               decoration: BoxDecoration(
+                                                 color: const Color(0xFFF0FDF4),
+                                                 borderRadius: BorderRadius.circular(12),
+                                                 border: Border.all(color: const Color(0xFFBBF7D0)),
+                                               ),
+                                               child: Row(
+                                                 mainAxisAlignment: MainAxisAlignment.center,
+                                                 children: [
+                                                   const Icon(CupertinoIcons.location_fill, size: 12, color: Color(0xFF15803D)),
+                                                   const SizedBox(width: 5),
+                                                   Flexible(
+                                                     child: Text(
+                                                       isMoving
+                                                           ? "Shift GPS • ${km}km"
+                                                           : "GPS Active • ${km}km",
+                                                       maxLines: 1,
+                                                       overflow: TextOverflow.ellipsis,
+                                                       style: const TextStyle(
+                                                         fontSize: 10.5,
+                                                         fontWeight: FontWeight.w700,
+                                                         color: Color(0xFF15803D),
+                                                       ),
+                                                     ),
+                                                   ),
+                                                   const SizedBox(width: 4),
+                                                   const Icon(CupertinoIcons.chevron_right, size: 10, color: Color(0xFF15803D)),
+                                                 ],
+                                               ),
+                                             ),
+                                           ),
+                                         ),
+                                       );
+                                     },
+                                   ),
+                                 ] else if (attendanceSession.status == AttendanceStatus.checkedOut)
                                    Container(
                                      width: double.infinity,
                                      padding: const EdgeInsets.symmetric(vertical: 8),
