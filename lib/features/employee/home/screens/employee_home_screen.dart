@@ -1,3 +1,4 @@
+import '../../../../core/services/shift_duration_calculator.dart';
 import 'dart:async';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
@@ -46,6 +47,47 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
   StreamSubscription<ApprovedWorkLocation>? _geofenceSubscription;
   bool _isNotificationPermissionGranted = true;
 
+
+  String _getEffectiveShiftStart(UserModel user) {
+    final now = DateTime.now();
+    final rosters = MoreModulesController.instance.rosters;
+    if (rosters.isNotEmpty) {
+      for (final r in rosters) {
+        if (r.date.year == now.year && r.date.month == now.month && r.date.day == now.day) {
+          if (!r.isOffDay && r.startTime.trim().isNotEmpty && r.startTime != 'Week Off' && r.startTime != '—') {
+            final formatted = ShiftDurationCalculator.instance.formatTimeAMPM(r.startTime, fallback: '');
+            if (formatted.isNotEmpty) return formatted;
+          }
+        }
+      }
+    }
+    if (user.shiftStart.trim().isNotEmpty && user.shiftStart.trim() != '—') {
+      final formatted = ShiftDurationCalculator.instance.formatTimeAMPM(user.shiftStart, fallback: '');
+      if (formatted.isNotEmpty) return formatted;
+    }
+    return "09:30 AM";
+  }
+
+  String _getEffectiveShiftEnd(UserModel user) {
+    final now = DateTime.now();
+    final rosters = MoreModulesController.instance.rosters;
+    if (rosters.isNotEmpty) {
+      for (final r in rosters) {
+        if (r.date.year == now.year && r.date.month == now.month && r.date.day == now.day) {
+          if (!r.isOffDay && r.endTime.trim().isNotEmpty && r.endTime != 'Week Off' && r.endTime != '—') {
+            final formatted = ShiftDurationCalculator.instance.formatTimeAMPM(r.endTime, fallback: '');
+            if (formatted.isNotEmpty) return formatted;
+          }
+        }
+      }
+    }
+    if (user.shiftEnd.trim().isNotEmpty && user.shiftEnd.trim() != '—') {
+      final formatted = ShiftDurationCalculator.instance.formatTimeAMPM(user.shiftEnd, fallback: '');
+      if (formatted.isNotEmpty) return formatted;
+    }
+    return "06:30 PM";
+  }
+
   String get _timeBasedGreeting {
     final hour = DateTime.now().hour;
     if (hour < 12) return "Good morning,";
@@ -77,6 +119,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
     AttendanceService.instance.addListener(_onStateChange);
     NotificationController.instance.addListener(_onStateChange);
     UserService.instance.addListener(_onStateChange);
+    MoreModulesController.instance.addListener(_onStateChange);
     NotificationController.instance.initialize();
 
     // Subscribe to Automatic Geofence Entry Prompt
@@ -92,6 +135,8 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
       ShiftTrackingService.instance.syncCurrentDeviceLocation();
       ShiftTrackingService.instance.startShiftTracking();
       _checkNotificationPermission();
+      MoreModulesController.instance.loadAllData();
+      SupabaseEmployeeRepository().getCurrentEmployee();
     });
   }
 
@@ -103,6 +148,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
     AttendanceService.instance.removeListener(_onStateChange);
     NotificationController.instance.removeListener(_onStateChange);
     UserService.instance.removeListener(_onStateChange);
+    MoreModulesController.instance.removeListener(_onStateChange);
     super.dispose();
   }
 
@@ -1524,12 +1570,10 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
                                 ),
                                 child: Text(
                                   isCheckedIn
-                                      ? (attendanceSession.isBiometricLocked
-                                          ? "Locked: Biometric Terminal"
-                                          : "Shift Ends ${currentUser.shiftEnd}")
+                                      ? "Shift ends at ${_getEffectiveShiftEnd(currentUser)}"
                                       : (AttendanceService.instance.session.isCheckedOut
                                           ? "Completed for today"
-                                          : "Shift Starts ${currentUser.shiftStart}"),
+                                          : "Shift starts at ${_getEffectiveShiftStart(currentUser)}"),
                                   style: AppTypography.caption.copyWith(
                                     fontSize: 10.5,
                                     color: isCheckedIn
