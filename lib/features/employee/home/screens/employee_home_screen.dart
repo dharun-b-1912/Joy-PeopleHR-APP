@@ -1,3 +1,4 @@
+import '../../../../widgets/dialogs/location_prominent_disclosure_dialog.dart';
 import '../../../../core/services/shift_duration_calculator.dart';
 import 'dart:async';
 import 'package:flutter/cupertino.dart';
@@ -1061,6 +1062,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
                             } else if (locationResult.state == AttendanceGpsState.locationDisabled) {
                               LocationService.instance.openLocationSettings();
                             } else {
+                              await LocationProminentDisclosureDialog.show(context);
                               LocationService.instance.refreshLocationsAndEvaluate();
                             }
                           },

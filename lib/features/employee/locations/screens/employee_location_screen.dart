@@ -1,3 +1,4 @@
+import '../../../../widgets/dialogs/location_prominent_disclosure_dialog.dart';
 import 'dart:async';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
@@ -626,6 +627,13 @@ class _EmployeeLocationScreenState extends State<EmployeeLocationScreen> {
           ],
         ),
         actions: [
+          IconButton(
+            icon: const Icon(CupertinoIcons.info_circle_fill, color: Color(0xFF0EA5E9)),
+            tooltip: 'Location Disclosure & Consent',
+            onPressed: () {
+              LocationProminentDisclosureDialog.show(context);
+            },
+          ),
           IconButton(
             icon: _isLoadingGps || _isLoadingTrails
                 ? const SizedBox(
