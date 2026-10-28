@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
@@ -650,34 +649,32 @@ class _EmployeeLocationScreenState extends State<EmployeeLocationScreen> {
       body: Stack(
         children: [
           // ─── 1. INTERACTIVE GOOGLE MAP (Full Screen Base) ───────
-          kIsWeb
-              ? _buildWebLocationRadar(initialPos)
-              : GoogleMap(
-                  mapType: _currentMapType,
-                  initialCameraPosition: CameraPosition(
-                    target: initialPos,
-                    zoom: 16.5,
+          GoogleMap(
+            mapType: _currentMapType,
+            initialCameraPosition: CameraPosition(
+              target: initialPos,
+              zoom: 16.5,
+            ),
+            markers: _buildMarkers(),
+            polylines: _buildPolylines(),
+            myLocationEnabled: true,
+            myLocationButtonEnabled: false,
+            zoomControlsEnabled: false,
+            compassEnabled: true,
+            mapToolbarEnabled: false,
+            onMapCreated: (controller) {
+              _mapController = controller;
+              if (_currentPosition != null) {
+                controller.animateCamera(
+                  CameraUpdate.newLatLngZoom(
+                    LatLng(_currentPosition!.latitude,
+                        _currentPosition!.longitude),
+                    16.5,
                   ),
-                  markers: _buildMarkers(),
-                  polylines: _buildPolylines(),
-                  myLocationEnabled: true,
-                  myLocationButtonEnabled: false,
-                  zoomControlsEnabled: false,
-                  compassEnabled: true,
-                  mapToolbarEnabled: false,
-                  onMapCreated: (controller) {
-                    _mapController = controller;
-                    if (_currentPosition != null) {
-                      controller.animateCamera(
-                        CameraUpdate.newLatLngZoom(
-                          LatLng(_currentPosition!.latitude,
-                              _currentPosition!.longitude),
-                          16.5,
-                        ),
-                      );
-                    }
-                  },
-                ),
+                );
+              }
+            },
+          ),
 
           // ─── 2. FLOATING MAP CONTROL BUTTONS ────────────────────
           Positioned(
@@ -1076,146 +1073,6 @@ class _EmployeeLocationScreenState extends State<EmployeeLocationScreen> {
     } catch (_) {}
     return dateStr;
   }
-
-  Widget _buildWebLocationRadar(LatLng center) {
-    final lat = _currentPosition?.latitude ?? center.latitude;
-    final lng = _currentPosition?.longitude ?? center.longitude;
-    final isSatellite = _currentMapType == MapType.satellite;
-
-    return Container(
-      width: double.infinity,
-      height: double.infinity,
-      decoration: BoxDecoration(
-        color: isSatellite ? const Color(0xFF0F172A) : const Color(0xFFF1F5F9),
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: isSatellite
-              ? [const Color(0xFF0F172A), const Color(0xFF1E293B)]
-              : [const Color(0xFFE2E8F0), const Color(0xFFF8FAFC)],
-        ),
-      ),
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          Positioned.fill(
-            child: CustomPaint(
-              painter: _RadarGridPainter(isDark: isSatellite),
-            ),
-          ),
-          Container(
-            width: 280,
-            height: 280,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              border: Border.all(
-                color: const Color(0xFF0EA5E9).withValues(alpha: 0.25),
-                width: 1.5,
-              ),
-            ),
-          ),
-          Container(
-            width: 180,
-            height: 180,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              border: Border.all(
-                color: const Color(0xFF0EA5E9).withValues(alpha: 0.4),
-                width: 1.5,
-              ),
-            ),
-          ),
-          Container(
-            width: 80,
-            height: 80,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: const Color(0xFF0EA5E9).withValues(alpha: 0.15),
-            ),
-          ),
-          Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                decoration: BoxDecoration(
-                  color: isSatellite ? Colors.black87 : Colors.white,
-                  borderRadius: BorderRadius.circular(16),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.2),
-                      blurRadius: 8,
-                      offset: const Offset(0, 3),
-                    ),
-                  ],
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(CupertinoIcons.location_solid, size: 12, color: Color(0xFF0EA5E9)),
-                    const SizedBox(width: 4),
-                    Text(
-                      "Live GPS Position",
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                        color: isSatellite ? Colors.white : Colors.black87,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 6),
-              const Icon(
-                CupertinoIcons.location_fill,
-                size: 32,
-                color: Color(0xFF0EA5E9),
-              ),
-            ],
-          ),
-          Positioned(
-            top: 70,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-              decoration: BoxDecoration(
-                color: isSatellite ? const Color(0xFF1E293B).withValues(alpha: 0.9) : Colors.white.withValues(alpha: 0.95),
-                borderRadius: BorderRadius.circular(20),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.08),
-                    blurRadius: 10,
-                  ),
-                ],
-                border: Border.all(color: const Color(0xFF0EA5E9).withValues(alpha: 0.3)),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    width: 8,
-                    height: 8,
-                    decoration: const BoxDecoration(
-                      color: Color(0xFF22C55E),
-                      shape: BoxShape.circle,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    "Lat: ${lat.toStringAsFixed(5)}, Lng: ${lng.toStringAsFixed(5)}",
-                    style: TextStyle(
-                      fontSize: 11.5,
-                      fontWeight: FontWeight.w600,
-                      color: isSatellite ? Colors.white : const Color(0xFF0F172A),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
 }
 
 // ─── MAP FLOATING CONTROL BUTTON ──────────────────────────────────
@@ -1449,27 +1306,4 @@ class _TimelineClusterTile extends StatelessWidget {
       ),
     );
   }
-}
-
-class _RadarGridPainter extends CustomPainter {
-  final bool isDark;
-  _RadarGridPainter({required this.isDark});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = (isDark ? Colors.white : Colors.black).withValues(alpha: 0.05)
-      ..strokeWidth = 1.0;
-
-    const step = 40.0;
-    for (double x = 0; x < size.width; x += step) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
-    }
-    for (double y = 0; y < size.height; y += step) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _RadarGridPainter oldDelegate) => oldDelegate.isDark != isDark;
 }
