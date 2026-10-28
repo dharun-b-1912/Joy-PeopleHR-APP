@@ -9,6 +9,7 @@ import '../../../core/services/shift_tracking_service.dart';
 import '../../../core/theme/klarna_tokens.dart';
 import '../../../core/utils/secure_log.dart';
 import '../../../widgets/core/app_button.dart';
+import '../../../widgets/dialogs/location_prominent_disclosure_dialog.dart';
 
 /// PermissionGatekeeperScreen — Mandatory permission enrollment screen.
 ///
@@ -132,6 +133,18 @@ class _PermissionGatekeeperScreenState extends State<PermissionGatekeeperScreen>
       }
 
       if (permission == LocationPermission.denied) {
+        if (!mounted) return;
+        // Show Google Play compliant Prominent Disclosure Dialog before requesting system permission
+        final agreed = await LocationProminentDisclosureDialog.show(context);
+        if (!agreed) {
+          if (mounted) {
+            setState(() {
+              _errorMessage = 'Location consent is required for workplace attendance verification. Tap to review disclosure again.';
+              _isRequesting = false;
+            });
+          }
+          return;
+        }
         permission = await Geolocator.requestPermission();
       }
 
@@ -299,7 +312,7 @@ class _PermissionGatekeeperScreenState extends State<PermissionGatekeeperScreen>
                     iconColor: AppColors.primary,
                     iconBg: AppColors.skyBg,
                     title: "Location Access",
-                    subtitle: "Required for attendance clock-in/out and geofence verification",
+                    subtitle: "Collects location data to verify workplace geofence boundaries for clock-in/out and shift tracking, even when the app is closed or not in use",
                     isGranted: _isLocationGranted,
                     onTap: _isLocationGranted ? null : _requestLocationPermission,
                     isProcessing: _isRequesting,

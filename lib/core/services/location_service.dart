@@ -7,6 +7,8 @@ import '../../models/hrms_models.dart';
 import '../utils/secure_log.dart';
 import '../utils/validators.dart';
 import 'user_service.dart';
+import '../../widgets/dialogs/location_prominent_disclosure_dialog.dart';
+import 'push_notification_service.dart';
 
 /// Authoritative Attendance & GPS State Machine Enum
 enum AttendanceGpsState {
@@ -430,6 +432,18 @@ class LocationService extends ChangeNotifier {
       // 2. Check and request location permissions
       LocationPermission permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
+        final ctx = PushNotificationService.navigatorKey.currentContext;
+        if (ctx != null && ctx.mounted) {
+          final agreed = await LocationProminentDisclosureDialog.show(ctx);
+          if (!agreed) {
+            _transitionTo(UserLocationResult.error(
+              'Location consent declined. Required for workplace geofence attendance.',
+              state: AttendanceGpsState.permissionDenied,
+            ));
+            _isAcquiring = false;
+            return _currentResult;
+          }
+        }
         permission = await Geolocator.requestPermission();
         if (permission == LocationPermission.denied) {
           if (kIsWeb && kDebugMode) {
@@ -773,6 +787,11 @@ class LocationService extends ChangeNotifier {
       // 2. Check and request permission
       LocationPermission perm = await Geolocator.checkPermission();
       if (perm == LocationPermission.denied) {
+        final ctx = PushNotificationService.navigatorKey.currentContext;
+        if (ctx != null && ctx.mounted) {
+          final agreed = await LocationProminentDisclosureDialog.show(ctx);
+          if (!agreed) return false;
+        }
         perm = await Geolocator.requestPermission();
       }
 
