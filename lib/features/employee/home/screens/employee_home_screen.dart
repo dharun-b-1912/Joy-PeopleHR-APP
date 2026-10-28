@@ -1300,7 +1300,9 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
                                         );
                                       },
                                     ),
-                                  if (attendanceSession.status == AttendanceStatus.checkedOut)
+                                  if (isCheckedIn)
+                                     const SizedBox.shrink()
+                                   else if (attendanceSession.status == AttendanceStatus.checkedOut)
                                    Container(
                                      width: double.infinity,
                                      padding: const EdgeInsets.symmetric(vertical: 8),
