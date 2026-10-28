@@ -1281,14 +1281,18 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
                                                   children: [
                                                     const Icon(CupertinoIcons.location_fill, size: 12, color: Color(0xFF15803D)),
                                                     const SizedBox(width: 5),
-                                                    Text(
-                                                      isMoving
-                                                          ? "Shift GPS Moving • ${km}km"
-                                                          : "Shift GPS Active • ${km}km (Stationary)",
-                                                      style: const TextStyle(
-                                                        fontSize: 10.5,
-                                                        fontWeight: FontWeight.w700,
-                                                        color: Color(0xFF15803D),
+                                                    Flexible(
+                                                      child: Text(
+                                                        isMoving
+                                                            ? "Shift GPS • ${km}km"
+                                                            : "GPS Active • ${km}km",
+                                                        maxLines: 1,
+                                                        overflow: TextOverflow.ellipsis,
+                                                        style: const TextStyle(
+                                                          fontSize: 10.5,
+                                                          fontWeight: FontWeight.w700,
+                                                          color: Color(0xFF15803D),
+                                                        ),
                                                       ),
                                                     ),
                                                     const SizedBox(width: 4),
