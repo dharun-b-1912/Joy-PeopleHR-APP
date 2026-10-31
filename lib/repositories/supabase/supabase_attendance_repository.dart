@@ -145,13 +145,13 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
                   activeSessionDate = yesterdayDate;
                 }
               } else {
-                // Yesterday's session is checked out. Did checkout happen today (after midnight or before cutoff)?
+                // Yesterday's session is checked out. Did checkout happen today (after midnight and before cutoff)?
                 final outStr = yesterdayRow['last_check_out'].toString();
                 final outDt = AttendanceTimeService.parseServerTimestamp(outStr, referenceDate: yesterdayDate);
-                if (outDt != null) {
+                if (outDt != null && isYesterdayOvernight) {
                   final outDateStr = '${outDt.year}-${outDt.month.toString().padLeft(2, '0')}-${outDt.day.toString().padLeft(2, '0')}';
-                  // If checked out today (e.g. at 07:30 AM), and today has no new check-in, show this completed session!
-                  if (outDateStr == todayDate || nowTimeMinutes <= cutoffMinutes) {
+                  // Before cutoff (e.g. 12:00 PM), show the completed overnight shift. After cutoff, resets to today!
+                  if (outDateStr == todayDate && nowTimeMinutes <= cutoffMinutes) {
                     activeRow = yesterdayRow;
                     activeSessionDate = yesterdayDate;
                   }
