@@ -65,6 +65,7 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
               ? user.employeeUuid!
               : user.dataId);
       final todayDate = AttendanceTimeService.todayDateString();
+      final yesterdayDate = AttendanceTimeService.yesterdayDateString();
 
       final candidateEmpIds = <String>{
         targetId,
@@ -78,38 +79,116 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
       Map<String, dynamic> merged = {};
 
       if (candidateEmpIds.isNotEmpty) {
-        // 1. Query attendance_daily by authoritative attendance_date and employee UUID
+        String activeSessionDate = todayDate;
+        Map<String, dynamic>? activeRow;
+
+        // 1. Query attendance_daily for today and yesterday with joined shift config
         try {
           final dailyDataList = await withTimeout(
             _client
                 .from('attendance_daily')
-                .select()
+                .select('*, shifts:shift_id(id, code, name, start_time, end_time, is_overnight, attendance_date_cutoff)')
                 .inFilter('employee_id', candidateEmpIds)
-                .eq('attendance_date', todayDate)
-                .limit(1),
+                .inFilter('attendance_date', [todayDate, yesterdayDate])
+                .order('attendance_date', ascending: false),
           );
+
           if (dailyDataList.isNotEmpty) {
-            final row = Map<String, dynamic>.from(dailyDataList.first);
-            merged.addAll(row);
-            merged['date'] = row['attendance_date'] ?? todayDate;
-            merged['net_working_minutes'] = (row['total_work_minutes'] as num?)?.toInt() ?? (row['net_working_minutes'] as num?)?.toInt() ?? 0;
-            merged['location_name'] = row['check_in_location_name'] ?? row['location_name'];
-            merged['source'] = row['active_source'] ?? row['source'] ?? row['punch_source'];
-            merged['verification_type'] = row['verification_type'] ?? row['punch_method'] ?? row['verify_type'];
-            merged['device_id'] = row['device_id'] ?? row['device_serial'];
-            if (row['first_check_in'] != null && (row['last_check_out'] == null || row['last_check_out'].toString().isEmpty)) {
-              merged['is_currently_in'] = true;
+            Map<String, dynamic>? todayRow;
+            Map<String, dynamic>? yesterdayRow;
+
+            for (final item in dailyDataList) {
+              final r = Map<String, dynamic>.from(item);
+              final d = r['attendance_date']?.toString();
+              if (d == todayDate && todayRow == null) {
+                todayRow = r;
+              } else if (d == yesterdayDate && yesterdayRow == null) {
+                yesterdayRow = r;
+              }
+            }
+
+            final now = AttendanceTimeService.toOrganizationTime(DateTime.now().toUtc());
+            final nowTimeMinutes = now.hour * 60 + now.minute;
+
+            // Decision Logic for active session:
+            // Case 1: Today has a check-in -> Today's session is active!
+            if (todayRow != null && todayRow['first_check_in'] != null && todayRow['first_check_in'].toString().isNotEmpty) {
+              activeRow = todayRow;
+              activeSessionDate = todayDate;
+            }
+            // Case 2: Today has NO check-in, but Yesterday has check-in (Night Shift candidate)
+            else if (yesterdayRow != null && yesterdayRow['first_check_in'] != null && yesterdayRow['first_check_in'].toString().isNotEmpty) {
+              final isYesterdayOvernight = yesterdayRow['shifts']?['is_overnight'] == true ||
+                  (yesterdayRow['shifts']?['start_time'] != null &&
+                   yesterdayRow['shifts']?['end_time'] != null &&
+                   yesterdayRow['shifts']['end_time'].toString().compareTo(yesterdayRow['shifts']['start_time'].toString()) < 0);
+
+              // Parse shift cutoff time (default 12:00 PM / 720 mins)
+              int cutoffMinutes = 12 * 60; // 12:00 PM default
+              final cutoffStr = yesterdayRow['shifts']?['attendance_date_cutoff']?.toString();
+              if (cutoffStr != null && cutoffStr.isNotEmpty) {
+                final parts = cutoffStr.split(':');
+                if (parts.length >= 2) {
+                  final ch = int.tryParse(parts[0]) ?? 12;
+                  final cm = int.tryParse(parts[1]) ?? 0;
+                  cutoffMinutes = ch * 60 + cm;
+                }
+              }
+
+              final isUnclosed = yesterdayRow['last_check_out'] == null || yesterdayRow['last_check_out'].toString().isEmpty;
+
+              if (isUnclosed) {
+                // If yesterday's night shift has not checked out yet:
+                // If before cutoff -> CURRENTLY CHECKED IN to yesterday's night shift!
+                if (isYesterdayOvernight && nowTimeMinutes <= cutoffMinutes) {
+                  activeRow = yesterdayRow;
+                  activeSessionDate = yesterdayDate;
+                }
+              } else {
+                // Yesterday's session is checked out. Did checkout happen today (after midnight or before cutoff)?
+                final outStr = yesterdayRow['last_check_out'].toString();
+                final outDt = AttendanceTimeService.parseServerTimestamp(outStr, referenceDate: yesterdayDate);
+                if (outDt != null) {
+                  final outDateStr = '${outDt.year}-${outDt.month.toString().padLeft(2, '0')}-${outDt.day.toString().padLeft(2, '0')}';
+                  // If checked out today (e.g. at 07:30 AM), and today has no new check-in, show this completed session!
+                  if (outDateStr == todayDate || nowTimeMinutes <= cutoffMinutes) {
+                    activeRow = yesterdayRow;
+                    activeSessionDate = yesterdayDate;
+                  }
+                }
+              }
+            }
+
+            // Fallback to todayRow if activeRow is still null
+            activeRow ??= todayRow;
+
+            if (activeRow != null) {
+              merged.addAll(activeRow);
+              merged['date'] = activeRow['attendance_date'] ?? activeSessionDate;
+              merged['net_working_minutes'] = (activeRow['total_work_minutes'] as num?)?.toInt() ??
+                  (activeRow['net_working_minutes'] as num?)?.toInt() ?? 0;
+              merged['location_name'] = activeRow['check_in_location_name'] ?? activeRow['location_name'];
+              merged['source'] = activeRow['active_source'] ?? activeRow['source'] ?? activeRow['punch_source'];
+              merged['verification_type'] = activeRow['verification_type'] ?? activeRow['punch_method'] ?? activeRow['verify_type'];
+              merged['device_id'] = activeRow['device_id'] ?? activeRow['device_serial'];
+
+              final hasIn = activeRow['first_check_in'] != null && activeRow['first_check_in'].toString().isNotEmpty;
+              final hasOut = activeRow['last_check_out'] != null && activeRow['last_check_out'].toString().isNotEmpty;
+              if (hasIn && !hasOut) {
+                merged['is_currently_in'] = true;
+              } else if (hasIn && hasOut) {
+                merged['is_currently_in'] = false;
+              }
             }
           }
         } catch (e) {
           secureLog('[Attendance] attendance_daily query notice: $e');
         }
 
-        // 2. Query today's attendance_punches to ensure authoritative check-in/out timestamps and source
+        // 2. Query attendance_punches to ensure authoritative check-in/out timestamps and source
         try {
-          final businessDateParts = todayDate.split('-').map(int.parse).toList();
-          // Start of business day in IST (00:00:00 IST) converted to UTC (-5h30m)
-          final businessDayStartUtc = DateTime.utc(businessDateParts[0], businessDateParts[1], businessDateParts[2])
+          final queryParts = activeSessionDate.split('-').map(int.parse).toList();
+          final queryDayStartUtc = DateTime.utc(queryParts[0], queryParts[1], queryParts[2])
               .subtract(AttendanceTimeService.istOffset);
 
           final events = await withTimeout(
@@ -117,7 +196,7 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
                 .from('attendance_punches')
                 .select()
                 .inFilter('employee_id', candidateEmpIds)
-                .gte('punch_time', businessDayStartUtc.toIso8601String())
+                .gte('punch_time', queryDayStartUtc.toIso8601String())
                 .order('punch_time', ascending: true),
           );
 
@@ -152,7 +231,7 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
             merged['first_check_in'] = firstInTimestamp ?? merged['first_check_in'];
             merged['last_check_out'] = isCurrentlyIn ? null : (lastOutTimestamp ?? merged['last_check_out']);
             merged['is_currently_in'] = isCurrentlyIn || (merged['first_check_in'] != null && (merged['last_check_out'] == null || merged['last_check_out'].toString().isEmpty));
-            merged['date'] = todayDate;
+            merged['date'] = activeSessionDate;
             if (firstSource != null) merged['source'] = firstSource;
             if (firstVerifyType != null) merged['verification_type'] = firstVerifyType;
             if (firstDeviceId != null) merged['device_id'] = firstDeviceId;
@@ -245,6 +324,10 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
         secureLog('[ATTENDANCE][RPC] fn_record_attendance_punch success: $rpcRes');
 
         // Broadcast Realtime Outbox Event for cross-platform instant mesh update
+        final effectiveDate = (rpcRes is Map && rpcRes['attendance_date'] != null)
+            ? rpcRes['attendance_date'].toString()
+            : todayDate;
+
         await RealtimeOutboxService.insertEvent(
           entityType: 'ATTENDANCE_DAILY',
           eventType: 'attendance.updated',
@@ -257,7 +340,7 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
             'employee_name': user.name,
             'punch_type': type,
             'timestamp': nowIso,
-            'date': todayDate,
+            'date': effectiveDate,
             'source': 'MOBILE_GPS',
           },
         );
@@ -279,6 +362,35 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
     final isUnauthorizedCheckout = isCheckOut &&
         checkoutVerification != null &&
         checkoutVerification.status == CheckoutLocationStatus.unauthorized;
+
+    // Check open session for fallback: if checking out and today has no check-in, check yesterday
+    Map<String, dynamic>? existingDaily;
+    String fallbackSessionDate = todayDate;
+    try {
+      final dailyCheckList = await withTimeout(
+        _client
+            .from('attendance_daily')
+            .select()
+            .eq('employee_id', employeeUuid)
+            .inFilter('attendance_date', [todayDate, AttendanceTimeService.yesterdayDateString()])
+            .order('attendance_date', ascending: false),
+      );
+      if (dailyCheckList.isNotEmpty) {
+        if (isCheckOut) {
+          existingDaily = dailyCheckList.firstWhere(
+            (d) => d['first_check_in'] != null && (d['last_check_out'] == null || d['last_check_out'].toString().isEmpty),
+            orElse: () => dailyCheckList.first,
+          );
+        } else {
+          existingDaily = dailyCheckList.firstWhere(
+            (d) => d['attendance_date'] == todayDate,
+            orElse: () => dailyCheckList.first,
+          );
+        }
+        fallbackSessionDate = existingDaily['attendance_date']?.toString() ?? todayDate;
+      }
+    } catch (_) {}
+
     final payload = <String, dynamic>{
       'employee_id': employeeUuid,
       if (tenantId.isNotEmpty) 'organization_id': tenantId,
@@ -295,6 +407,7 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
         'unauthorized_checkout_reason': checkoutVerification!.reason
       else if (isUnauthorizedCheckout)
         'unauthorized_checkout_reason': 'Outside assigned location',
+      'attendance_date': fallbackSessionDate,
       'is_processed': true,
     };
 
@@ -309,15 +422,6 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
 
     // 3. Atomically update/upsert attendance_daily ledger
     try {
-      final existingDaily = await withTimeout(
-        _client
-            .from('attendance_daily')
-            .select()
-            .eq('employee_id', employeeUuid)
-            .eq('attendance_date', todayDate)
-            .maybeSingle(),
-      );
-
       final isCheckIn = type.toUpperCase().contains('IN') && !type.toUpperCase().contains('OUT');
       final firstIn = existingDaily?['first_check_in'] ?? nowIso;
       final lastOut = isCheckIn ? null : nowIso;
@@ -334,7 +438,7 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
       final dailyPayload = <String, dynamic>{
         if (tenantId.isNotEmpty) 'organization_id': tenantId,
         'employee_id': employeeUuid,
-        'attendance_date': todayDate,
+        'attendance_date': fallbackSessionDate,
         'status': 'PRESENT',
         'payable_status': 1.0,
         'first_check_in': firstIn,
@@ -416,7 +520,7 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
           final dailyRows = await withTimeout(
             _client
                 .from('attendance_daily')
-                .select()
+                .select('*, shifts:shift_id(id, code, name, start_time, end_time, is_overnight, attendance_date_cutoff)')
                 .inFilter('employee_id', candidateEmpIds)
                 .gte('attendance_date', '$y-${m.toString().padLeft(2, '0')}-01')
                 .lte('attendance_date', '$y-${m.toString().padLeft(2, '0')}-$totalDaysInMonth'),
@@ -593,6 +697,29 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
           }
         }
 
+        // Check if this row is an active overnight shift that started yesterday and is still running today before cutoff
+        bool isYesterdayActiveOvernight = false;
+        final yesterdayStr = AttendanceTimeService.yesterdayDateString();
+        if (dateStr == yesterdayStr && firstCheckIn != null && lastCheckOut == null) {
+          final shiftRaw = dailyRecord?['shifts'];
+          final shiftData = shiftRaw is Map<String, dynamic>
+              ? shiftRaw
+              : (shiftRaw is List && shiftRaw.isNotEmpty && shiftRaw.first is Map<String, dynamic>
+                  ? shiftRaw.first as Map<String, dynamic>
+                  : null);
+          final isOvernight = shiftData?['is_overnight'] == true;
+          final cutoffStr = (shiftData?['attendance_date_cutoff'] ?? '12:00:00').toString();
+          final cutoffParts = cutoffStr.split(':');
+          final cutoffH = int.tryParse(cutoffParts[0]) ?? 12;
+          final cutoffM = cutoffParts.length > 1 ? (int.tryParse(cutoffParts[1]) ?? 0) : 0;
+          final nowLocal = AttendanceTimeService.nowLocal();
+          final currentMinutes = nowLocal.hour * 60 + nowLocal.minute;
+          final cutoffMinutes = cutoffH * 60 + cutoffM;
+          if (isOvernight && currentMinutes < cutoffMinutes) {
+            isYesterdayActiveOvernight = true;
+          }
+        }
+
         if (firstCheckIn != null && lastCheckOut != null && netMinutes == 0) {
           final dtIn = DateTime.tryParse(firstCheckIn);
           final dtOut = DateTime.tryParse(lastCheckOut);
@@ -600,7 +727,7 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
             netMinutes = dtOut.difference(dtIn).inMinutes;
             if (netMinutes < 0) netMinutes = 0;
           }
-        } else if (isToday && firstCheckIn != null && lastCheckOut == null && netMinutes == 0) {
+        } else if ((isToday || isYesterdayActiveOvernight) && firstCheckIn != null && lastCheckOut == null && netMinutes == 0) {
           final dtIn = DateTime.tryParse(firstCheckIn);
           if (dtIn != null) {
             netMinutes = DateTime.now().toUtc().difference(dtIn.toUtc()).inMinutes;
@@ -624,8 +751,8 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
             } else {
               status = DayAttendanceStatus.notPayable;
             }
-          } else if (isToday) {
-            // Active shift in progress today => Present (matches Web App)
+          } else if (isToday || isYesterdayActiveOvernight) {
+            // Active shift in progress today or yesterday's overnight shift before cutoff => Present (Active)
             status = DayAttendanceStatus.present;
           } else {
             // Past day checked in, but NO checkout punch => Not Payable (Missing Checkout)
@@ -641,13 +768,15 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
           status = DayAttendanceStatus.none; // Today or future unpunched
         }
 
+        final bool isSessionActiveNow = (isToday || isYesterdayActiveOvernight) && lastCheckOut == null;
+
         fullMonthList.add(TimesheetEntryModel(
           id: dailyRecord?['id']?.toString() ?? regRecord?['id']?.toString() ?? 'ts-$y-$m-$day',
           date: date,
           clockInTime: firstCheckIn != null ? AttendanceTimeService.formatAttendanceTime(firstCheckIn) : null,
           clockOutTime: lastCheckOut != null ? AttendanceTimeService.formatAttendanceTime(lastCheckOut) : null,
           totalHours: netMinutes > 0 && (status == DayAttendanceStatus.present || status == DayAttendanceStatus.halfDay)
-              ? (isToday && lastCheckOut == null ? '${_formatDuration(netMinutes)} (Active)' : _formatDuration(netMinutes))
+              ? (isSessionActiveNow ? '${_formatDuration(netMinutes)} (Active)' : _formatDuration(netMinutes))
               : (status == DayAttendanceStatus.notPayable
                   ? (isToday ? 'Shift Active' : 'Missed Out')
                   : (status == DayAttendanceStatus.weekOff

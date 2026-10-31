@@ -36,6 +36,9 @@ class AttendanceTimeService {
     );
   }
 
+  /// Returns current DateTime in organization timezone
+  static DateTime nowLocal([String? timezone]) => toOrganizationTime(DateTime.now().toUtc(), timezone);
+
   /// Parses a raw backend timestamptz string or ISO timestamp into an organization local [DateTime].
   ///
   /// Supports:
@@ -98,6 +101,13 @@ class AttendanceTimeService {
 
   /// Authoritative today date string ('YYYY-MM-DD')
   static String todayDateString([String? timezone]) => getBusinessDate(null, timezone);
+
+  /// Authoritative yesterday date string ('YYYY-MM-DD') in organization timezone
+  static String yesterdayDateString([String? timezone]) {
+    final nowLocal = toOrganizationTime(DateTime.now().toUtc(), timezone);
+    final yesterdayLocal = nowLocal.subtract(const Duration(days: 1));
+    return '${yesterdayLocal.year}-${yesterdayLocal.month.toString().padLeft(2, '0')}-${yesterdayLocal.day.toString().padLeft(2, '0')}';
+  }
 
   /// Formats any backend timestamp or time string into a clean display time (e.g. "03:12:41 PM" or "03:12 PM").
   static String formatAttendanceTime(

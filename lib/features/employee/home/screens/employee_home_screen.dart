@@ -51,10 +51,15 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
 
   String _getEffectiveShiftStart(UserModel user) {
     final now = DateTime.now();
+    final session = AttendanceService.instance.session;
+    final checkDate = (session.isCheckedIn && session.checkInTime != null)
+        ? session.checkInTime!
+        : now;
+
     final rosters = MoreModulesController.instance.rosters;
     if (rosters.isNotEmpty) {
       for (final r in rosters) {
-        if (r.date.year == now.year && r.date.month == now.month && r.date.day == now.day) {
+        if (r.date.year == checkDate.year && r.date.month == checkDate.month && r.date.day == checkDate.day) {
           if (!r.isOffDay && r.startTime.trim().isNotEmpty && r.startTime != 'Week Off' && r.startTime != '—') {
             final formatted = ShiftDurationCalculator.instance.formatTimeAMPM(r.startTime, fallback: '');
             if (formatted.isNotEmpty) return formatted;
@@ -71,10 +76,15 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
 
   String _getEffectiveShiftEnd(UserModel user) {
     final now = DateTime.now();
+    final session = AttendanceService.instance.session;
+    final checkDate = (session.isCheckedIn && session.checkInTime != null)
+        ? session.checkInTime!
+        : now;
+
     final rosters = MoreModulesController.instance.rosters;
     if (rosters.isNotEmpty) {
       for (final r in rosters) {
-        if (r.date.year == now.year && r.date.month == now.month && r.date.day == now.day) {
+        if (r.date.year == checkDate.year && r.date.month == checkDate.month && r.date.day == checkDate.day) {
           if (!r.isOffDay && r.endTime.trim().isNotEmpty && r.endTime != 'Week Off' && r.endTime != '—') {
             final formatted = ShiftDurationCalculator.instance.formatTimeAMPM(r.endTime, fallback: '');
             if (formatted.isNotEmpty) return formatted;
