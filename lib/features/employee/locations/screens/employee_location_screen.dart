@@ -1,4 +1,3 @@
-import '../../../../widgets/dialogs/location_prominent_disclosure_dialog.dart';
 import 'dart:async';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
@@ -6,6 +5,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:battery_plus/battery_plus.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:http/http.dart' as http;
 import '../../../../core/services/shift_tracking_service.dart';
 import '../../../../core/services/user_service.dart';
 import '../../../../core/services/google_geocoding_service.dart';
@@ -93,6 +93,7 @@ class _EmployeeLocationScreenState extends State<EmployeeLocationScreen> {
   late String _selectedDate;
   List<Map<String, dynamic>> _rawTrails = [];
   List<TimelineCluster> _clusters = [];
+  BitmapDescriptor? _customProfileMarker;
 
   // Default coordinate: Tiruppur / Coimbatore office hub
   static const LatLng _fallbackCenter = LatLng(11.0844, 77.1263);
@@ -106,6 +107,22 @@ class _EmployeeLocationScreenState extends State<EmployeeLocationScreen> {
 
     _loadCurrentLocationAndBattery();
     _loadHistoricalTrails(_selectedDate);
+    _loadProfileMarker();
+  }
+
+  Future<void> _loadProfileMarker() async {
+    try {
+      final user = UserService.instance.currentUser;
+      final photoUrl = user.profileImage;
+      if (photoUrl == null || photoUrl.trim().isEmpty) return;
+      final res = await http.get(Uri.parse(photoUrl)).timeout(const Duration(seconds: 4));
+      if (res.statusCode == 200 && mounted) {
+        final descriptor = BitmapDescriptor.bytes(res.bodyBytes, width: 44, height: 44);
+        setState(() {
+          _customProfileMarker = descriptor;
+        });
+      }
+    } catch (_) {}
   }
 
   @override
@@ -501,9 +518,10 @@ class _EmployeeLocationScreenState extends State<EmployeeLocationScreen> {
         Marker(
           markerId: const MarkerId('current_live_gps'),
           position: pos,
-          icon: BitmapDescriptor.defaultMarkerWithHue(
-            BitmapDescriptor.hueCyan,
-          ),
+          icon: _customProfileMarker ??
+              BitmapDescriptor.defaultMarkerWithHue(
+                BitmapDescriptor.hueCyan,
+              ),
           infoWindow: InfoWindow(
             title: '${user.name.isNotEmpty ? user.name : "My Location"} (Live)',
             snippet:
@@ -627,13 +645,6 @@ class _EmployeeLocationScreenState extends State<EmployeeLocationScreen> {
           ],
         ),
         actions: [
-          IconButton(
-            icon: const Icon(CupertinoIcons.info_circle_fill, color: Color(0xFF0EA5E9)),
-            tooltip: 'Location Disclosure & Consent',
-            onPressed: () {
-              LocationProminentDisclosureDialog.show(context);
-            },
-          ),
           IconButton(
             icon: _isLoadingGps || _isLoadingTrails
                 ? const SizedBox(
@@ -777,15 +788,55 @@ class _EmployeeLocationScreenState extends State<EmployeeLocationScreen> {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  ClipOval(
+                    child: (user.profileImage != null && user.profileImage!.trim().isNotEmpty)
+                        ? Image.network(
+                            user.profileImage!,
+                            width: 20,
+                            height: 20,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) => Container(
+                              width: 20,
+                              height: 20,
+                              color: const Color(0xFF10B981),
+                              child: Center(
+                                child: Text(
+                                  user.name.isNotEmpty ? user.name[0].toUpperCase() : 'U',
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 9,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          )
+                        : Container(
+                            width: 20,
+                            height: 20,
+                            color: const Color(0xFF10B981),
+                            child: Center(
+                              child: Text(
+                                user.name.isNotEmpty ? user.name[0].toUpperCase() : 'U',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 9,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ),
+                  ),
+                  const SizedBox(width: 8),
                   Container(
-                    width: 8,
-                    height: 8,
+                    width: 7,
+                    height: 7,
                     decoration: const BoxDecoration(
                       color: Color(0xFF10B981),
                       shape: BoxShape.circle,
                     ),
                   ),
-                  const SizedBox(width: 8),
+                  const SizedBox(width: 6),
                   Text(
                     _currentPosition != null && _currentPosition!.speed > 0.8
                         ? 'Moving • ${(_currentPosition!.speed * 3.6).toStringAsFixed(0)} km/h'
@@ -827,7 +878,7 @@ class _EmployeeLocationScreenState extends State<EmployeeLocationScreen> {
           // ─── 4. DRAGGABLE BOTTOM SHEET TIMELINE (Google / Uber) ──
           DraggableScrollableSheet(
             initialChildSize: 0.38,
-            minChildSize: 0.16,
+            minChildSize: 0.24,
             maxChildSize: 0.88,
             builder: (context, scrollController) {
               return Container(

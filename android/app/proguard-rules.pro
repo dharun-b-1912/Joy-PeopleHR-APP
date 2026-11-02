@@ -21,6 +21,12 @@
 -keep class * implements io.flutter.embedding.engine.plugins.FlutterPlugin { *; }
 -keep class * implements io.flutter.plugin.common.MethodChannel$MethodCallHandler { *; }
 
+# ─── SharedPreferences Plugin (Fix NoSuchMethodError under R8) ───
+-keep class io.flutter.plugins.sharedpreferences.** { *; }
+-keepclassmembers class io.flutter.plugins.sharedpreferences.** { *; }
+-keepclassmembernames class io.flutter.plugins.sharedpreferences.** { *; }
+-dontwarn io.flutter.plugins.sharedpreferences.**
+
 # ─── Firebase & Google Play Services ────────────────────────────
 -keep class com.google.firebase.** { *; }
 -keep class com.google.android.gms.** { *; }

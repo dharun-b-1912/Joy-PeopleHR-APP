@@ -60,38 +60,52 @@ class ShiftTrackingService extends ChangeNotifier {
   DateTime? _telemetryTokenExpiresAt;
 
   Future<String?> _getTelemetryAccessToken() async {
+    // 1. Authoritative: Use current authenticated employee's active session token
+    if (SupabaseConfig.isConfigured) {
+      try {
+        final auth = Supabase.instance.client.auth;
+        var session = auth.currentSession;
+
+        // If session is null, attempt recovery from persisted local storage
+        if (session == null) {
+          try {
+            final prefs = await SharedPreferences.getInstance();
+            final tokenKey = "sb-${Uri.parse(SupabaseConfig.url).host.split(".").first}-auth-token";
+            final rawToken = prefs.getString(tokenKey);
+            if (rawToken != null && rawToken.trim().isNotEmpty) {
+              final recoveredRes = await auth.recoverSession(rawToken);
+              session = recoveredRes.session;
+            }
+          } catch (recoverErr) {
+            secureLog('[ShiftTracking] Session recovery attempt notice: $recoverErr');
+          }
+        }
+
+        // If session is expired, refresh it proactively
+        if (session != null && session.isExpired) {
+          try {
+            final refreshed = await auth.refreshSession();
+            session = refreshed.session ?? auth.currentSession;
+          } catch (refreshErr) {
+            secureLog('[ShiftTracking] Session refresh attempt notice: $refreshErr');
+          }
+        }
+
+        final sessionToken = session?.accessToken;
+        if (sessionToken != null && sessionToken.isNotEmpty) {
+          return sessionToken;
+        }
+      } catch (e) {
+        secureLog('[ShiftTracking] Auth token read error: $e');
+      }
+    }
+
     if (_telemetryAccessToken != null &&
         _telemetryTokenExpiresAt != null &&
         DateTime.now().isBefore(_telemetryTokenExpiresAt!)) {
       return _telemetryAccessToken;
     }
 
-    try {
-      final url = '${SupabaseConfig.url}/auth/v1/token?grant_type=password';
-      final response = await http.post(
-        Uri.parse(url),
-        headers: {
-          'apikey': SupabaseConfig.anonKey,
-          'Content-Type': 'application/json',
-        },
-        body: jsonEncode({
-          'email': 'marimuthu@joycorporatesolutions.com',
-          'password': 'joypeoplehr',
-        }),
-      );
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        _telemetryAccessToken = data['access_token'] as String?;
-        final expiresIn = data['expires_in'] as int? ?? 3600;
-        _telemetryTokenExpiresAt = DateTime.now().add(Duration(seconds: expiresIn - 60));
-        return _telemetryAccessToken;
-      } else {
-        secureLog('[ShiftTracking] Telemetry auth failed: ${response.statusCode} ${response.body}');
-      }
-    } catch (e) {
-      secureLog('[ShiftTracking] Telemetry auth exception: $e');
-    }
     return null;
   }
 
@@ -251,8 +265,19 @@ class ShiftTrackingService extends ChangeNotifier {
   }
 
   void _handleAttendanceStateChange() {
-    final isCheckedIn = AttendanceService.instance.session.isCheckedIn;
+    final session = AttendanceService.instance.session;
+    final isCheckedIn = session.isCheckedIn;
+    final isCheckedOut = session.isCheckedOut;
+    final isOnLeave = session.isOnLeave;
     final isLoggedIn = UserService.instance.isLoggedIn;
+
+    // Strict privacy rule: If employee is on approved leave today OR has clocked out, never track GPS!
+    if (isOnLeave || isCheckedOut) {
+      if (_isTracking) {
+        stopShiftTracking();
+      }
+      return;
+    }
 
     if (isLoggedIn) {
       final isShiftActive = isCurrentlyWithinShiftWindow();
@@ -282,12 +307,17 @@ class ShiftTrackingService extends ChangeNotifier {
 
   /// Immediately transmits current device GPS to Supabase fleet radar with high-accuracy satellite fix
   Future<bool> syncCurrentDeviceLocation({String status = 'on_duty'}) async {
+    final session = AttendanceService.instance.session;
+    if (session.isOnLeave || session.isCheckedOut) {
+      return false;
+    }
+
     final user = UserService.instance.currentUser;
     if (user.dataId.isEmpty && user.employeeId.isEmpty) return false;
 
     final permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied ||
-        permission == LocationPermission.deniedForever) {
+    if (permission != LocationPermission.always &&
+        permission != LocationPermission.whileInUse) {
       return false;
     }
 
@@ -429,8 +459,8 @@ class ShiftTrackingService extends ChangeNotifier {
 
     // Check location permission
     final permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied ||
-        permission == LocationPermission.deniedForever) {
+    if (permission != LocationPermission.always &&
+        permission != LocationPermission.whileInUse) {
       secureLog('[ShiftTracking] Location permission not granted. Skipping track.');
       return;
     }
@@ -524,6 +554,40 @@ class ShiftTrackingService extends ChangeNotifier {
 
     if (orgId.isEmpty || empId.isEmpty) return;
 
+    // Strict demo account rule: Never broadcast telemetry for demo or ghost accounts
+    final email = (user.officeEmail ?? user.personalEmail).toLowerCase().trim();
+    final isDemoOrTest = user.employeeId == 'JCS-099' ||
+        email.contains('demo') ||
+        email.contains('joypeoplehr.com') ||
+        user.name.toUpperCase().contains('ARJUN KUMAR') ||
+        user.name.toUpperCase().contains('DEMO');
+    if (isDemoOrTest) {
+      secureLog('[ShiftTracking] Telemetry broadcast suppressed for demo account: ${user.employeeId}');
+      if (_isTracking) stopShiftTracking();
+      return;
+    }
+
+    // Strict privacy rule: If user is checked out or on leave, reject tracking!
+    final session = AttendanceService.instance.session;
+    if (session.isOnLeave || session.isCheckedOut) {
+      if (_isTracking) stopShiftTracking();
+      return;
+    }
+
+    // Strict security rule: Filter out mocked/spoofed locations
+    if (currentPos.isMocked) {
+      secureLog('[ShiftTracking] Rejected spoofed/mocked GPS fix');
+      return;
+    }
+
+    // Filter out Android Studio Emulator default location (Googleplex, Mountain View CA: ~37.42, -122.08)
+    final bool isGooglePlexEmulator = (currentPos.latitude >= 37.41 && currentPos.latitude <= 37.43) &&
+        (currentPos.longitude >= -122.09 && currentPos.longitude <= -122.07);
+    if (isGooglePlexEmulator) {
+      secureLog('[ShiftTracking] Rejected default Android emulator Googleplex location');
+      return;
+    }
+
     // Debounce rapid duplicate pings within 3 seconds
     if (_lastPingTime != null &&
         DateTime.now().difference(_lastPingTime!).inSeconds < 3 &&
@@ -570,13 +634,23 @@ class ShiftTrackingService extends ChangeNotifier {
 
     final bool isMoving = hasBrokenAnchor || (isMovingBySpeed && displacement >= minDisplacementMeters);
 
+    final isCheckedIn = AttendanceService.instance.session.isCheckedIn;
+    final isShiftActive = isCurrentlyWithinShiftWindow();
+
     if (!isMoving) {
       // User is stationary! Suppress micro-drift jitter.
       displacement = 0.0;
 
-      // If user relocated to a new stationary desk/place while app was closed or idle,
-      // adopt the new position as anchor without accumulating fake walking distance.
-      if (distanceFromAnchor > 45.0 && isAccurateFix) {
+      // If user relocated to a new stationary desk/place while app was closed or idle:
+      // (a) If minor drift (< 200m), quietly adopt new anchor without adding fake walking distance.
+      // (b) If genuine geographic transit (>= 200m) occurred while app was backgrounded/restarted during active shift,
+      //     preserve the real travel displacement!
+      if (distanceFromAnchor >= 200.0 && isAccurateFix && (isCheckedIn || isShiftActive)) {
+        _cumulativeDistanceMeters += distanceFromAnchor;
+        _stationaryAnchor = currentPos;
+        _persistCumulativeDistance();
+        secureLog('[ShiftTracking] Captured transit relocation across app restart: +${(distanceFromAnchor / 1000).toStringAsFixed(2)}km');
+      } else if (distanceFromAnchor > 45.0 && isAccurateFix) {
         _stationaryAnchor = currentPos;
       }
     } else {
@@ -591,9 +665,6 @@ class ShiftTrackingService extends ChangeNotifier {
     _lastRecordedPosition = currentPos;
     _lastPingTime = DateTime.now();
     notifyListeners();
-
-    final isCheckedIn = AttendanceService.instance.session.isCheckedIn;
-    final isShiftActive = isCurrentlyWithinShiftWindow();
 
     final status = forcedStatus ??
         (isMoving

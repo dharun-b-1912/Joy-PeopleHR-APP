@@ -54,11 +54,11 @@ class DefaultFirebaseOptions {
   );
 
   static const FirebaseOptions android = FirebaseOptions(
-    apiKey: 'AIzaSyAKm_nTP7WdJdinY7ol1PtnCXXFxS-rYeU',
-    appId: '1:683368772742:android:73cf4484df3f2b06898d07',
-    messagingSenderId: '683368772742',
-    projectId: 'joy-peoplehr-mobile-app',
-    storageBucket: 'joy-peoplehr-mobile-app.firebasestorage.app',
+    apiKey: 'AIzaSyDN2BABaziPCycKIwfBUd_FkcY2xjc2lRE',
+    appId: '1:1047166003228:android:d0596687b790996338d7d9',
+    messagingSenderId: '1047166003228',
+    projectId: 'joy-peoplehr',
+    storageBucket: 'joy-peoplehr.firebasestorage.app',
   );
   static const FirebaseOptions windows = FirebaseOptions(
     apiKey: 'AIzaSyDN2BABaziPCycKIwfBUd_FkcY2xjc2lRE',

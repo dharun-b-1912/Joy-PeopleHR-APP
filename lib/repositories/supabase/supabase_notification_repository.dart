@@ -164,8 +164,51 @@ class SupabaseNotificationRepository implements INotificationRepository {
       // 24-Hour Strict Time Window Cutoff
       final cutoff24h = DateTime.now().subtract(const Duration(hours: 24));
 
-      // 1. Attendance punches are strictly excluded from activities to ensure privacy.
+      // 1. Employee's Own Check-in / Check-out punches (table: attendance_punches)
+      try {
+        if (targetUuid != null) {
+          final punches = await withTimeout(
+            _client
+                .from('attendance_punches')
+                .select('*')
+                .eq('employee_id', targetUuid)
+                .order('punch_time', ascending: false)
+                .limit(5),
+          );
+          for (final p in punches) {
+            final tsStr = p['punch_time']?.toString() ?? p['created_at']?.toString() ?? '';
+            final ts = DateTime.tryParse(tsStr)?.toLocal() ?? DateTime.now();
+            if (ts.isBefore(cutoff24h)) continue;
 
+            final type = (p['punch_type'] ?? '').toString().toUpperCase();
+            final isCheckIn = type.contains('IN') && !type.contains('OUT');
+            final title = isCheckIn ? 'Check-In Recorded' : 'Check-Out Recorded';
+            final source = p['punch_source'] ?? p['source'] ?? 'Mobile';
+            final subtitle = isCheckIn
+                ? 'Check-in verified via $source'
+                : 'Check-out recorded via $source';
+
+            aggregated.add(
+              _ActivitySortItem(
+                ActivityItemModel(
+                  id: p['id']?.toString() ?? 'punch-$tsStr',
+                  title: title,
+                  subtitle: subtitle,
+                  timeAgo: _relativeTime(ts),
+                  icon: isCheckIn ? CupertinoIcons.check_mark_circled_solid : CupertinoIcons.arrow_right_circle_fill,
+                  iconBg: isCheckIn ? KlarnaWorkForceTokens.iconBgMint : KlarnaWorkForceTokens.iconBgRose,
+                  iconFg: isCheckIn ? KlarnaWorkForceTokens.iconFgMint : KlarnaWorkForceTokens.iconFgRose,
+                  entityType: 'ATTENDANCE',
+                  entityId: p['id']?.toString(),
+                ),
+                ts,
+              ),
+            );
+          }
+        }
+      } catch (e) {
+        secureLog('[RecentActivities] attendance_punches query notice: $e');
+      }
 
       // 2. Live Announcements & Broadcasts (table: notification_events)
       // STRICT FILTER: Only broadcast company announcements where recipient_user_id IS NULL.

@@ -24,12 +24,14 @@ class LoginScreen extends StatefulWidget {
 
 class _LoginScreenState extends State<LoginScreen> {
   late final AuthController _authController;
-  final _emailController = TextEditingController(text: 'demo.employee@joypeoplehr.com');
-  final _passwordController = TextEditingController(text: 'joypeoplehr');
+  final _emailController = TextEditingController();
+  final _passwordController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
+    _emailController.clear();
+    _passwordController.clear();
     _authController = widget.controller ?? AuthController();
     _authController.addListener(_onControllerChanged);
   }

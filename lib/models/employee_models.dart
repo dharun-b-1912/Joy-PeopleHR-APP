@@ -533,7 +533,7 @@ class PayslipModel {
     this.deductionsComponents = const [],
   });
 
-  /// Guaranteed employee-facing code (e.g. "JCS-017").
+  /// Guaranteed employee-facing code (e.g. "EMP-001").
   /// Never displays database UUID.
   String get displayEmployeeId {
     final code = employeeCode.trim().isNotEmpty ? employeeCode.trim() : employeeId.trim();

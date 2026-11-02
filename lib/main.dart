@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart' show kIsWeb, kDebugMode, PlatformDispatcher;
 import 'package:flutter/material.dart';
@@ -22,6 +23,7 @@ import 'package:workforce_os/features/employee/lms/screens/employee_lms_catalog_
 import 'package:workforce_os/repositories/supabase/supabase_auth_repository.dart';
 import 'package:workforce_os/widgets/floating_bottom_nav.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'firebase_options.dart';
 import 'package:workforce_os/core/services/push_notification_service.dart';
 import 'package:workforce_os/core/services/app_version_service.dart';
@@ -86,6 +88,10 @@ void main() async {
     logError('SUPABASE', e, st, 'Supabase.initialize failed');
   }
 
+  // Authoritative session integrity check on boot:
+  // Purges any unauthorized ghost Dharun sessions before cached profiles can preload into memory
+  await _sanitizeGhostSessionsBeforeBoot();
+
   // Preload cached user session from disk before mounting UI
   final preloadedUser = await UserService.instance.loadCachedUser();
   if (preloadedUser != null) {
@@ -99,6 +105,72 @@ void main() async {
 
   logProcess('BOOT', 'Launching JoyPeopleHRApp root widget');
   runApp(const JoyPeopleHRApp());
+}
+
+Future<void> _sanitizeGhostSessionsBeforeBoot() async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final rawJson = prefs.getString('sp_cached_user_model_v1');
+    if (rawJson == null || rawJson.trim().isEmpty) return;
+
+    final map = jsonDecode(rawJson) as Map<String, dynamic>;
+    final name = (map['name'] ?? '').toString().trim().toUpperCase();
+    final empId = (map['employeeId'] ?? map['employee_id'] ?? '').toString().trim().toUpperCase();
+    final email = (map['officeEmail'] ?? map['personalEmail'] ?? '').toString().trim().toLowerCase();
+
+    var currentSession = Supabase.instance.client.auth.currentSession;
+    if (currentSession == null) {
+      final tokenKey = "sb-${Uri.parse(SupabaseConfig.url).host.split(".").first}-auth-token";
+      final rawToken = prefs.getString(tokenKey) ?? prefs.getString("flutter.$tokenKey");
+      if (rawToken != null && rawToken.trim().isNotEmpty) {
+        try {
+          final res = await Supabase.instance.client.auth.recoverSession(rawToken);
+          currentSession = res.session;
+        } catch (_) {}
+      }
+    }
+
+    final sessionEmail = currentSession?.user.email?.toLowerCase().trim();
+
+    final isDemoCache = empId == 'JCS-099' ||
+        email.contains('demo') ||
+        email.contains('joypeoplehr.com') ||
+        name.contains('DEMO') ||
+        name.contains('ARJUN KUMAR');
+
+    if (isDemoCache) {
+      // Production Safety: Allow legitimate Google Play Reviewer session, purge unauthorized ghost sessions
+      final isLegitimateDemoSession = sessionEmail == 'demo.employee@joypeoplehr.com';
+      if (!isLegitimateDemoSession) {
+        secureLog('[BOOT-SECURITY] Authoritatively purging unauthorized demo ghost session from device disk');
+        await UserService.instance.clearUser();
+        try {
+          await Supabase.instance.client.auth.signOut();
+        } catch (_) {}
+        return;
+      }
+    }
+
+    final isDharunCache = empId == 'JCS-017' ||
+        email.contains('dharun') ||
+        name == 'DHARUN' ||
+        name == 'DHARUN B';
+
+    if (isDharunCache) {
+      final isLegitimateDharun = sessionEmail == 'dharun@joyglobalcorp.com' ||
+          sessionEmail == 'bdharun1912@gmail.com';
+
+      if (!isLegitimateDharun) {
+        secureLog('[BOOT-SECURITY] Authoritatively purging unauthorized Dharun ghost session from device disk');
+        await UserService.instance.clearUser();
+        try {
+          await Supabase.instance.client.auth.signOut();
+        } catch (_) {}
+      }
+    }
+  } catch (e) {
+    secureLog('[BOOT-SECURITY] Sanitization notice: $e');
+  }
 }
 
 Future<void> _initializePlatformServices() async {
@@ -228,6 +300,7 @@ class _AuthGatekeeperState extends State<AuthGatekeeper> {
   late bool _isAuthenticated;
   bool _permissionsGranted = false;
   bool _isCheckingSessionRunning = false;
+  bool _pendingSessionCheck = false;
   StreamSubscription<AuthState>? _authSubscription;
 
   @override
@@ -236,6 +309,7 @@ class _AuthGatekeeperState extends State<AuthGatekeeper> {
     // Fast path: if user was preloaded from disk in main(), start immediately authenticated
     final isAlreadyLogged = UserService.instance.isLoggedIn && UserService.instance.currentUser.name != 'Guest';
     _isAuthenticated = isAlreadyLogged;
+    _permissionsGranted = isAlreadyLogged;
     _isCheckingSession = !isAlreadyLogged;
 
     UserService.instance.addListener(_onUserChanged);
@@ -261,8 +335,12 @@ class _AuthGatekeeperState extends State<AuthGatekeeper> {
         if (event == AuthChangeEvent.signedIn ||
             event == AuthChangeEvent.tokenRefreshed ||
             event == AuthChangeEvent.initialSession) {
-          if (!_isAuthenticated && data.session != null) {
-            _checkSession();
+          if (data.session != null) {
+            if (_isCheckingSessionRunning) {
+              _pendingSessionCheck = true;
+            } else {
+              _checkSession();
+            }
           }
         } else if (event == AuthChangeEvent.signedOut) {
           // Never clear local persistent session on involuntary signedOut events!
@@ -291,36 +369,113 @@ class _AuthGatekeeperState extends State<AuthGatekeeper> {
         _isAuthenticated = isLogged;
         if (isLogged) {
           _isCheckingSession = false;
+          _permissionsGranted = true;
         }
       });
     }
   }
 
   Future<void> _checkSession() async {
-    if (_isCheckingSessionRunning) return;
+    if (_isCheckingSessionRunning) {
+      _pendingSessionCheck = true;
+      return;
+    }
     _isCheckingSessionRunning = true;
 
     try {
       logProcess('AUTH', 'Checking existing session & device cache...');
       bool hasPermissions = kIsWeb;
 
-      // 1. Load locally cached user model immediately (0ms latency, works offline)
+      // 0. Security Guard: Purge any unauthorized ghost sessions (e.g. stale Dharun test cache)
+      // If an employee device has Dharun cached but NO active Supabase Auth session matching Dharun's email,
+      // purge the cached profile from disk immediately so the employee is directed to the clean login screen.
+      try {
+        final cachedUser = await UserService.instance.loadCachedUser();
+        if (cachedUser != null) {
+          var currentSession = Supabase.instance.client.auth.currentSession;
+          if (currentSession == null) {
+            try {
+              final prefs = await SharedPreferences.getInstance();
+              final tokenKey = "sb-${Uri.parse(SupabaseConfig.url).host.split(".").first}-auth-token";
+              final rawToken = prefs.getString(tokenKey) ?? prefs.getString("flutter.$tokenKey");
+              if (rawToken != null && rawToken.trim().isNotEmpty) {
+                final recovered = await Supabase.instance.client.auth.recoverSession(rawToken);
+                currentSession = recovered.session;
+              }
+            } catch (_) {}
+          }
+
+          final sessionEmail = currentSession?.user.email?.toLowerCase().trim();
+
+          final isDemoUser = cachedUser.employeeId == 'JCS-099' ||
+              (cachedUser.officeEmail?.toLowerCase().contains('demo') ?? false) ||
+              (cachedUser.officeEmail?.toLowerCase().contains('joypeoplehr.com') ?? false) ||
+              cachedUser.name.trim().toUpperCase().contains('ARJUN KUMAR') ||
+              cachedUser.name.trim().toUpperCase().contains('DEMO');
+
+          if (isDemoUser) {
+            final isLegitimateDemoSession = sessionEmail == 'demo.employee@joypeoplehr.com';
+            if (!isLegitimateDemoSession) {
+              secureLog('[Security] Purging unauthorized demo ghost session from employee device');
+              await UserService.instance.clearUser();
+              try {
+                await Supabase.instance.client.auth.signOut();
+              } catch (_) {}
+            }
+          }
+
+          final isDharunCache = cachedUser.employeeId == 'JCS-017' ||
+              (cachedUser.officeEmail?.toLowerCase().contains('dharun') ?? false) ||
+              cachedUser.name.trim().toUpperCase() == 'DHARUN' ||
+              cachedUser.name.trim().toUpperCase() == 'DHARUN B';
+
+          if (isDharunCache) {
+            final isLegitimateDharun = sessionEmail == 'dharun@joyglobalcorp.com' ||
+                sessionEmail == 'bdharun1912@gmail.com';
+
+            if (!isLegitimateDharun) {
+              secureLog('[Security] Purging unauthorized ghost Dharun session from employee device');
+              await UserService.instance.clearUser();
+              try {
+                await Supabase.instance.client.auth.signOut();
+              } catch (_) {}
+            }
+          }
+        }
+      } catch (e) {
+        secureLog('[Security] Session sanitization notice: $e');
+      }
+
+      // 1. Check if authenticated user model exists locally with verified session
       final cached = await UserService.instance.loadCachedUser();
       final isPersisted = await UserService.instance.isSessionPersisted();
-      final hasLocalUser = cached != null ||
-          isPersisted ||
-          (UserService.instance.isLoggedIn && UserService.instance.currentUser.name != 'Guest');
+      final currentSession = Supabase.instance.client.auth.currentSession;
+      final hasLocalUser = (cached != null || isPersisted) &&
+          UserService.instance.isLoggedIn &&
+          UserService.instance.currentUser.name != 'Guest' &&
+          currentSession != null;
 
-      // If local user is already found on disk, mark as authenticated right away
+      final prefs = await SharedPreferences.getInstance();
+      final isEnrolled = prefs.getBool('sp_permissions_enrolled_v1') ?? false;
+
+      // If legitimate local user is already verified with active session, proceed immediately
       if (hasLocalUser && mounted) {
         setState(() {
           _isAuthenticated = true;
+          _permissionsGranted = true;
           _isCheckingSession = false;
         });
       }
 
+      // 2. Non-blocking bounded session restore with max 4-second timeout
       final results = await Future.wait<dynamic>([
-        SupabaseAuthRepository().restoreSession(),
+        SupabaseAuthRepository().restoreSession().timeout(
+          const Duration(seconds: 4),
+          onTimeout: () {
+            secureLog('[AuthGatekeeper] restoreSession timed out, falling back to local session');
+            return null;
+          },
+        ),
         if (!kIsWeb)
           (() async {
             try {
@@ -334,21 +489,34 @@ class _AuthGatekeeperState extends State<AuthGatekeeper> {
               secureLog('[AuthGatekeeper] Permission check notice: $e');
               return false;
             }
-          })(),
+          })().timeout(
+            const Duration(seconds: 3),
+            onTimeout: () => false,
+          ),
       ]);
 
-      final user = results[0];
+      final user = results.isNotEmpty ? results[0] : null;
       if (!kIsWeb && results.length > 1) {
-        // If permissions were already verified earlier, preserve them unless explicitly revoked
-        hasPermissions = results[1] == true || _permissionsGranted;
+        // Authenticated employees with existing sessions or enrolled permissions never get blocked
+        hasPermissions = hasLocalUser || isEnrolled || results[1] == true || _permissionsGranted;
+      } else {
+        hasPermissions = true;
       }
 
-      // If user came from restoreSession OR local disk cache was present OR user was already logged in,
-      // KEEP USER AUTHENTICATED! Never downgrade an active session on transient Wi-Fi/LTE network drops.
-      final isAuth = _isAuthenticated ||
-          user != null ||
-          (UserService.instance.isLoggedIn && UserService.instance.currentUser.name != 'Guest') ||
-          hasLocalUser;
+      // If user came from restoreSession OR verified active Supabase session with local user:
+      final currentActiveSession = Supabase.instance.client.auth.currentSession;
+      final bool isAuth;
+      if (user != null) {
+        isAuth = true;
+      } else if (currentActiveSession != null &&
+          UserService.instance.isLoggedIn &&
+          UserService.instance.currentUser.name != 'Guest') {
+        isAuth = true;
+      } else {
+        // No valid Supabase session exists on this device — strictly unauthenticated
+        await UserService.instance.clearUser();
+        isAuth = false;
+      }
 
       logProcess('AUTH', 'Session restore complete', data: {
         'isAuthenticated': isAuth,
@@ -361,26 +529,51 @@ class _AuthGatekeeperState extends State<AuthGatekeeper> {
         setState(() {
           _isCheckingSession = false;
           _isAuthenticated = isAuth;
-          _permissionsGranted = hasPermissions;
+          _permissionsGranted = hasPermissions || isAuth;
+        });
+
+        // Check for updates on startup (catches security and mandatory updates early)
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            AppUpdateService.instance.checkAndShowUpdateDialog(context);
+          }
         });
       }
+    } catch (e, st) {
+      secureLog('[AuthGatekeeper] _checkSession error: $e\n$st');
     } finally {
       _isCheckingSessionRunning = false;
+      if (mounted && _isCheckingSession) {
+        setState(() {
+          _isCheckingSession = false;
+        });
+      }
+      if (_pendingSessionCheck && mounted) {
+        _pendingSessionCheck = false;
+        unawaited(_checkSession());
+      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final hasActiveSession = _isAuthenticated ||
+        UserService.instance.isLoggedIn && UserService.instance.currentUser.name != 'Guest';
+
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 180),
       switchInCurve: Curves.easeOutCubic,
       switchOutCurve: Curves.easeInCubic,
       child: _isCheckingSession
           ? const _StartupSplashScreen(key: ValueKey('splash'))
-          : (!_isAuthenticated
+          : (!hasActiveSession
               ? LoginScreen(
                   key: const ValueKey('login'),
                   onLoginSuccess: () async {
+                    try {
+                      final prefs = await SharedPreferences.getInstance();
+                      await prefs.setBool('sp_permissions_enrolled_v1', true);
+                    } catch (_) {}
                     bool hasPerms = kIsWeb;
                     if (!kIsWeb) {
                       try {
@@ -411,11 +604,17 @@ class _AuthGatekeeperState extends State<AuthGatekeeper> {
               : (!_permissionsGranted
                   ? PermissionGatekeeperScreen(
                       key: const ValueKey('permissions'),
-                      onPermissionsGranted: () {
+                      onPermissionsGranted: () async {
                         logProcess('PERMISSIONS', 'All required permissions granted');
-                        setState(() {
-                          _permissionsGranted = true;
-                        });
+                        try {
+                          final prefs = await SharedPreferences.getInstance();
+                          await prefs.setBool('sp_permissions_enrolled_v1', true);
+                        } catch (_) {}
+                        if (mounted) {
+                          setState(() {
+                            _permissionsGranted = true;
+                          });
+                        }
                       },
                     )
                   : const MainTabShell(key: ValueKey('home')))),

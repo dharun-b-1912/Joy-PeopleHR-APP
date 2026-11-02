@@ -57,6 +57,8 @@ class _AuthTextFieldState extends State<AuthTextField> {
           controller: widget.controller,
           keyboardType: widget.keyboardType,
           obscureText: widget.isPassword ? _obscureText : false,
+          enableSuggestions: !widget.isPassword,
+          autocorrect: false,
           textInputAction: widget.textInputAction,
           onSubmitted: widget.onSubmitted,
           onChanged: widget.onChanged,

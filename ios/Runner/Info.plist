@@ -59,6 +59,13 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>fetch</string>
@@ -68,9 +75,13 @@
 	<string>JOY PeopleHR requires location access to verify attendance and calculate office proximity during check-in.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 	<string>JOY PeopleHR requires location access to verify check-in and check-out at approved workplace locations.</string>
+	<key>NSLocationAlwaysUsageDescription</key>
+	<string>JOY PeopleHR requires location access to verify attendance and proximity during check-in and check-out.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>JOY PeopleHR requires camera access for facial verification during attendance and uploading profile photos.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>JOY PeopleHR requires photo library access to upload documents, expense receipts, and profile pictures.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>JOY PeopleHR requires photo library write access to save payslips and attendance records to your device.</string>
 </dict>
 </plist>

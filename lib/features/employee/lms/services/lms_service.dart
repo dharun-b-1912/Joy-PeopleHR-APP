@@ -21,8 +21,10 @@ class LmsService {
     if (uuidRegex.hasMatch(user.dataId)) {
       return user.dataId;
     }
-    // Default fallback to Dharun B's canonical employee UUID
-    return '0ce6436c-e9b4-4e0e-9102-93ea238be0df';
+    if (user.resolvedEmployeeId.isNotEmpty && uuidRegex.hasMatch(user.resolvedEmployeeId)) {
+      return user.resolvedEmployeeId;
+    }
+    return null;
   }
 
   /// Parses YouTube Video ID and passing score from course code: "YT:{videoId}:{passingScore}"

@@ -27,6 +27,9 @@ import '../../../../models/employee_models.dart';
 import '../../../../widgets/attendance/attendance_live_timer.dart';
 import '../../../../core/services/local_notification_store.dart';
 import '../../locations/screens/employee_location_screen.dart';
+import '../../../../core/services/shift_adaptive_service.dart';
+import '../../../../widgets/attendance/adaptive_shift_modal.dart';
+
 import '../../../../core/services/push_notification_service.dart';
 import 'package:flutter/foundation.dart';
 import 'notifications_screen.dart';
@@ -391,9 +394,35 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
     }
 
     final location = await LocationService.instance.evaluateLiveLocation();
+
+    // ── Factory Adaptive Shift Detection & Confirmation ──────────────
+    // 1. Fetch active company shifts (rotational / factory shifts)
+    final companyShifts = await ShiftAdaptiveService.instance.getCompanyShifts();
+
+    // 2. Automatically deduce shift using 6-tier hierarchy (Assignment -> Roster -> Nearest Window)
+    final detectedShift = await ShiftAdaptiveService.instance.resolveAdaptiveShift(
+      companyShifts: companyShifts,
+      referenceTime: DateTime.now(),
+    );
+
+    if (!mounted) return;
+
+    // 3. Display the interactive Shift Confirmation modal
+    final confirmedShift = await AdaptiveShiftModal.show(
+      context: context,
+      detectedShift: detectedShift,
+      availableShifts: companyShifts,
+      locationName: location.targetLocation?.name ?? currentUser.approvedLocation.name,
+      distanceMeters: location.distanceMeters,
+    );
+
+    // If user cancelled the shift confirmation, abort check-in
+    if (confirmedShift == null) return;
+
     final result = await AttendanceService.instance.performCheckIn(
       location: location,
       approvedLocation: currentUser.approvedLocation,
+      selectedShift: confirmedShift,
     );
 
     if (!mounted) return;

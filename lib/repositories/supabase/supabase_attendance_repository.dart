@@ -3,6 +3,7 @@ import '../../core/config/supabase_config.dart';
 import '../../core/services/attendance_time_service.dart';
 import '../../core/services/push_sender_service.dart';
 import '../../core/services/realtime_outbox_service.dart';
+import '../../core/services/shift_adaptive_service.dart';
 import '../../core/services/user_service.dart';
 import '../../core/utils/app_date_time.dart';
 import '../../core/utils/query_timeout.dart';
@@ -239,6 +240,32 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
         } catch (e) {
           secureLog('[Attendance] attendance_punches query notice: $e');
         }
+
+        // 3. Query leave_requests to check if employee is on approved leave today
+        try {
+          final leaveData = await withTimeout(
+            _client
+                .from('leave_requests')
+                .select('id, status, reason, start_date, end_date')
+                .inFilter('employee_id', candidateEmpIds)
+                .inFilter('status', ['APPROVED', 'approved', 'Approved', 'PENDING', 'pending'])
+                .lte('start_date', todayDate)
+                .gte('end_date', todayDate)
+                .limit(1),
+          );
+          if (leaveData.isNotEmpty) {
+            final lr = leaveData.first;
+            merged['is_on_leave'] = true;
+            merged['leave_reason'] = lr['reason']?.toString() ?? 'On Leave Today';
+            merged['leave_status'] = lr['status']?.toString();
+          }
+        } catch (leaveErr) {
+          secureLog('[Attendance] leave_requests query notice: $leaveErr');
+        }
+
+        if (merged['status']?.toString().toUpperCase().contains('LEAVE') == true) {
+          merged['is_on_leave'] = true;
+        }
       }
 
       if (merged.isNotEmpty) {
@@ -277,6 +304,7 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
     String? deviceId,
     bool isMocked = false,
     CheckoutLocationVerification? checkoutVerification,
+    CompanyShift? selectedShift,
   }) async {
     final user = UserService.instance.currentUser;
     final employeeUuid = user.dataId;

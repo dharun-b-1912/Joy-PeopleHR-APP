@@ -101,64 +101,56 @@ String _inferStatus(String message) {
 
 /// Print the startup table header on app boot.
 void logBootHeader() {
-  if (kDebugMode || kProfileMode) {
-    _emitLine('================================================================');
-    _emitLine('  JOY PEOPLEHR FLUTTER -- LIVE MONITOR (http://localhost:8080)');
-    _emitLine('================================================================');
-    _emitLine('TIME         | MODULE       | STATUS | DETAILS');
-    _emitLine('-------------+--------------+--------+--------------------------');
-  }
+  _emitLine('================================================================');
+  _emitLine('  JOY PEOPLEHR FLUTTER -- LIVE MONITOR (http://localhost:8080)');
+  _emitLine('================================================================');
+  _emitLine('TIME         | MODULE       | STATUS | DETAILS');
+  _emitLine('-------------+--------------+--------+--------------------------');
 }
 
-/// Structured terminal logger for Flutter debug/profile sessions.
-/// Uses official `package:logging` + HTTP bridge for real-time terminal streaming.
+/// Structured terminal logger for Flutter debug/profile/release sessions.
+/// Emits clean structured logs that appear in `adb logcat -s flutter` on Android.
 void secureLog(String message) {
-  if (kDebugMode || kProfileMode) {
-    final ts = _formatTimestamp();
-    final cleanMsg = _toCleanAscii(message).replaceFirst(RegExp(r'^\[[^\]]+\]\s*'), '');
-    final mod = _inferModule(message).padRight(12);
-    final status = _inferStatus(message).padRight(6);
-    _emitLine('$ts | $mod | $status | $cleanMsg');
-  }
+  final ts = _formatTimestamp();
+  final cleanMsg = _toCleanAscii(message).replaceFirst(RegExp(r'^\[[^\]]+\]\s*'), '');
+  final mod = _inferModule(message).padRight(12);
+  final status = _inferStatus(message).padRight(6);
+  _emitLine('$ts | $mod | $status | $cleanMsg');
 }
 
-/// Explicitly log a process step to the terminal.
+/// Explicitly log a process step to the terminal and native logcat.
 void logProcess(String module, String step, {Map<String, dynamic>? data}) {
-  if (kDebugMode || kProfileMode) {
-    final ts = _formatTimestamp();
-    final mod = _toCleanAscii(module).toUpperCase().padRight(12);
-    final cleanStep = _toCleanAscii(step);
-    String details = cleanStep;
-    if (data != null && data.isNotEmpty) {
-      final formattedPairs = data.entries
-          .map((e) => '${e.key}=${_toCleanAscii(e.value?.toString() ?? "")}')
-          .join(', ');
-      details = '$cleanStep ($formattedPairs)';
-    }
-    _emitLine('$ts | $mod | OK     | $details');
+  final ts = _formatTimestamp();
+  final mod = _toCleanAscii(module).toUpperCase().padRight(12);
+  final cleanStep = _toCleanAscii(step);
+  String details = cleanStep;
+  if (data != null && data.isNotEmpty) {
+    final formattedPairs = data.entries
+        .map((e) => '${e.key}=${_toCleanAscii(e.value?.toString() ?? "")}')
+        .join(', ');
+    details = '$cleanStep ($formattedPairs)';
   }
+  _emitLine('$ts | $mod | OK     | $details');
 }
 
 /// Explicitly log a caught error with optional stack trace to the terminal.
 void logError(String module, Object error, [StackTrace? stackTrace, String? context]) {
-  if (kDebugMode || kProfileMode) {
-    final ts = _formatTimestamp();
-    final mod = _toCleanAscii(module).toUpperCase();
-    final ctx = (context != null && context.isNotEmpty) ? ' (${_toCleanAscii(context)})' : '';
-    _emitLine('----------------------------------------------------------------', Level.SEVERE);
-    _emitLine('$ts | ${mod.padRight(12)} | ERROR  | Exception$ctx: ${_toCleanAscii(error.toString())}', Level.SEVERE);
-    if (stackTrace != null) {
-      final lines = stackTrace
-          .toString()
-          .split('\n')
-          .take(6)
-          .map((l) => '             |              |        |   at ${_toCleanAscii(l.trim())}');
-      for (final l in lines) {
-        _emitLine(l, Level.SEVERE);
-      }
+  final ts = _formatTimestamp();
+  final mod = _toCleanAscii(module).toUpperCase();
+  final ctx = (context != null && context.isNotEmpty) ? ' (${_toCleanAscii(context)})' : '';
+  _emitLine('----------------------------------------------------------------', Level.SEVERE);
+  _emitLine('$ts | ${mod.padRight(12)} | ERROR  | Exception$ctx: ${_toCleanAscii(error.toString())}', Level.SEVERE);
+  if (stackTrace != null) {
+    final lines = stackTrace
+        .toString()
+        .split('\n')
+        .take(6)
+        .map((l) => '             |              |        |   at ${_toCleanAscii(l.trim())}');
+    for (final l in lines) {
+      _emitLine(l, Level.SEVERE);
     }
-    _emitLine('----------------------------------------------------------------', Level.SEVERE);
   }
+  _emitLine('----------------------------------------------------------------', Level.SEVERE);
 }
 
 /// Explicitly log an uncaught framework or zone crash to the terminal.

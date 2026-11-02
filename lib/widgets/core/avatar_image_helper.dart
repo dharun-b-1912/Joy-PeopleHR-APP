@@ -162,10 +162,14 @@ Widget _buildFallbackHero(String initials) {
   );
 }
 
-/// Production flicker-free Avatar widget with gapless playback, upper-third centering, and fallback initials.
+/// Production flicker-free Avatar widget with gapless playback and upper-third centering.
+/// Uses genuine employee profile picture; falls back to corporate initials.
 class WorkforceAvatar extends StatelessWidget {
   final String? pathOrUrl;
   final String fallbackInitials;
+  final String? employeeName;
+  final String? gender;
+  final String? employeeCode;
   final double size;
   final AvatarVariant variant;
   final Color backgroundColor;
@@ -177,6 +181,9 @@ class WorkforceAvatar extends StatelessWidget {
     super.key,
     required this.pathOrUrl,
     required this.fallbackInitials,
+    this.employeeName,
+    this.gender,
+    this.employeeCode,
     this.size = 44,
     this.variant = AvatarVariant.small,
     this.backgroundColor = const Color(0xFF0F5A47),
@@ -189,7 +196,6 @@ class WorkforceAvatar extends StatelessWidget {
   Widget build(BuildContext context) {
     final hasImage = pathOrUrl != null && pathOrUrl!.trim().isNotEmpty;
     final trimmed = hasImage ? pathOrUrl!.trim() : '';
-    // Use 3x pixel ratio for retina sharpness without distorting aspect ratio
     final int cacheDim = (size * 3).clamp(96, 768).round();
 
     Widget? imageWidget;

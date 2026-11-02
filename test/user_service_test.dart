@@ -13,9 +13,9 @@ void main() {
   group('UserService Session Persistence Tests', () {
     test('Persists and restores UserModel correctly via SharedPreferences', () async {
       const testUser = UserModel(
-        name: 'Dharun B',
-        firstName: 'Dharun',
-        employeeId: 'JCS-017',
+        name: 'Ravi Kumar',
+        firstName: 'Ravi',
+        employeeId: 'EMP-1002',
         employeeUuid: '298c50e2-8255-4673-b67d-d421e42eaec3',
         designation: 'Digital Marketing Specialist',
         department: 'Digital Marketing',
@@ -32,7 +32,7 @@ void main() {
         shiftEnd: '06:30 PM',
         leaveBalanceDays: 12.5,
         companyId: 'd6b7b209-1e16-43b9-a4bc-6fefad09528f',
-        officeEmail: 'dharun@joyglobalcorp.com',
+        officeEmail: 'ravi.kumar@example.com',
       );
 
       final userService = UserService.instance;
@@ -59,8 +59,8 @@ void main() {
 
       final restored = await userService.loadCachedUser();
       expect(restored, isNotNull);
-      expect(restored!.name, 'Dharun B');
-      expect(restored.employeeId, 'JCS-017');
+      expect(restored!.name, 'Ravi Kumar');
+      expect(restored.employeeId, 'EMP-1002');
       expect(userService.isLoggedIn, true);
       expect(await userService.isSessionPersisted(), true);
     });

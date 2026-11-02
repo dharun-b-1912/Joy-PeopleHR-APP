@@ -9,7 +9,7 @@ void main() {
     test('1. LeaveRequestModel copyWith preserves and updates fields correctly', () {
       final req = LeaveRequestModel(
         id: 'req-temp-01',
-        employeeId: '0ce6436c-e9b4-4e0e-9102-93ea238be0df',
+        employeeId: '00000000-0000-4000-8000-000000000001',
         type: LeaveType.casual,
         leaveTypeId: '0f2240de-0ac5-4178-8f1d-20a68114f48d',
         leaveTypeCode: 'CL',

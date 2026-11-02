@@ -211,32 +211,7 @@ class EmployeeIdentityResolver {
         // Note: 'email' column does not exist on employees table — skip this strategy
       }
 
-      // Strategy E: Lookup by username prefix (e.g. 'dharun' in first_name, display_name, or email prefix)
-      if (empRecord == null && cleanEmail != null && cleanEmail.isNotEmpty) {
-        final username = cleanEmail.split('@').first.split(RegExp(r'[._-]')).first.trim();
-        if (username.length >= 3) {
-          secureLog('[Identity] Querying employees table for name/code matching username=$username');
-          try {
-            final candidates = await withTimeout(
-              client
-                  .from('employees')
-                  .select()
-                  .or('first_name.ilike.%$username%,display_name.ilike.%$username%,work_email.ilike.%$username%,employee_code.ilike.%$username%')
-                  .limit(10),
-            );
-            if (candidates.isNotEmpty) {
-              empRecord = Map<String, dynamic>.from(candidates.first);
-              secureLog('[Identity] Found employee match by username query -> id=${empRecord['id']}, code=${empRecord['employee_code']}, name=${empRecord['display_name']}');
-              // Auto-heal work_email and user_id in database
-              _autoHealEmployeeEmailAndUserId(client, empRecord['id']?.toString() ?? '', authUid, cleanEmail);
-            }
-          } catch (e) {
-            secureLog('[Identity] Username prefix search notice: $e');
-          }
-        }
-      }
-
-      // Strategy F: Fallback search across all employees where email or username is inside profile JSONB
+      // Strategy F: Fallback search across all employees where email is inside profile JSONB
       if (empRecord == null && cleanEmail != null && cleanEmail.isNotEmpty) {
         secureLog('[Identity] Querying employees table via JSONB profile email');
         try {
@@ -247,22 +222,20 @@ class EmployeeIdentityResolver {
                 .limit(100),
           );
           final target = cleanEmail.toLowerCase();
-          final username = target.split('@').first.toLowerCase();
 
           for (final row in candidateRows) {
             final workMail = (row['work_email'] ?? '').toString().trim().toLowerCase();
             final generalMail = (row['email'] ?? '').toString().trim().toLowerCase();
-            final fName = (row['first_name'] ?? '').toString().trim().toLowerCase();
-            final dName = (row['display_name'] ?? '').toString().trim().toLowerCase();
-            final empCode = (row['employee_code'] ?? '').toString().trim().toLowerCase();
             final profile = row['profile'] is Map ? row['profile'] as Map : const {};
             final personalMail = (profile['personal_email'] ?? profile['email'] ?? '').toString().trim().toLowerCase();
             final profileWorkMail = (profile['work_email'] ?? '').toString().trim().toLowerCase();
 
-            if (workMail == target || generalMail == target || personalMail == target || profileWorkMail == target ||
-                fName.contains(username) || dName.contains(username) || empCode.contains(username)) {
+            if (workMail == target ||
+                generalMail == target ||
+                personalMail == target ||
+                profileWorkMail == target) {
               empRecord = Map<String, dynamic>.from(row);
-              secureLog('[Identity] Found employee match in full employee scan -> id=${empRecord['id']}, code=${empRecord['employee_code']}');
+              secureLog('[Identity] Found employee match in profile scan -> id=${empRecord['id']}, code=${empRecord['employee_code']}');
               _autoHealEmployeeEmailAndUserId(client, empRecord['id']?.toString() ?? '', authUid, cleanEmail);
               break;
             }
@@ -355,7 +328,7 @@ class EmployeeIdentityResolver {
       }.where((s) => s.isNotEmpty).toList();
 
       // Only pass valid UUIDs — employee_id column in these Postgres tables is of type UUID.
-      // Passing non-UUID employee codes (e.g. 'JCS-017') triggers 22P02 invalid input syntax error.
+      // Passing non-UUID employee codes (e.g. 'EMP-001') triggers 22P02 invalid input syntax error.
       final effectiveLookupIds = candidateEmpIds.where((s) => Validators.isValidUuid(s)).toList();
       secureLog('[Identity] Statutory lookup IDs: $effectiveLookupIds');
 
@@ -674,8 +647,55 @@ class EmployeeIdentityResolver {
               empRecord!['shift_name'] = s['name'];
               empRecord['shift_start_time'] = s['start_time'] ?? empRecord['shift_start_time'];
               empRecord['shift_end_time'] = s['end_time'] ?? empRecord['shift_end_time'];
+              empRecord['shift'] = s;
+            } else {
+              // Fallback to latest shift assignment without date constraint
+              final anyRoster = await withTimeout(
+                client
+                    .from('employee_shift_assignments')
+                    .select('id, shift_id, valid_from, valid_to, effective_from, effective_to, shifts(*)')
+                    .eq('employee_id', resolvedEmployeeUuid)
+                    .order('created_at', ascending: false)
+                    .limit(1)
+                    .maybeSingle(),
+                timeout: fastTimeout,
+              );
+              if (anyRoster != null && anyRoster['shifts'] is Map) {
+                final s = anyRoster['shifts'] as Map<String, dynamic>;
+                empRecord!['shift_name'] = s['name'];
+                empRecord['shift_start_time'] = s['start_time'] ?? empRecord['shift_start_time'];
+                empRecord['shift_end_time'] = s['end_time'] ?? empRecord['shift_end_time'];
+                empRecord['shift'] = s;
+              }
             }
           } catch (_) {}
+
+          // Fallback to organization active shift if still not resolved
+          final currentEmp = empRecord;
+          if (currentEmp != null && (currentEmp['shift_start_time'] == null || currentEmp['shift_end_time'] == null)) {
+            try {
+              final orgId = currentEmp['organization_id'] ?? currentEmp['company_id'];
+              if (orgId != null) {
+                final defaultShift = await withTimeout(
+                  client
+                      .from('shifts')
+                      .select()
+                      .eq('organization_id', orgId)
+                      .eq('is_active', true)
+                      .order('created_at', ascending: true)
+                      .limit(1)
+                      .maybeSingle(),
+                  timeout: fastTimeout,
+                );
+                if (defaultShift != null) {
+                  currentEmp['shift_name'] ??= defaultShift['name'];
+                  currentEmp['shift_start_time'] ??= defaultShift['start_time'];
+                  currentEmp['shift_end_time'] ??= defaultShift['end_time'];
+                  currentEmp['shift'] ??= defaultShift;
+                }
+              }
+            } catch (_) {}
+          }
         })(),
 
         // 10. Assigned work locations (joined with work_locations in a single query)

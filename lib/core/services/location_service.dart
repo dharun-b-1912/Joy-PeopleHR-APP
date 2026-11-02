@@ -7,8 +7,8 @@ import '../../models/hrms_models.dart';
 import '../utils/secure_log.dart';
 import '../utils/validators.dart';
 import 'user_service.dart';
-import '../../widgets/dialogs/location_prominent_disclosure_dialog.dart';
 import 'push_notification_service.dart';
+import '../../widgets/dialogs/location_prominent_disclosure_dialog.dart';
 
 /// Authoritative Attendance & GPS State Machine Enum
 enum AttendanceGpsState {
@@ -133,16 +133,29 @@ class LocationService extends ChangeNotifier {
   /// Initializes the service and starts automatic tracking
   Future<void> initialize() async {
     UserService.instance.addListener(() {
-      fetchAuthorizedLocations().then((_) => evaluateLiveLocation());
+      fetchAuthorizedLocations().then((_) async {
+        final perm = await Geolocator.checkPermission();
+        if (perm == LocationPermission.always || perm == LocationPermission.whileInUse) {
+          evaluateLiveLocation();
+        }
+      });
     });
 
     await fetchAuthorizedLocations();
-    await evaluateLiveLocation();
-    startAutomaticTracking();
+    final perm = await Geolocator.checkPermission();
+    if (perm == LocationPermission.always || perm == LocationPermission.whileInUse) {
+      await evaluateLiveLocation();
+      startAutomaticTracking();
+    }
   }
 
   /// Starts live background/foreground position stream with battery efficiency
-  void startAutomaticTracking() {
+  void startAutomaticTracking() async {
+    final perm = await Geolocator.checkPermission();
+    if (perm != LocationPermission.always && perm != LocationPermission.whileInUse) {
+      return;
+    }
+
     _positionStreamSub?.cancel();
     _periodicAdaptiveTimer?.cancel();
 
@@ -419,7 +432,7 @@ class LocationService extends ChangeNotifier {
         }
         // Try requesting anyway or report disabled
         LocationPermission permission = await Geolocator.checkPermission();
-        if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
+        if (permission != LocationPermission.always && permission != LocationPermission.whileInUse) {
           _transitionTo(UserLocationResult.error(
             'Location services or permissions are disabled. Please enable GPS in device settings.',
             state: AttendanceGpsState.locationDisabled,
@@ -429,44 +442,11 @@ class LocationService extends ChangeNotifier {
         }
       }
 
-      // 2. Check and request location permissions
+      // 2. Check location permissions (Never invoke requestPermission or getCurrentPosition here without permission)
       LocationPermission permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        final ctx = PushNotificationService.navigatorKey.currentContext;
-        if (ctx != null && ctx.mounted) {
-          final agreed = await LocationProminentDisclosureDialog.show(ctx);
-          if (!agreed) {
-            _transitionTo(UserLocationResult.error(
-              'Location consent declined. Required for workplace geofence attendance.',
-              state: AttendanceGpsState.permissionDenied,
-            ));
-            _isAcquiring = false;
-            return _currentResult;
-          }
-        }
-        permission = await Geolocator.requestPermission();
-        if (permission == LocationPermission.denied) {
-          if (kIsWeb && kDebugMode) {
-            final fallback = await _resolveWebDevFallbackPosition('Browser geolocation permission denied in local Chrome');
-            if (fallback != null) {
-              _processPosition(fallback);
-              _isAcquiring = false;
-              notifyListeners();
-              return _currentResult;
-            }
-          }
-          _transitionTo(UserLocationResult.error(
-            'Location permission is required for attendance clocking.',
-            state: AttendanceGpsState.permissionDenied,
-          ));
-          _isAcquiring = false;
-          return _currentResult;
-        }
-      }
-
-      if (permission == LocationPermission.deniedForever) {
+      if (permission != LocationPermission.always && permission != LocationPermission.whileInUse) {
         if (kIsWeb && kDebugMode) {
-          final fallback = await _resolveWebDevFallbackPosition('Browser geolocation deniedForever in local Chrome');
+          final fallback = await _resolveWebDevFallbackPosition('Browser geolocation permission denied in local Chrome');
           if (fallback != null) {
             _processPosition(fallback);
             _isAcquiring = false;
@@ -475,8 +455,10 @@ class LocationService extends ChangeNotifier {
           }
         }
         _transitionTo(UserLocationResult.error(
-          'Location permissions are permanently denied. Please enable them in App Settings.',
-          state: AttendanceGpsState.permissionPermanentlyDenied,
+          'Location permission is required for attendance clocking.',
+          state: permission == LocationPermission.deniedForever
+              ? AttendanceGpsState.permissionPermanentlyDenied
+              : AttendanceGpsState.permissionDenied,
         ));
         _isAcquiring = false;
         return _currentResult;
@@ -772,7 +754,7 @@ class LocationService extends ChangeNotifier {
   }
 
   /// Actively requests location permissions and verifies GPS service
-  Future<bool> requestLocationPermission() async {
+  Future<bool> requestLocationPermission({BuildContext? context}) async {
     if (kIsWeb) return true;
     try {
       // 1. Check if GPS hardware service is enabled
@@ -786,10 +768,10 @@ class LocationService extends ChangeNotifier {
 
       // 2. Check and request permission
       LocationPermission perm = await Geolocator.checkPermission();
-      if (perm == LocationPermission.denied) {
-        final ctx = PushNotificationService.navigatorKey.currentContext;
-        if (ctx != null && ctx.mounted) {
-          final agreed = await LocationProminentDisclosureDialog.show(ctx);
+      if (perm != LocationPermission.always && perm != LocationPermission.whileInUse) {
+        final targetContext = context ?? PushNotificationService.navigatorKey.currentContext;
+        if (targetContext != null && targetContext.mounted) {
+          final agreed = await LocationProminentDisclosureDialog.show(targetContext);
           if (!agreed) return false;
         }
         perm = await Geolocator.requestPermission();

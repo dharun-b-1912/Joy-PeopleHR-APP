@@ -11,13 +11,13 @@ import 'package:workforce_os/models/hrms_models.dart';
 void main() {
   group('Issue 1: Employee ID & UUID Isolation', () {
     test('Internal database UUID is never displayed as employee-facing Employee ID', () {
-      const dbUuid = '0ce6436c-e9b4-4e0e-9102-93ea37612f01';
+      const dbUuid = '00000000-0000-4000-8000-000000000001';
       const payslip = PayslipModel(
         id: 'ps-101',
         employeeId: dbUuid,
         employeeCode: '', // missing code
         employeeUuid: dbUuid,
-        employeeName: 'Dharun B',
+        employeeName: 'Test Employee',
         designation: 'Developer',
         monthYear: 'July 2026',
         grossEarnings: '₹85,000',
@@ -34,13 +34,13 @@ void main() {
     });
 
     test('Authoritative human-readable employee code is displayed when configured', () {
-      const dbUuid = '0ce6436c-e9b4-4e0e-9102-93ea37612f01';
+      const dbUuid = '00000000-0000-4000-8000-000000000001';
       const payslip = PayslipModel(
         id: 'ps-101',
         employeeId: dbUuid,
-        employeeCode: 'JCS-017',
+        employeeCode: 'EMP-001',
         employeeUuid: dbUuid,
-        employeeName: 'Dharun B',
+        employeeName: 'Test Employee',
         designation: 'Developer',
         monthYear: 'July 2026',
         grossEarnings: '₹85,000',
@@ -50,16 +50,16 @@ void main() {
         pdfUrl: 'payslips/ps-101.pdf',
       );
 
-      expect(payslip.displayEmployeeId, equals('JCS-017'));
+      expect(payslip.displayEmployeeId, equals('EMP-001'));
       expect(payslip.hasValidEmployeeCode, isTrue);
       expect(payslip.employeeUuid, equals(dbUuid));
     });
 
     test('UserModel displayEmployeeId protects against UUID leakage in profile', () {
-      const dbUuid = '0ce6436c-e9b4-4e0e-9102-93ea37612f01';
+      const dbUuid = '00000000-0000-4000-8000-000000000001';
       const userWithUuid = UserModel(
-        name: 'Dharun B',
-        firstName: 'Dharun',
+        name: 'Test Employee',
+        firstName: 'Test',
         employeeId: dbUuid, // UUID erroneously passed as employeeId
         employeeUuid: dbUuid,
         designation: 'Developer',
@@ -82,8 +82,8 @@ void main() {
       expect(userWithUuid.displayEmployeeId, equals('Employee ID unavailable'));
       expect(userWithUuid.hasValidEmployeeCode, isFalse);
 
-      final userWithCode = userWithUuid.copyWith(employeeId: 'JCS-017');
-      expect(userWithCode.displayEmployeeId, equals('JCS-017'));
+      final userWithCode = userWithUuid.copyWith(employeeId: 'EMP-001');
+      expect(userWithCode.displayEmployeeId, equals('EMP-001'));
       expect(userWithCode.hasValidEmployeeCode, isTrue);
     });
   });
@@ -97,9 +97,9 @@ void main() {
     test('Period format keeps Pay Period and Pay Date conceptually separate', () {
       const payslip = PayslipModel(
         id: 'ps-102',
-        employeeId: '0ce6436c-e9b4-4e0e-9102-93ea37612f01',
-        employeeCode: 'JCS-017',
-        employeeName: 'Dharun B',
+        employeeId: '00000000-0000-4000-8000-000000000001',
+        employeeCode: 'EMP-001',
+        employeeName: 'Test Employee',
         designation: 'Developer',
         monthYear: '2026-07',
         grossEarnings: '₹85,000',
@@ -118,9 +118,9 @@ void main() {
     test('Validates mathematical consistency of Earnings, Deductions, and Net Pay', () {
       const payslip = PayslipModel(
         id: 'ps-103',
-        employeeId: '0ce6436c-e9b4-4e0e-9102-93ea37612f01',
-        employeeCode: 'JCS-017',
-        employeeName: 'Dharun B',
+        employeeId: '00000000-0000-4000-8000-000000000001',
+        employeeCode: 'EMP-001',
+        employeeName: 'Test Employee',
         designation: 'Developer',
         monthYear: 'July 2026',
         grossEarnings: '₹85,000',
@@ -145,9 +145,9 @@ void main() {
     test('Detects mismatch when components do not sum to total', () {
       const mismatchPayslip = PayslipModel(
         id: 'ps-104',
-        employeeId: '0ce6436c-e9b4-4e0e-9102-93ea37612f01',
-        employeeCode: 'JCS-017',
-        employeeName: 'Dharun B',
+        employeeId: '00000000-0000-4000-8000-000000000001',
+        employeeCode: 'EMP-001',
+        employeeName: 'Test Employee',
         designation: 'Developer',
         monthYear: 'July 2026',
         grossEarnings: '₹90,000', // mismatched
@@ -170,9 +170,9 @@ void main() {
   group('Issue 8: Plant / Campus Stale Mock Data Removal', () {
     test('Plant/Campus displays Not assigned instead of Carenow when unassigned', () {
       const userUnassigned = UserModel(
-        name: 'Dharun B',
-        firstName: 'Dharun',
-        employeeId: 'JCS-017',
+        name: 'Test Employee',
+        firstName: 'Test',
+        employeeId: 'EMP-001',
         designation: 'Developer',
         department: 'Development',
         role: 'EMPLOYEE',
@@ -199,9 +199,9 @@ void main() {
 
     test('Plant/Campus displays actual assigned site when configured', () {
       const userAssigned = UserModel(
-        name: 'Dharun B',
-        firstName: 'Dharun',
-        employeeId: 'JCS-017',
+        name: 'Test Employee',
+        firstName: 'Test',
+        employeeId: 'EMP-001',
         designation: 'Developer',
         department: 'Development',
         role: 'EMPLOYEE',

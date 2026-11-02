@@ -43,17 +43,17 @@ class EnvConfig {
   // ── Development Auth Auto-Login (Debug Only) ──────────────────────────
   static const bool devAutoLogin = bool.fromEnvironment(
     'DEV_AUTO_LOGIN',
-    defaultValue: true,
+    defaultValue: false,
   );
 
   static const String devAuthEmail = String.fromEnvironment(
     'DEV_AUTH_EMAIL',
-    defaultValue: 'dharun@joyglobalcorp.com',
+    defaultValue: '',
   );
 
   static const String devAuthPassword = String.fromEnvironment(
     'DEV_AUTH_PASSWORD',
-    defaultValue: 'joypeoplehr',
+    defaultValue: '',
   );
 
   // ── App Info ────────────────────────────────────────────────────────

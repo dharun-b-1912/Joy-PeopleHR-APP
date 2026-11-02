@@ -457,7 +457,7 @@ class UserModel {
   String get resolvedEmployeeId =>
       (employeeUuid?.isNotEmpty == true) ? employeeUuid! : (employeeId.isNotEmpty ? employeeId : dataId);
 
-  /// Human-readable employee code (e.g. "JCS-017")
+  /// Human-readable employee code (e.g. "EMP-001")
   String get employeeCode => employeeId;
 
   /// Returns employee-facing Employee ID or "Employee ID unavailable" if missing or a UUID
@@ -811,6 +811,8 @@ enum AttendanceSource {
 
 class AttendanceSession {
   final AttendanceStatus status;
+  final bool isOnLeave;
+  final String? leaveReason;
   final DateTime? checkInTime;
   final DateTime? checkOutTime;
   final int? netWorkingMinutes;
@@ -825,6 +827,8 @@ class AttendanceSession {
 
   const AttendanceSession({
     required this.status,
+    this.isOnLeave = false,
+    this.leaveReason,
     this.checkInTime,
     this.checkOutTime,
     this.netWorkingMinutes,

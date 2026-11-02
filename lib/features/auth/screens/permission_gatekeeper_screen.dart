@@ -93,6 +93,13 @@ class _PermissionGatekeeperScreenState extends State<PermissionGatekeeperScreen>
           widget.onPermissionsGranted();
         }
       });
+    } else if (!_isLocationGranted && mounted) {
+      // Promptly display prominent disclosure to the user before requesting system permissions
+      Future.delayed(const Duration(milliseconds: 450), () {
+        if (mounted && !_isLocationGranted && !_isRequesting) {
+          _requestLocationPermission();
+        }
+      });
     }
   }
 
@@ -132,18 +139,18 @@ class _PermissionGatekeeperScreenState extends State<PermissionGatekeeperScreen>
         return;
       }
 
-      if (permission == LocationPermission.denied) {
-        if (!mounted) return;
-        // Show Google Play compliant Prominent Disclosure Dialog before requesting system permission
-        final agreed = await LocationProminentDisclosureDialog.show(context);
-        if (!agreed) {
-          if (mounted) {
+      if (permission != LocationPermission.always &&
+          permission != LocationPermission.whileInUse) {
+        // Prominent Disclosure & Affirmative Consent
+        if (mounted) {
+          final agreed = await LocationProminentDisclosureDialog.show(context);
+          if (!agreed) {
             setState(() {
-              _errorMessage = 'Location consent is required for workplace attendance verification. Tap to review disclosure again.';
+              _errorMessage = 'Location consent is required to verify workplace attendance.';
               _isRequesting = false;
             });
+            return;
           }
-          return;
         }
         permission = await Geolocator.requestPermission();
       }
@@ -266,26 +273,27 @@ class _PermissionGatekeeperScreenState extends State<PermissionGatekeeperScreen>
         body: SafeArea(
           child: FadeTransition(
             opacity: _fadeAnimation,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+            child: SingleChildScrollView(
+              physics: const BouncingScrollPhysics(),
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
               child: Column(
-                children: [
-                  const Spacer(flex: 2),
+                  children: [
+                    const SizedBox(height: 16),
 
-                  // Header
-                  Container(
-                    width: 72,
-                    height: 72,
-                    decoration: BoxDecoration(
-                      color: AppColors.primary.withValues(alpha: 0.1),
-                      shape: BoxShape.circle,
+                    // Header
+                    Container(
+                      width: 72,
+                      height: 72,
+                      decoration: BoxDecoration(
+                        color: AppColors.primary.withValues(alpha: 0.1),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(
+                        CupertinoIcons.shield_lefthalf_fill,
+                        size: 36,
+                        color: AppColors.primary,
+                      ),
                     ),
-                    child: const Icon(
-                      CupertinoIcons.shield_lefthalf_fill,
-                      size: 36,
-                      color: AppColors.primary,
-                    ),
-                  ),
                   const SizedBox(height: 20),
                   Text(
                     "Permissions Required",
@@ -312,7 +320,7 @@ class _PermissionGatekeeperScreenState extends State<PermissionGatekeeperScreen>
                     iconColor: AppColors.primary,
                     iconBg: AppColors.skyBg,
                     title: "Location Access",
-                    subtitle: "Collects location data to verify workplace geofence boundaries for clock-in/out and shift tracking, even when the app is closed or not in use",
+                    subtitle: "Required for attendance clock-in/out and geofence verification",
                     isGranted: _isLocationGranted,
                     onTap: _isLocationGranted ? null : _requestLocationPermission,
                     isProcessing: _isRequesting,
@@ -426,7 +434,7 @@ class _PermissionGatekeeperScreenState extends State<PermissionGatekeeperScreen>
                     ),
                   ],
 
-                  const Spacer(flex: 3),
+                  const SizedBox(height: 24),
 
                   // ─── Continue Button ──────────────────────
                   if (allGranted)

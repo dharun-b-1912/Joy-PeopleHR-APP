@@ -1,4 +1,6 @@
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../../core/config/supabase_config.dart';
 import '../../core/services/employee_identity_resolver.dart';
 import '../../core/services/user_service.dart';
 import '../../core/utils/query_timeout.dart';
@@ -226,7 +228,6 @@ class SupabaseAuthRepository implements IAuthRepository {
     try {
       // 1. First, check if a cached user model already exists locally on the device (0ms, offline)
       final cachedUser = await UserService.instance.loadCachedUser();
-      final isPersisted = await UserService.instance.isSessionPersisted();
 
       if (cachedUser != null) {
         UserService.instance.setUser(cachedUser);
@@ -234,6 +235,24 @@ class SupabaseAuthRepository implements IAuthRepository {
       }
 
       var session = _client.auth.currentSession;
+
+      // 1b. If session is still null due to Gotrue async background initialization on Android,
+      // recover it synchronously from local token storage so we never get a false null!
+      if (session == null) {
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          final tokenKey = "sb-${Uri.parse(SupabaseConfig.url).host.split(".").first}-auth-token";
+          final rawToken = prefs.getString(tokenKey);
+          if (rawToken != null && rawToken.trim().isNotEmpty) {
+            secureLog('[Auth] Recovering Gotrue session explicitly from local token storage...');
+            final recoveredRes = await _client.auth.recoverSession(rawToken);
+            session = recoveredRes.session;
+            secureLog('[Auth] Successfully recovered Gotrue session for: ${session?.user.email}');
+          }
+        } catch (recoverErr) {
+          secureLog('[Auth] Explicit recoverSession notice: $recoverErr');
+        }
+      }
 
       // 2. If session token is expired, refresh it automatically using refresh token
       if (session != null && session.isExpired) {
@@ -249,39 +268,18 @@ class SupabaseAuthRepository implements IAuthRepository {
 
       // 3. If no active Supabase session
       if (session == null) {
-        // If a verified cached user was found on device or session is persisted, maintain local session
+        // Strict Security Guard: Never allow an unauthenticated session to masquerade as an employee
         if (cachedUser != null) {
-          secureLog('[Auth] No active remote Supabase session, using cached device profile for ${cachedUser.name} (${cachedUser.employeeId})');
-          return cachedUser;
-        }
+          final isDharunCache = cachedUser.employeeId == 'JCS-017' ||
+              (cachedUser.officeEmail?.toLowerCase().contains('dharun') ?? false) ||
+              cachedUser.name.trim().toUpperCase() == 'DHARUN' ||
+              cachedUser.name.trim().toUpperCase() == 'DHARUN B';
 
-        if (isPersisted && UserService.instance.isLoggedIn && UserService.instance.currentUser.name != 'Guest') {
-          secureLog('[Auth] No active remote Supabase session, using persistent in-memory session for ${UserService.instance.currentUser.name}');
-          return UserService.instance.currentUser;
-        }
-
-        // Self-heal session using authorized enterprise credentials so user is NEVER stranded at login screen
-        try {
-          secureLog('[Auth] No session found — performing transparent auto-authentication for dharun@joyglobalcorp.com');
-          final autoAuth = await _client.auth.signInWithPassword(
-            email: 'dharun@joyglobalcorp.com',
-            password: 'Dharun1912',
-          );
-          if (autoAuth.user != null) {
-            final resolution = await EmployeeIdentityResolver.resolve(
-              client: _client,
-              authUid: autoAuth.user!.id,
-              authEmail: autoAuth.user!.email,
-            );
-            if (resolution.success && resolution.userModel != null) {
-              UserService.instance.setUser(resolution.userModel!);
-              await UserService.instance.persistUser(resolution.userModel!);
-              secureLog('[Auth] Transparent auto-login succeeded for ${resolution.userModel!.name}');
-              return resolution.userModel;
-            }
+          if (isDharunCache) {
+            secureLog('[Auth] No Supabase session for Dharun cache — wiping stale ghost session');
+            await UserService.instance.clearUser();
+            return null;
           }
-        } catch (autoErr) {
-          secureLog('[Auth] Transparent auto-login notice: $autoErr');
         }
 
         logSessionBanner(
@@ -648,7 +646,7 @@ class SupabaseAuthRepository implements IAuthRepository {
   Future<String> _resolveEmailFromPhone(String identifier) async {
     final cleaned = identifier.trim();
 
-    // 1. Try Employee Code lookup (e.g. JMS - 102, JMS-102, JCS-017)
+    // 1. Try Employee Code lookup (e.g. JMS - 102, JMS-102, EMP-001)
     try {
       final codeNorm = cleaned.replaceAll(RegExp(r'\s+'), '');
       final byCode = await withTimeout(

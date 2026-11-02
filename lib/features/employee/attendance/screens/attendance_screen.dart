@@ -227,78 +227,155 @@ class _AttendanceScreenState extends State<AttendanceScreen> with SingleTickerPr
                                     Row(
                                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                       children: [
-                                        Row(
-                                          children: [
-                                            Container(
-                                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                              decoration: BoxDecoration(
-                                                color: AppColors.slateBg,
-                                                borderRadius: AppRadius.borderSm,
+                                        Expanded(
+                                          child: Row(
+                                            children: [
+                                              Container(
+                                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                                decoration: BoxDecoration(
+                                                  color: AppColors.slateBg,
+                                                  borderRadius: AppRadius.borderSm,
+                                                ),
+                                                child: Text(
+                                                  "${ts.date.day} $monthAbbr",
+                                                  style: AppTypography.bodyRegular.copyWith(fontWeight: FontWeight.bold),
+                                                ),
                                               ),
-                                              child: Text(
-                                                "${ts.date.day} $monthAbbr",
-                                                style: AppTypography.bodyRegular.copyWith(fontWeight: FontWeight.bold),
-                                              ),
-                                            ),
-                                            if (ts.totalHours != "-" && ts.totalHours.isNotEmpty) ...[
-                                              const SizedBox(width: 8),
-                                              Text(
-                                                ts.totalHours,
-                                                style: AppTypography.caption.copyWith(fontWeight: FontWeight.w600, color: AppColors.primary),
-                                              ),
+                                              if (ts.totalHours != "-" && ts.totalHours.isNotEmpty) ...[
+                                                const SizedBox(width: 8),
+                                                Flexible(
+                                                  child: Text(
+                                                    ts.totalHours,
+                                                    overflow: TextOverflow.ellipsis,
+                                                    style: AppTypography.caption.copyWith(
+                                                      fontWeight: FontWeight.w600,
+                                                      color: AppColors.primary,
+                                                    ),
+                                                  ),
+                                                ),
+                                              ],
                                             ],
-                                          ],
+                                          ),
                                         ),
+                                        const SizedBox(width: 8),
                                         StatusChip(label: labelStr, type: chipType),
                                       ],
                                     ),
                                     if (!isWeekendOrHoliday) ...[
                                       const SizedBox(height: 8),
-                                      Row(
-                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                        children: [
-                                          Text("IN: ${ts.clockInTime ?? '—'}", style: AppTypography.caption),
-                                          if (ts.netWorkingMinutes > 0)
-                                            Row(
-                                              mainAxisSize: MainAxisSize.min,
+                                      LayoutBuilder(
+                                        builder: (context, constraints) {
+                                          final hasOt = ts.overtimeMinutes > 0;
+                                          final hasWork = ts.netWorkingMinutes > 0;
+                                          final isNarrow = constraints.maxWidth < 350;
+
+                                          // On compact screens when OT is present, split into 2 clean responsive rows
+                                          if (isNarrow && hasOt) {
+                                            return Column(
                                               children: [
-                                                Container(
-                                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                                  decoration: BoxDecoration(
-                                                    color: AppColors.slateBg,
-                                                    borderRadius: AppRadius.borderSm,
-                                                  ),
-                                                  child: Text(
-                                                    "Work: ${ts.formattedRegularHours}",
-                                                    style: AppTypography.caption.copyWith(
-                                                      fontWeight: FontWeight.w600,
-                                                      color: AppColors.textPrimary,
-                                                      fontSize: 11,
+                                                Row(
+                                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                                  children: [
+                                                    Text("IN: ${ts.clockInTime ?? '—'}", style: AppTypography.caption),
+                                                    Text("OUT: ${ts.clockOutTime ?? '—'}", style: AppTypography.caption),
+                                                  ],
+                                                ),
+                                                const SizedBox(height: 6),
+                                                Row(
+                                                  mainAxisAlignment: MainAxisAlignment.end,
+                                                  children: [
+                                                    if (hasWork)
+                                                      Container(
+                                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                        decoration: BoxDecoration(
+                                                          color: AppColors.slateBg,
+                                                          borderRadius: AppRadius.borderSm,
+                                                        ),
+                                                        child: Text(
+                                                          "Work: ${ts.formattedRegularHours}",
+                                                          style: AppTypography.caption.copyWith(
+                                                            fontWeight: FontWeight.w600,
+                                                            color: AppColors.textPrimary,
+                                                            fontSize: 11,
+                                                          ),
+                                                        ),
+                                                      ),
+                                                    const SizedBox(width: 6),
+                                                    Container(
+                                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                      decoration: BoxDecoration(
+                                                        color: const Color(0xFFFEF3C7),
+                                                        borderRadius: AppRadius.borderSm,
+                                                      ),
+                                                      child: Text(
+                                                        "OT: ${ts.formattedOvertimeHours}",
+                                                        style: AppTypography.caption.copyWith(
+                                                          fontWeight: FontWeight.w700,
+                                                          color: const Color(0xFFD97706),
+                                                          fontSize: 11,
+                                                        ),
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ],
+                                            );
+                                          }
+
+                                          // Wide screens or days without OT: single auto-adapting row
+                                          return Row(
+                                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                            children: [
+                                              Text("IN: ${ts.clockInTime ?? '—'}", style: AppTypography.caption),
+                                              if (hasWork)
+                                                Flexible(
+                                                  child: Padding(
+                                                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                                                    child: Wrap(
+                                                      alignment: WrapAlignment.center,
+                                                      crossAxisAlignment: WrapCrossAlignment.center,
+                                                      spacing: 4,
+                                                      runSpacing: 2,
+                                                      children: [
+                                                        Container(
+                                                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                          decoration: BoxDecoration(
+                                                            color: AppColors.slateBg,
+                                                            borderRadius: AppRadius.borderSm,
+                                                          ),
+                                                          child: Text(
+                                                            "Work: ${ts.formattedRegularHours}",
+                                                            style: AppTypography.caption.copyWith(
+                                                              fontWeight: FontWeight.w600,
+                                                              color: AppColors.textPrimary,
+                                                              fontSize: 11,
+                                                            ),
+                                                          ),
+                                                        ),
+                                                        if (hasOt)
+                                                          Container(
+                                                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                            decoration: BoxDecoration(
+                                                              color: const Color(0xFFFEF3C7),
+                                                              borderRadius: AppRadius.borderSm,
+                                                            ),
+                                                            child: Text(
+                                                              "OT: ${ts.formattedOvertimeHours}",
+                                                              style: AppTypography.caption.copyWith(
+                                                                fontWeight: FontWeight.w700,
+                                                                color: const Color(0xFFD97706),
+                                                                fontSize: 11,
+                                                              ),
+                                                            ),
+                                                          ),
+                                                      ],
                                                     ),
                                                   ),
                                                 ),
-                                                if (ts.overtimeMinutes > 0) ...[
-                                                  const SizedBox(width: 4),
-                                                  Container(
-                                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                                    decoration: BoxDecoration(
-                                                      color: const Color(0xFFFEF3C7),
-                                                      borderRadius: AppRadius.borderSm,
-                                                    ),
-                                                    child: Text(
-                                                      "OT: ${ts.formattedOvertimeHours}",
-                                                      style: AppTypography.caption.copyWith(
-                                                        fontWeight: FontWeight.w700,
-                                                        color: const Color(0xFFD97706),
-                                                        fontSize: 11,
-                                                      ),
-                                                    ),
-                                                  ),
-                                                ],
-                                              ],
-                                            ),
-                                          Text("OUT: ${ts.clockOutTime ?? '—'}", style: AppTypography.caption),
-                                        ],
+                                              Text("OUT: ${ts.clockOutTime ?? '—'}", style: AppTypography.caption),
+                                            ],
+                                          );
+                                        },
                                       ),
                                     ],
                                   ],

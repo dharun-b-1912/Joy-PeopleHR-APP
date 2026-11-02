@@ -4,206 +4,262 @@ import '../../core/theme/klarna_tokens.dart';
 
 /// LocationProminentDisclosureDialog
 ///
-/// Prominent In-App Disclosure for Location Data Collection & Usage.
-/// Strictly compliant with Google Play User Data Policy & Prominent Disclosure Requirement.
+/// Fully compliant with Google Play Prominent Disclosure & Consent Requirement
+/// for Location and Background Location access.
 ///
-/// Discloses:
-/// 1. Exactly what data is collected: Location data (fine & background).
-/// 2. How the data is used: Geofence verification for attendance clock-in/out & shift tracking.
-/// 3. Background disclosure: "even when the app is closed or not in use".
-/// 4. Explicit affirmative user consent (Agree & Continue vs Deny).
+/// Google Play Policy Checklist:
+/// 1. App-specific naming: "JOY PeopleHR collects location data..."
+/// 2. Mandatory wording: "...even when the app is closed or not in use"
+/// 3. Clear description of data usage (geofencing, attendance, payroll validation)
+/// 4. Negative declaration (never shared with 3rd parties or used for ads)
+/// 5. Affirmative user action ("Agree & Continue" vs "Deny")
+/// 6. Triggered IMMEDIATELY BEFORE the OS runtime permission request
 class LocationProminentDisclosureDialog extends StatelessWidget {
   const LocationProminentDisclosureDialog({super.key});
 
-  /// Displays the prominent disclosure dialog and returns true if user consented, false otherwise.
   static Future<bool> show(BuildContext context) async {
     final result = await showDialog<bool>(
       context: context,
-      barrierDismissible: false, // Affirmative consent required — no dismiss on tap outside
-      builder: (BuildContext ctx) => const LocationProminentDisclosureDialog(),
+      barrierDismissible: false,
+      builder: (ctx) => const LocationProminentDisclosureDialog(),
     );
     return result ?? false;
   }
 
   @override
+  @override
   Widget build(BuildContext context) {
+    final screenHeight = MediaQuery.of(context).size.height;
+
     return Dialog(
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(24),
-      ),
-      elevation: 16,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
       backgroundColor: Colors.white,
-      insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+      insetPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 24),
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 420),
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(24, 28, 24, 20),
+        constraints: BoxConstraints(
+          maxWidth: 420,
+          maxHeight: screenHeight * 0.86,
+        ),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 18),
           child: Column(
             mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // ── Header Icon & Title ─────────────────────────────────
-              Center(
-                child: Container(
-                  width: 64,
-                  height: 64,
-                  decoration: BoxDecoration(
-                    color: AppColors.primary.withValues(alpha: 0.1),
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Icon(
-                    CupertinoIcons.location_solid,
-                    size: 32,
-                    color: AppColors.primary,
-                  ),
+              // 1. Icon Header
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF0FDF4),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: const Color(0xFFBBF7D0), width: 1.5),
+                ),
+                child: const Icon(
+                  CupertinoIcons.location_solid,
+                  size: 22,
+                  color: Color(0xFF15803D),
                 ),
               ),
-              const SizedBox(height: 18),
+              const SizedBox(height: 8),
+
+              // Title
               Text(
                 "Location Data Usage Disclosure",
                 style: AppTypography.titleLarge.copyWith(
                   fontWeight: FontWeight.bold,
-                  color: AppColors.textPrimary,
-                  fontSize: 19,
+                  fontSize: 17,
+                  color: const Color(0xFF0F172A),
                 ),
                 textAlign: TextAlign.center,
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 3),
+
+              // Subtitle
               Text(
-                "How JOY PeopleHR accesses & uses your location data",
+                "How JOY PeopleHR accesses, collects, and uses your location data",
                 style: AppTypography.caption.copyWith(
                   color: AppColors.textSecondary,
-                  fontSize: 12,
+                  fontSize: 11.5,
                 ),
                 textAlign: TextAlign.center,
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 10),
 
-              // ── Main Disclosure Body ────────────────────────────────
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: AppColors.skyBg.withValues(alpha: 0.4),
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(
-                    color: AppColors.primary.withValues(alpha: 0.2),
-                  ),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      "JOY PeopleHR accesses and collects location data to:",
-                      style: AppTypography.bodyRegular.copyWith(
-                        fontWeight: FontWeight.w700,
-                        color: AppColors.textPrimary,
-                        fontSize: 13,
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    const _DisclosureBullet(
-                      icon: CupertinoIcons.checkmark_seal_fill,
-                      title: "Workplace Geofence Verification",
-                      description:
-                          "Validate that you are physically present within your company's authorized office, factory, or site boundary during check-in and check-out punches.",
-                    ),
-                    const SizedBox(height: 10),
-                    const _DisclosureBullet(
-                      icon: CupertinoIcons.clock_fill,
-                      title: "Shift Attendance & Duty Tracking",
-                      description:
-                          "Accurately calculate on-duty work duration, branch check-ins, and prevent fraudulent or remote attendance logs.",
-                    ),
-                    const SizedBox(height: 10),
-                    const _DisclosureBullet(
-                      icon: CupertinoIcons.location_circle_fill,
-                      title: "Background Location Collection",
-                      highlight: true,
-                      description:
-                          "JOY PeopleHR collects location data to enable automated geofence attendance verification and continuous shift validation even when the app is closed or not in use.",
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 16),
+              // 2. Scrollable Body Content
+              Flexible(
+                child: SingleChildScrollView(
+                  physics: const BouncingScrollPhysics(),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // Prominent Disclosure Box (Google Play Mandatory Lead Statement)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF8FAFC),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: const Color(0xFFE2E8F0)),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            // Mandatory Google Play Background Location Sentence
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 7),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFEFF6FF),
+                                borderRadius: BorderRadius.circular(9),
+                                border: Border.all(color: const Color(0xFFBFDBFE)),
+                              ),
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Icon(
+                                    CupertinoIcons.info_circle_fill,
+                                    size: 14,
+                                    color: Color(0xFF1D4ED8),
+                                  ),
+                                  const SizedBox(width: 7),
+                                  Expanded(
+                                    child: Text(
+                                      "JOY PeopleHR collects location data to enable workplace geofence verification, attendance check-in & check-out, and on-duty shift tracking even when the app is closed or not in use.",
+                                      style: AppTypography.bodyRegular.copyWith(
+                                        fontWeight: FontWeight.w600,
+                                        fontSize: 11.5,
+                                        color: const Color(0xFF1E3A8A),
+                                        height: 1.35,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(height: 10),
 
-              // ── Privacy & Security Guarantee ────────────────────────
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: AppColors.mintBg.withValues(alpha: 0.5),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Icon(
-                      CupertinoIcons.shield_fill,
-                      size: 16,
-                      color: AppColors.mintFg,
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        "Your location data is encrypted in transit and at rest. It is strictly accessible only to your employer's HR and payroll administrators, and is never shared with third parties or advertisers.",
-                        style: AppTypography.caption.copyWith(
-                          fontSize: 11,
-                          color: AppColors.textSecondary,
-                          height: 1.35,
+                            // Section: Data Collected
+                            _buildUsageRow(
+                              icon: CupertinoIcons.placemark_fill,
+                              iconColor: const Color(0xFF0F766E),
+                              title: "Data Collected",
+                              description:
+                                  "Precise GPS coordinates (latitude, longitude) and location timestamps.",
+                            ),
+                            const SizedBox(height: 8),
+
+                            // Feature 1: Geofence Verification
+                            _buildUsageRow(
+                              icon: CupertinoIcons.checkmark_shield_fill,
+                              iconColor: const Color(0xFF15803D),
+                              title: "Workplace Geofence Verification",
+                              description:
+                                  "Validates that you are physically present within your company's authorized office, factory, or project boundary during check-in and check-out punches.",
+                            ),
+                            const SizedBox(height: 8),
+
+                            // Feature 2: Shift Attendance & Duty Tracking
+                            _buildUsageRow(
+                              icon: CupertinoIcons.clock_fill,
+                              iconColor: const Color(0xFF2563EB),
+                              title: "Shift Attendance & Duty Calculation",
+                              description:
+                                  "Accurately calculates on-duty working hours, branch check-ins, and generates verified attendance records for payroll processing.",
+                            ),
+                            const SizedBox(height: 8),
+
+                            // Feature 3: On-Duty Validation
+                            _buildUsageRow(
+                              icon: CupertinoIcons.arrow_2_circlepath,
+                              iconColor: const Color(0xFFD97706),
+                              title: "Continuous Shift Validation",
+                              description:
+                                  "Periodically verifies location during active shift hours to confirm on-duty presence even when the app is minimized or the screen is off.",
+                            ),
+                          ],
                         ),
                       ),
-                    ),
-                  ],
+                      const SizedBox(height: 10),
+
+                      // Data Privacy & Non-Sharing Guarantee
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF0FDF4),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: const Color(0xFFDCFCE7)),
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Icon(
+                              CupertinoIcons.lock_shield_fill,
+                              size: 14,
+                              color: Color(0xFF15803D),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                "Your location data is encrypted in transit and at rest. It is accessible strictly to your employer's authorized HR administrators and is never sold, shared with third parties, or used for advertising.",
+                                style: AppTypography.caption.copyWith(
+                                  fontSize: 10.5,
+                                  color: const Color(0xFF166534),
+                                  height: 1.35,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 14),
 
-              // ── Explicit Consent Actions ────────────────────────────
+              // 3. Fixed Action Buttons: Always visible & accessible
               Row(
                 children: [
                   Expanded(
+                    flex: 2,
                     child: OutlinedButton(
+                      onPressed: () => Navigator.of(context).pop(false),
                       style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        foregroundColor: AppColors.textSecondary,
+                        side: const BorderSide(color: Color(0xFFCBD5E1)),
                         shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(14),
+                          borderRadius: BorderRadius.circular(12),
                         ),
-                        side: BorderSide(color: Colors.grey.shade300),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
                       ),
-                      onPressed: () {
-                        Navigator.of(context).pop(false);
-                      },
-                      child: const Text(
+                      child: Text(
                         "Deny",
-                        style: TextStyle(
-                          color: Colors.black87,
+                        style: AppTypography.bodyRegular.copyWith(
                           fontWeight: FontWeight.w600,
-                          fontSize: 14,
+                          fontSize: 13,
+                          color: AppColors.textSecondary,
                         ),
                       ),
                     ),
                   ),
-                  const SizedBox(width: 12),
+                  const SizedBox(width: 10),
                   Expanded(
-                    flex: 2,
+                    flex: 3,
                     child: ElevatedButton(
+                      onPressed: () => Navigator.of(context).pop(true),
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: AppColors.primary,
+                        backgroundColor: const Color(0xFF0F5132),
                         foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(14),
-                        ),
                         elevation: 0,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
                       ),
-                      onPressed: () {
-                        Navigator.of(context).pop(true);
-                      },
-                      child: const Text(
+                      child: Text(
                         "Agree & Continue",
-                        style: TextStyle(
+                        style: AppTypography.bodyRegular.copyWith(
                           fontWeight: FontWeight.bold,
-                          fontSize: 14,
+                          fontSize: 13,
+                          color: Colors.white,
                         ),
                       ),
                     ),
@@ -216,56 +272,40 @@ class LocationProminentDisclosureDialog extends StatelessWidget {
       ),
     );
   }
-}
 
-class _DisclosureBullet extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final String description;
-  final bool highlight;
-
-  const _DisclosureBullet({
-    required this.icon,
-    required this.title,
-    required this.description,
-    this.highlight = false,
-  });
-
-  @override
-  Widget build(BuildContext context) {
+  Widget _buildUsageRow({
+    required IconData icon,
+    required Color iconColor,
+    required String title,
+    required String description,
+  }) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Padding(
-          padding: const EdgeInsets.only(top: 2),
-          child: Icon(
-            icon,
-            size: 15,
-            color: highlight ? AppColors.primary : AppColors.primaryAccent,
-          ),
-        ),
-        const SizedBox(width: 8),
+        Icon(icon, size: 16, color: iconColor),
+        const SizedBox(width: 10),
         Expanded(
-          child: RichText(
-            text: TextSpan(
-              style: AppTypography.caption.copyWith(
-                color: AppColors.textPrimary,
-                fontSize: 11.5,
-                height: 1.35,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: AppTypography.caption.copyWith(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 12,
+                  color: const Color(0xFF1E293B),
+                ),
               ),
-              children: [
-                TextSpan(
-                  text: "$title: ",
-                  style: const TextStyle(fontWeight: FontWeight.bold),
+              const SizedBox(height: 2),
+              Text(
+                description,
+                style: AppTypography.caption.copyWith(
+                  fontSize: 11,
+                  color: const Color(0xFF475569),
+                  height: 1.35,
                 ),
-                TextSpan(
-                  text: description,
-                  style: highlight
-                      ? const TextStyle(fontWeight: FontWeight.w600)
-                      : null,
-                ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       ],

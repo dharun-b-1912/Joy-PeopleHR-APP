@@ -8,7 +8,7 @@ void main() {
   group('Auth Flow Tests', () {
     test('Email validation accepts valid emails', () {
       expect(Validators.isValidEmail('user@example.com'), true);
-      expect(Validators.isValidEmail('dharun@joyglobalcorp.com'), true);
+      expect(Validators.isValidEmail('user.auth@domain.co.in'), true);
       expect(Validators.isValidEmail('test.user+tag@domain.co.in'), true);
     });
 
@@ -44,7 +44,7 @@ void main() {
       const user = UserModel(
         name: 'Test User',
         firstName: 'Test',
-        employeeId: 'JCS-017',
+        employeeId: 'EMP-001',
         employeeUuid: 'EMP-617871',
         designation: 'Software Engineer',
         department: 'Engineering',
@@ -73,7 +73,7 @@ void main() {
       const user = UserModel(
         name: 'Test User',
         firstName: 'Test',
-        employeeId: 'JCS-017',
+        employeeId: 'EMP-001',
         designation: 'Engineer',
         department: 'Engineering',
         role: 'EMPLOYEE',
@@ -90,7 +90,7 @@ void main() {
         leaveBalanceDays: 15,
       );
 
-      expect(user.dataId, 'JCS-017');
+      expect(user.dataId, 'EMP-001');
     });
 
     test('UserModel copyWith preserves all fields', () {

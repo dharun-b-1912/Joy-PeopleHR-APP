@@ -7,6 +7,8 @@ import '../controllers/employee_controller.dart';
 import '../services/attendance_time_service.dart';
 import '../utils/secure_log.dart';
 import 'location_service.dart';
+import 'shift_adaptive_service.dart';
+import 'shift_tracking_service.dart';
 import 'user_service.dart';
 
 class CheckInResult {
@@ -131,12 +133,16 @@ class AttendanceService extends ChangeNotifier {
         final verifyMethod = dailyRow['verification_type']?.toString();
         final deviceId = dailyRow['device_id']?.toString();
         final isSourceLocked = attendanceSource != AttendanceSource.unassigned;
+        final isOnLeave = dailyRow['is_on_leave'] == true;
+        final leaveReason = dailyRow['leave_reason']?.toString();
 
         if (checkInDt != null) {
           final isCheckedOut = !isCurrentlyIn && checkOutDt != null && checkOutDt.isAfter(checkInDt);
           if (isCheckedOut) {
             _session = AttendanceSession(
               status: AttendanceStatus.checkedOut,
+              isOnLeave: isOnLeave,
+              leaveReason: leaveReason,
               checkInTime: checkInDt,
               checkOutTime: checkOutDt,
               netWorkingMinutes: netMins,
@@ -151,6 +157,8 @@ class AttendanceService extends ChangeNotifier {
           } else {
             _session = AttendanceSession(
               status: AttendanceStatus.checkedIn,
+              isOnLeave: isOnLeave,
+              leaveReason: leaveReason,
               checkInTime: checkInDt,
               checkInLocationName: dailyRow['location_name']?.toString() ?? user.campus,
               source: attendanceSource,
@@ -162,7 +170,11 @@ class AttendanceService extends ChangeNotifier {
             _startTickerIfNeeded();
           }
         } else {
-          _session = const AttendanceSession(status: AttendanceStatus.notCheckedIn);
+          _session = AttendanceSession(
+            status: AttendanceStatus.notCheckedIn,
+            isOnLeave: isOnLeave,
+            leaveReason: leaveReason,
+          );
           _ticker?.cancel();
         }
       } else {
@@ -216,6 +228,7 @@ class AttendanceService extends ChangeNotifier {
   Future<CheckInResult> performCheckIn({
     required UserLocationResult location,
     required ApprovedWorkLocation approvedLocation,
+    CompanyShift? selectedShift,
   }) async {
     if (_isProcessing) {
       return const CheckInResult(
@@ -272,11 +285,27 @@ class AttendanceService extends ChangeNotifier {
         longitude: location.longitude,
         accuracy: location.accuracyMeters,
         isMocked: location.isMock,
+        selectedShift: selectedShift,
       );
+
+      // If a specific shift was confirmed, update the active user's shift timings dynamically
+      if (selectedShift != null) {
+        final currentUser = UserService.instance.currentUser;
+        UserService.instance.setUser(
+          currentUser.copyWith(
+            shiftStart: selectedShift.formattedStart,
+            shiftEnd: selectedShift.formattedEnd,
+          ),
+        );
+      }
 
       // 4. Authoritatively refresh session directly from database
       await fetchTodayAttendance();
       unawaited(NotificationController.instance.loadNotifications());
+
+      // 5. Instantly transmit live location to HR fleet radar & begin continuous shift tracking
+      unawaited(ShiftTrackingService.instance.syncCurrentDeviceLocation(status: 'on_duty'));
+      ShiftTrackingService.instance.startShiftTracking();
 
       final locName = location.targetLocation?.name ?? approvedLocation.name;
       return CheckInResult(
@@ -390,6 +419,10 @@ class AttendanceService extends ChangeNotifier {
       _ticker?.cancel();
       await fetchTodayAttendance();
       unawaited(NotificationController.instance.loadNotifications());
+
+      // 3. Transmit final checked-out GPS telemetry & stop active tracking
+      unawaited(ShiftTrackingService.instance.syncCurrentDeviceLocation(status: 'clocked_out'));
+      ShiftTrackingService.instance.stopShiftTracking();
 
       return CheckInResult(
         success: true,

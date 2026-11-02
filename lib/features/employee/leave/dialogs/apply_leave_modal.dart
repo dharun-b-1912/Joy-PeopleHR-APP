@@ -530,7 +530,7 @@ class _ApplyLeaveModalState extends State<ApplyLeaveModal> {
 
                 AppSpacing.gapMD,
 
-                // Duration & Reporting Manager Info Card
+                // Duration & Reporting Manager Info Card (Fully Responsive & Auto-Adapting)
                 Container(
                   width: double.infinity,
                   padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
@@ -541,33 +541,75 @@ class _ApplyLeaveModalState extends State<ApplyLeaveModal> {
                   child: Column(
                     children: [
                       Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Text("Leave Duration", style: AppTypography.caption.copyWith(fontWeight: FontWeight.bold)),
                           Text(
-                            _isHalfDay
-                                ? "0.5 Day ($_halfDaySession)"
-                                : _calendarDaysCount > duration
-                                    ? "$duration Working Day${duration == 1 ? '' : 's'} (${_calendarDaysCount - duration.toInt()} Weekend off excluded)"
-                                    : "$duration Day${duration == 1 ? '' : 's'}",
-                            style: AppTypography.bodyLarge.copyWith(fontWeight: FontWeight.bold, color: AppColors.primary),
+                            "Leave Duration",
+                            style: AppTypography.caption.copyWith(fontWeight: FontWeight.bold),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: [
+                                Text(
+                                  _isHalfDay
+                                      ? "0.5 Day ($_halfDaySession)"
+                                      : "$duration Working Day${duration == 1 ? '' : 's'}",
+                                  textAlign: TextAlign.end,
+                                  style: AppTypography.titleMedium.copyWith(
+                                    fontWeight: FontWeight.bold,
+                                    color: AppColors.primary,
+                                  ),
+                                ),
+                                if (!_isHalfDay && _calendarDaysCount > duration) ...[
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    "(${_calendarDaysCount - duration.toInt()} Weekend off excluded)",
+                                    textAlign: TextAlign.end,
+                                    style: AppTypography.caption.copyWith(
+                                      color: AppColors.textSecondary,
+                                      fontSize: 11,
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
                           ),
                         ],
                       ),
-                      const SizedBox(height: 6),
+                      const SizedBox(height: 8),
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Text("Approval Routed To", style: AppTypography.caption.copyWith(color: AppColors.textSecondary)),
-                          Row(
-                            children: [
-                              const Icon(CupertinoIcons.person_crop_circle_badge_checkmark, size: 14, color: AppColors.primary),
-                              const SizedBox(width: 4),
-                              Text(
-                                managerName,
-                                style: AppTypography.caption.copyWith(fontWeight: FontWeight.bold, color: AppColors.textPrimary),
-                              ),
-                            ],
+                          Text(
+                            "Approval Routed To",
+                            style: AppTypography.caption.copyWith(color: AppColors.textSecondary),
+                          ),
+                          const SizedBox(width: 8),
+                          Flexible(
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(
+                                  CupertinoIcons.person_crop_circle_badge_checkmark,
+                                  size: 14,
+                                  color: AppColors.primary,
+                                ),
+                                const SizedBox(width: 4),
+                                Flexible(
+                                  child: Text(
+                                    managerName,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: AppTypography.caption.copyWith(
+                                      fontWeight: FontWeight.bold,
+                                      color: AppColors.textPrimary,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
                         ],
                       ),

@@ -1,5 +1,8 @@
+import 'dart:io' show Platform;
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:in_app_update/in_app_update.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -71,7 +74,7 @@ class AppUpdateService extends ChangeNotifier {
     try {
       await AppVersionService.instance.init();
       final currentVer = AppVersionService.instance.version;
-      final currentBuild = int.tryParse(AppVersionService.instance.buildNumber) ?? 17;
+      final currentBuild = int.tryParse(AppVersionService.instance.buildNumber) ?? 31;
 
       // Query Supabase for remote version config
       Map<String, dynamic>? remoteRow;
@@ -117,7 +120,7 @@ class AppUpdateService extends ChangeNotifier {
     } catch (e) {
       secureLog('[AppUpdate] General check error: $e');
       final currentVer = AppVersionService.instance.version;
-      final currentBuild = int.tryParse(AppVersionService.instance.buildNumber) ?? 17;
+      final currentBuild = int.tryParse(AppVersionService.instance.buildNumber) ?? 31;
       _updateInfo = AppUpdateInfo.upToDate(
         currentVersion: currentVer,
         currentBuildNumber: currentBuild,
@@ -171,6 +174,32 @@ class AppUpdateService extends ChangeNotifier {
     } catch (e) {
       secureLog('[AppUpdate] Could not open Play Store: $e');
     }
+  }
+
+  /// Triggers update: first attempts Google Play native in-app update, then falls back to store link
+  Future<void> performUpdate({String? targetUrl, bool immediate = true}) async {
+    if (!kIsWeb && Platform.isAndroid) {
+      try {
+        final updateInfo = await InAppUpdate.checkForUpdate();
+        if (updateInfo.updateAvailability == UpdateAvailability.updateAvailable) {
+          if (immediate && updateInfo.immediateUpdateAllowed) {
+            final result = await InAppUpdate.performImmediateUpdate();
+            if (result == AppUpdateResult.success) return;
+          } else if (updateInfo.flexibleUpdateAllowed) {
+            final result = await InAppUpdate.startFlexibleUpdate();
+            if (result == AppUpdateResult.success) {
+              await InAppUpdate.completeFlexibleUpdate();
+              return;
+            }
+          }
+        }
+      } catch (e) {
+        secureLog('[AppUpdate] Native Google Play in-app update notice: $e (falling back to store URL)');
+      }
+    }
+
+    // Direct store launch fallback
+    await openPlayStore(targetUrl: targetUrl);
   }
 
   /// Evaluates update state and presents the update modal dialog if available
@@ -376,11 +405,16 @@ class AppUpdateDialog extends StatelessWidget {
 
               const SizedBox(height: 24),
 
-              // Primary CTA: Update from Play Store
+              // Primary CTA: Update Now (Native In-App Update / Store)
               ElevatedButton(
                 onPressed: () async {
-                  Navigator.of(context).pop();
-                  await AppUpdateService.instance.openPlayStore(targetUrl: info.playStoreUrl);
+                  if (!info.isForceUpdate) {
+                    Navigator.of(context).pop();
+                  }
+                  await AppUpdateService.instance.performUpdate(
+                    targetUrl: info.playStoreUrl,
+                    immediate: info.isForceUpdate,
+                  );
                 },
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppColors.primary,
@@ -397,7 +431,7 @@ class AppUpdateDialog extends StatelessWidget {
                     const Icon(CupertinoIcons.cloud_download_fill, size: 18, color: Colors.white),
                     const SizedBox(width: 8),
                     Text(
-                      "Update from Play Store",
+                      info.isForceUpdate ? "Update Required Now" : "Update from Play Store",
                       style: AppTypography.bodyRegular.copyWith(
                         color: Colors.white,
                         fontWeight: FontWeight.bold,

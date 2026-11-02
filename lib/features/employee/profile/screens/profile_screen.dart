@@ -22,6 +22,7 @@ import '../dialogs/emergency_contact_dialog.dart';
 import '../dialogs/documents_summary_dialog.dart';
 import '../dialogs/assets_summary_dialog.dart';
 import '../../../../repositories/supabase/supabase_employee_repository.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -1834,6 +1835,112 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
                         AppSpacing.gapLG,
 
+                        // ── 9. PRIVACY & ACCOUNT MANAGEMENT ─────────────────────
+                        AppCard(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                          child: Column(
+                            children: [
+                              InkWell(
+                                onTap: () => _showPrivacyPolicy(context),
+                                borderRadius: AppRadius.borderCard,
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(vertical: 10),
+                                  child: Row(
+                                    children: [
+                                      Container(
+                                        width: 38,
+                                        height: 38,
+                                        decoration: BoxDecoration(
+                                          color: AppColors.skyBg,
+                                          borderRadius: AppRadius.borderSquircle,
+                                        ),
+                                        child: const Icon(
+                                          CupertinoIcons.shield_fill,
+                                          color: AppColors.skyFg,
+                                          size: 18,
+                                        ),
+                                      ),
+                                      AppSpacing.hGapMD,
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              "Privacy Policy & Terms",
+                                              style: AppTypography.bodyRegular.copyWith(
+                                                fontWeight: FontWeight.bold,
+                                                color: AppColors.textPrimary,
+                                              ),
+                                            ),
+                                            Text(
+                                              "How your employee data is protected",
+                                              style: AppTypography.caption.copyWith(
+                                                color: AppColors.textMuted,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      const Icon(CupertinoIcons.chevron_forward,
+                                          size: 16, color: AppColors.textMuted),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                              const Divider(height: 1, color: Color(0xFFF1F5F9)),
+                              InkWell(
+                                onTap: () => _showAccountDeletionDialog(context),
+                                borderRadius: AppRadius.borderCard,
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(vertical: 10),
+                                  child: Row(
+                                    children: [
+                                      Container(
+                                        width: 38,
+                                        height: 38,
+                                        decoration: BoxDecoration(
+                                          color: AppColors.slateBg,
+                                          borderRadius: AppRadius.borderSquircle,
+                                        ),
+                                        child: const Icon(
+                                          CupertinoIcons.person_crop_circle_badge_minus,
+                                          color: AppColors.textSecondary,
+                                          size: 18,
+                                        ),
+                                      ),
+                                      AppSpacing.hGapMD,
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              "Account Deletion Request",
+                                              style: AppTypography.bodyRegular.copyWith(
+                                                fontWeight: FontWeight.bold,
+                                                color: AppColors.textSecondary,
+                                              ),
+                                            ),
+                                            Text(
+                                              "Request deletion of employee records",
+                                              style: AppTypography.caption.copyWith(
+                                                color: AppColors.textMuted,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      const Icon(CupertinoIcons.chevron_forward,
+                                          size: 16, color: AppColors.textMuted),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+
+                        AppSpacing.gapLG,
+
                         // ── 10. DANGER ZONE: SIGN OUT ─────────────────────────────
                         AppCard(
                           padding: const EdgeInsets.all(16),
@@ -1913,6 +2020,70 @@ class _ProfileScreenState extends State<ProfileScreen> {
         ),
       );
       },
+    );
+  }
+
+  void _showPrivacyPolicy(BuildContext context) {
+    showCupertinoDialog(
+      context: context,
+      builder: (ctx) => CupertinoAlertDialog(
+        title: const Text("Privacy Policy & Data Rights"),
+        content: const Padding(
+          padding: EdgeInsets.only(top: 8.0),
+          child: Text(
+            "JOY PeopleHR protects your personal data with enterprise-grade encryption.\n\n"
+            "• Location data is accessed solely during active shift hours for geofence verification and payroll calculation.\n"
+            "• Biometric and facial data is used exclusively on-device for terminal verification.\n"
+            "• Data is never sold, shared with third parties, or used for advertising.\n\n"
+            "For full privacy terms, please refer to your employer's corporate HR privacy notice.",
+          ),
+        ),
+        actions: [
+          CupertinoDialogAction(
+            child: const Text("Done"),
+            onPressed: () => Navigator.pop(ctx),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showAccountDeletionDialog(BuildContext context) {
+    showCupertinoDialog(
+      context: context,
+      builder: (ctx) => CupertinoAlertDialog(
+        title: const Text("Account Deletion Request"),
+        content: const Padding(
+          padding: EdgeInsets.only(top: 8.0),
+          child: Text(
+            "JOY PeopleHR accounts are provisioned and managed by your organization's HR Department. "
+            "To request complete deletion of your corporate account, attendance records, and personal profile, "
+            "please submit a request to your HR administrator.\n\n"
+            "Would you like to initiate a deletion request email to HR?",
+          ),
+        ),
+        actions: [
+          CupertinoDialogAction(
+            child: const Text("Cancel"),
+            onPressed: () => Navigator.pop(ctx),
+          ),
+          CupertinoDialogAction(
+            isDestructiveAction: true,
+            child: const Text("Email HR"),
+            onPressed: () async {
+              Navigator.pop(ctx);
+              final emailUri = Uri(
+                scheme: 'mailto',
+                path: 'hr@joyglobalcorp.com',
+                query: 'subject=Employee Account Deletion Request&body=I would like to request deletion of my JOY PeopleHR account and associated records.',
+              );
+              try {
+                await launchUrl(emailUri, mode: LaunchMode.externalApplication);
+              } catch (_) {}
+            },
+          ),
+        ],
+      ),
     );
   }
 

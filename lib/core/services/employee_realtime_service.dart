@@ -8,6 +8,7 @@ import 'attendance_service.dart';
 import 'employee_profile_mapper.dart';
 import 'local_notification_store.dart';
 import 'location_service.dart';
+import 'push_notification_service.dart';
 import 'user_service.dart';
 
 /// Connection status states for Employee Realtime Service
@@ -224,11 +225,14 @@ class EmployeeRealtimeService with WidgetsBindingObserver {
           LeaveController.instance.refresh();
           AttendanceDetailController.instance.refresh();
           if (payload.eventType != PostgresChangeEvent.delete) {
-            final status = payload.newRecord['status']?.toString() ?? 'updated';
-            LocalNotificationStore.instance.addNotification(
-              title: 'Leave Request $status',
-              body: 'Your leave request has been $status by HR.',
+            final rawStatus = payload.newRecord['status']?.toString() ?? 'updated';
+            final status = rawStatus.toUpperCase();
+            final emoji = status == 'APPROVED' ? '✅' : (status == 'REJECTED' ? '❌' : 'ℹ️');
+            PushNotificationService.instance.triggerTestNotification(
+              title: 'Leave Request $status $emoji',
+              body: 'Your leave request has been ${status.toLowerCase()} by HR.',
               route: 'leaves',
+              data: {'type': 'leave', 'status': status},
             );
           }
         },
@@ -247,10 +251,11 @@ class EmployeeRealtimeService with WidgetsBindingObserver {
         callback: (PostgresChangePayload payload) {
           secureLog('[REALTIME] leave_balances change event received for employee $trimmedUuid');
           LeaveController.instance.refresh();
-          LocalNotificationStore.instance.addNotification(
-            title: 'Leave Balance Updated',
-            body: 'HR has updated your leave balance.',
+          PushNotificationService.instance.triggerTestNotification(
+            title: 'Leave Balance Updated 📊',
+            body: 'HR has updated your leave quota balance.',
             route: 'leaves',
+            data: {'type': 'leave_balance'},
           );
         },
       );
@@ -264,10 +269,11 @@ class EmployeeRealtimeService with WidgetsBindingObserver {
           secureLog('[REALTIME] Shift schedule change event received');
           MoreModulesController.instance.loadAllData();
           reconcile();
-          LocalNotificationStore.instance.addNotification(
-            title: 'Shift Schedule Updated',
-            body: 'HR has updated your shift schedule.',
+          PushNotificationService.instance.triggerTestNotification(
+            title: 'Shift Schedule Updated ⏰',
+            body: 'HR has updated your assigned shift schedule.',
             route: 'attendance',
+            data: {'type': 'shift'},
           );
         },
       );
@@ -284,11 +290,14 @@ class EmployeeRealtimeService with WidgetsBindingObserver {
           NotificationController.instance.loadNotifications();
 
           if (payload.eventType != PostgresChangeEvent.delete) {
-            final status = payload.newRecord['status']?.toString() ?? 'updated';
-            LocalNotificationStore.instance.addNotification(
-              title: 'Regularization $status',
-              body: 'HR has $status your attendance regularization request.',
+            final rawStatus = payload.newRecord['status']?.toString() ?? 'updated';
+            final status = rawStatus.toUpperCase();
+            final emoji = status == 'APPROVED' ? '✅' : (status == 'REJECTED' ? '❌' : 'ℹ️');
+            PushNotificationService.instance.triggerTestNotification(
+              title: 'Regularization $status $emoji',
+              body: 'HR has ${status.toLowerCase()} your attendance regularization request.',
               route: 'attendance',
+              data: {'type': 'regularization', 'status': status},
             );
           }
         },
@@ -315,6 +324,17 @@ class EmployeeRealtimeService with WidgetsBindingObserver {
           secureLog('[REALTIME] attendance_punches change event received');
           AttendanceService.instance.fetchTodayAttendance();
           AttendanceDetailController.instance.refresh();
+          if (payload.eventType == PostgresChangeEvent.insert) {
+            final punchType = payload.newRecord['punch_type']?.toString().toUpperCase() ?? 'PUNCH';
+            final punchTime = payload.newRecord['punch_time']?.toString() ?? '';
+            final device = payload.newRecord['device_name']?.toString() ?? 'Biometric Device';
+            PushNotificationService.instance.triggerTestNotification(
+              title: 'Attendance $punchType Recorded ⏱️',
+              body: 'Your $punchType check-in was successfully recorded via $device.',
+              route: 'attendance',
+              data: {'type': 'punch', 'punch_type': punchType, 'punch_time': punchTime},
+            );
+          }
         },
       );
 
@@ -325,15 +345,32 @@ class EmployeeRealtimeService with WidgetsBindingObserver {
         table: 'notification_events',
         callback: (PostgresChangePayload payload) {
           final isAnnouncement = payload.newRecord['recipient_user_id'] == null;
-          final title = payload.newRecord['title'] ?? (isAnnouncement ? 'Company Announcement' : 'Notification');
+          final title = payload.newRecord['title'] ?? (isAnnouncement ? 'Company Announcement 📢' : 'Notification 🔔');
+          final rawMsg = payload.newRecord['message'] ?? payload.newRecord['body'];
+          final body = (rawMsg != null && rawMsg.toString().isNotEmpty)
+              ? rawMsg.toString()
+              : 'You have a new update from JOY PeopleHR.';
+          final rawUrl = payload.newRecord['action_url'] ?? payload.newRecord['route'] ?? payload.newRecord['metadata']?['route'];
+          final route = (rawUrl != null && rawUrl.toString().isNotEmpty)
+              ? rawUrl.toString().replaceAll('/', '')
+              : (isAnnouncement ? 'announcements' : 'home');
 
           secureLog('[REALTIME] notification_events event received: $title (isAnnouncement: $isAnnouncement)');
           NotificationController.instance.loadNotifications();
           if (isAnnouncement) {
             MoreModulesController.instance.loadAllData();
           }
-          // Note: Remote FCM push is handled securely by backend Edge Function and FirebaseMessaging.
-          // Do not pop duplicate local notifications here.
+          if (payload.eventType == PostgresChangeEvent.insert) {
+            PushNotificationService.instance.triggerTestNotification(
+              title: title.toString(),
+              body: body,
+              route: route,
+              data: {
+                if (payload.newRecord['id'] != null) 'id': payload.newRecord['id'].toString(),
+                if (payload.newRecord['channel'] != null) 'channel': payload.newRecord['channel'].toString(),
+              },
+            );
+          }
         },
       );
 
@@ -345,7 +382,16 @@ class EmployeeRealtimeService with WidgetsBindingObserver {
         callback: (PostgresChangePayload payload) {
           secureLog('[REALTIME] payslips change event received');
           MoreModulesController.instance.loadAllData();
-          // Realtime refreshes models; remote push is delivered via FCM
+          if (payload.eventType == PostgresChangeEvent.insert || payload.eventType == PostgresChangeEvent.update) {
+            final month = payload.newRecord['month_name']?.toString() ?? 'Salary';
+            final year = payload.newRecord['year']?.toString() ?? '';
+            PushNotificationService.instance.triggerTestNotification(
+              title: 'Payslip Released 💰',
+              body: 'Your $month $year salary statement has been published and is ready for download.',
+              route: 'more',
+              data: {'type': 'payslip', 'month': month, 'year': year},
+            );
+          }
         },
       );
 
@@ -360,6 +406,14 @@ class EmployeeRealtimeService with WidgetsBindingObserver {
           final title = payload.newRecord['file_name'] ?? payload.newRecord['document_name'] ?? 'Document';
           secureLog('[REALTIME] employee_documents change event received: $title');
           MoreModulesController.instance.loadAllData();
+          if (payload.eventType == PostgresChangeEvent.insert) {
+            PushNotificationService.instance.triggerTestNotification(
+              title: 'New Document Published 📄',
+              body: 'A new document "$title" has been uploaded to your profile.',
+              route: 'documents',
+              data: {'type': 'document', 'name': title.toString()},
+            );
+          }
         },
       );
 
@@ -369,14 +423,18 @@ class EmployeeRealtimeService with WidgetsBindingObserver {
         schema: 'public',
         table: 'employee_requests',
         callback: (PostgresChangePayload payload) {
-          final status = payload.newRecord['status'] ?? 'updated';
+          final rawStatus = payload.newRecord['status'] ?? 'updated';
+          final status = rawStatus.toString().toUpperCase();
           secureLog('[REALTIME] employee_requests change event received (status: $status)');
           MoreModulesController.instance.loadAllData();
-          LocalNotificationStore.instance.addNotification(
-            title: 'Request $status',
-            body: 'HR has $status your request.',
-            route: 'requests',
-          );
+          if (payload.eventType != PostgresChangeEvent.delete) {
+            PushNotificationService.instance.triggerTestNotification(
+              title: 'Request $status',
+              body: 'HR has ${status.toLowerCase()} your request.',
+              route: 'requests',
+              data: {'type': 'request', 'status': status},
+            );
+          }
         },
       );
 
@@ -391,10 +449,11 @@ class EmployeeRealtimeService with WidgetsBindingObserver {
           secureLog('[FLUTTER][DOC_REQ] New document requested from HR: $title (Due: $dueDate)');
           NotificationController.instance.loadNotifications();
           MoreModulesController.instance.loadAllData();
-          LocalNotificationStore.instance.addNotification(
-            title: '📋 Document Requested: $title',
+          PushNotificationService.instance.triggerTestNotification(
+            title: '📋 Document Required by HR: $title',
             body: 'HR has requested an official document upload.${dueDate.isNotEmpty ? ' Due: $dueDate' : ''}',
             route: 'documents',
+            data: {'type': 'document_request', 'title': title.toString()},
           );
         },
       );

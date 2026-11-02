@@ -69,24 +69,28 @@ class AppEnv {
 
   // ── Production Safety Constraints ───────────────────────────────────
   /// Debug menus are strictly disabled in production
-  static bool get allowDebugMenus => !isProduction && (kDebugMode || isDev || isQa);
+  static bool get allowDebugMenus => false;
 
-  /// Test mock biometric flows are strictly disabled in production
-  static bool get allowMockBiometrics => !isProduction && isDev;
+  /// Test mock biometric flows are strictly disabled across all builds
+  static bool get allowMockBiometrics => false;
 
-  /// Synthetic employee test generators are strictly disabled in production
-  static bool get allowSyntheticTestData => !isProduction && (isDev || isQa);
+  /// Synthetic employee test generators are strictly disabled across all builds
+  static bool get allowSyntheticTestData => false;
 
-  /// Dev auto-login allowed only in DEV environment under Debug mode
-  static bool get allowDevAutoLogin => isDev && kDebugMode;
+  /// Dev auto-login is permanently disabled across all builds
+  static bool get allowDevAutoLogin => false;
 
   // ── Build Metadata ──────────────────────────────────────────────────
-  static const String versionName = String.fromEnvironment('APP_VERSION', defaultValue: '1.1.6');
-  static const String versionCode = String.fromEnvironment('APP_BUILD_CODE', defaultValue: '24');
+  static const String versionName = String.fromEnvironment('APP_VERSION', defaultValue: '1.1.10');
+  static const String versionCode = String.fromEnvironment('APP_BUILD_CODE', defaultValue: '31');
   static const String commitSha = String.fromEnvironment('GIT_COMMIT_SHA', defaultValue: 'HEAD');
   static const String branch = String.fromEnvironment('GIT_BRANCH', defaultValue: 'main');
   static const String buildTimestamp = String.fromEnvironment('BUILD_TIMESTAMP', defaultValue: '2026-09-12T10:00:00Z');
   static const String buildNumber = String.fromEnvironment('BUILD_NUMBER', defaultValue: '184');
+
+  // ── Company & Organization Identity ─────────────────────────────────
+  /// Canonical production Organization UUID for Joy Corporate Solutions
+  static const String defaultOrganizationId = '0c621892-e938-4707-9957-13534ea32c19';
 
   // ── Backend Endpoints Configuration ─────────────────────────────────
   static String get supabaseUrl {

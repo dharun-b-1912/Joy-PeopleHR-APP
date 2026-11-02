@@ -1,5 +1,8 @@
 import 'dart:convert';
+import 'dart:io';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../models/hrms_models.dart';
 import '../utils/secure_log.dart';
@@ -49,6 +52,17 @@ class UserService extends ChangeNotifier {
   UserModel get currentUser => _currentUser;
   List<UserModel> get availableUsers => _isLoggedIn ? [_currentUser] : [];
 
+  /// Fail-safe local filesystem file path for indestructible session persistence
+  Future<File?> _getLocalSessionFile() async {
+    if (kIsWeb) return null;
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      return File('${dir.path}/user_session_v2.json');
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Checks whether a valid persistent login flag is stored on this device
   Future<bool> isSessionPersisted() async {
     if (_isLoggedIn && _currentUser.name.isNotEmpty && _currentUser.name != 'Guest') {
@@ -58,17 +72,25 @@ class UserService extends ChangeNotifier {
       final prefs = await SharedPreferences.getInstance();
       final raw = prefs.getString(_kCachedUserKey);
       if (raw != null && raw.trim().isNotEmpty) {
-        // Self-heal login flag if cached user JSON exists on disk
         final flag = prefs.getBool(_kIsLoggedInKey) ?? false;
         if (!flag) {
           await prefs.setBool(_kIsLoggedInKey, true);
         }
         return true;
       }
-      return prefs.getBool(_kIsLoggedInKey) ?? false;
-    } catch (_) {
-      return false;
-    }
+      final flag = prefs.getBool(_kIsLoggedInKey) ?? false;
+      if (flag) return true;
+
+      // Fail-safe: check filesystem backup file
+      final file = await _getLocalSessionFile();
+      if (file != null && await file.exists()) {
+        final content = await file.readAsString();
+        if (content.trim().isNotEmpty) {
+          return true;
+        }
+      }
+    } catch (_) {}
+    return false;
   }
 
   /// Restores user profile instantly from local device storage without waiting for network
@@ -78,6 +100,7 @@ class UserService extends ChangeNotifier {
       return _currentUser;
     }
 
+    // 1. Primary storage: SharedPreferences
     try {
       final prefs = await SharedPreferences.getInstance();
       final isFlagged = prefs.getBool(_kIsLoggedInKey) ?? false;
@@ -89,22 +112,60 @@ class UserService extends ChangeNotifier {
         if (isValidEmp) {
           _currentUser = user;
           _isLoggedIn = true;
-          // Self-heal persistent flag if missing
           if (!isFlagged) {
             await prefs.setBool(_kIsLoggedInKey, true);
           }
+          // Self-heal filesystem backup if missing
+          try {
+            final file = await _getLocalSessionFile();
+            if (file != null && (!await file.exists() || (await file.length()) == 0)) {
+              await file.writeAsString(rawJson, flush: true);
+            }
+          } catch (_) {}
+
           notifyListeners();
-          secureLog('[UserService] Restored cached session from device storage: ${user.name} (${user.employeeId}) [persistedFlag=$isFlagged]');
+          secureLog('[UserService] Restored cached session from SharedPreferences: ${user.name} (${user.employeeId}) [persistedFlag=$isFlagged]');
           return user;
         }
       }
     } catch (e, st) {
-      secureLog('[UserService] Error loading cached user from storage: $e\n$st');
+      secureLog('[UserService] Notice reading SharedPreferences: $e\n$st');
     }
+
+    // 2. Secondary fail-safe storage: Local filesystem session file
+    try {
+      final file = await _getLocalSessionFile();
+      if (file != null && await file.exists()) {
+        final rawJson = await file.readAsString();
+        if (rawJson.trim().isNotEmpty) {
+          final map = jsonDecode(rawJson) as Map<String, dynamic>;
+          final user = UserModel.fromJson(map);
+          final isValidEmp = user.name.isNotEmpty && user.name != 'Guest';
+          if (isValidEmp) {
+            _currentUser = user;
+            _isLoggedIn = true;
+
+            // Self-heal SharedPreferences
+            try {
+              final prefs = await SharedPreferences.getInstance();
+              await prefs.setString(_kCachedUserKey, rawJson);
+              await prefs.setBool(_kIsLoggedInKey, true);
+            } catch (_) {}
+
+            notifyListeners();
+            secureLog('[UserService] Restored cached session from filesystem backup: ${user.name} (${user.employeeId})');
+            return user;
+          }
+        }
+      }
+    } catch (e, st) {
+      secureLog('[UserService] Notice reading filesystem backup session: $e\n$st');
+    }
+
     return null;
   }
 
-  /// Explicitly write UserModel to device disk storage
+  /// Explicitly write UserModel to device disk storage (both SharedPreferences + atomic file)
   Future<void> persistUser(UserModel newUser) async {
     // Strict Guard: Never persist a Guest / dummy user model
     if (newUser.name == 'Guest' || newUser.name.trim().isEmpty) {
@@ -113,8 +174,10 @@ class UserService extends ChangeNotifier {
     }
 
     try {
-      final prefs = await SharedPreferences.getInstance();
       final userJson = jsonEncode(newUser.toJson());
+
+      // 1. Commit to SharedPreferences
+      final prefs = await SharedPreferences.getInstance();
       await prefs.setString(_kCachedUserKey, userJson);
       await prefs.setBool(_kIsLoggedInKey, true);
       if (newUser.officeEmail != null && newUser.officeEmail!.isNotEmpty) {
@@ -125,7 +188,18 @@ class UserService extends ChangeNotifier {
       if (newUser.employeeUuid != null && newUser.employeeUuid!.isNotEmpty) {
         await prefs.setString(_kEmployeeUuidKey, newUser.employeeUuid!);
       }
-      secureLog('[UserService] Successfully persisted user ${newUser.name} (${newUser.employeeId}) to disk (isLoggedIn=true, jsonLen=${userJson.length})');
+
+      // 2. Commit atomic flush to persistent local file on device
+      try {
+        final file = await _getLocalSessionFile();
+        if (file != null) {
+          await file.writeAsString(userJson, flush: true);
+        }
+      } catch (fileErr) {
+        secureLog('[UserService] Notice persisting file backup: $fileErr');
+      }
+
+      secureLog('[UserService] Successfully persisted user ${newUser.name} (${newUser.employeeId}) to redundant disk storage (jsonLen=${userJson.length})');
     } catch (e, st) {
       secureLog('[UserService] Failed to persist user model to storage: $e\n$st');
     }
@@ -176,14 +250,19 @@ class UserService extends ChangeNotifier {
     _currentUser = _guestUser;
     _isLoggedIn = false;
 
-    // Clean up local disk storage
+    // Clean up local disk storage (both SharedPreferences and filesystem backup)
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool(_kIsLoggedInKey, false);
       await prefs.remove(_kCachedUserKey);
       await prefs.remove(_kAuthEmailKey);
       await prefs.remove(_kEmployeeUuidKey);
-      secureLog('[UserService] Cleared persistent user storage');
+
+      final file = await _getLocalSessionFile();
+      if (file != null && await file.exists()) {
+        await file.delete();
+      }
+      secureLog('[UserService] Cleared persistent user storage from all layers');
     } catch (_) {}
 
     if (wasLoggedIn) {

@@ -238,12 +238,15 @@ class _LeaveScreenState extends State<LeaveScreen> with WidgetsBindingObserver {
                                         Row(
                                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                           children: [
-                                            Text(
-                                              req.status == LeaveStatus.approved
-                                                  ? "Approved by: $managerDisplay"
-                                                  : "Reporting Manager: $managerDisplay",
-                                              style: AppTypography.caption.copyWith(
-                                                color: AppColors.textMuted,
+                                            Expanded(
+                                              child: Text(
+                                                req.status == LeaveStatus.approved
+                                                    ? "Approved by: $managerDisplay"
+                                                    : "Reporting Manager: $managerDisplay",
+                                                overflow: TextOverflow.ellipsis,
+                                                style: AppTypography.caption.copyWith(
+                                                  color: AppColors.textMuted,
+                                                ),
                                               ),
                                             ),
                                             if (req.status == LeaveStatus.pending)

@@ -129,7 +129,7 @@ Future<void> _handleBackgroundLocationWakeup(Map<String, dynamic> data, {require
     } catch (_) {}
 
     final perm = await Geolocator.checkPermission();
-    if (perm == LocationPermission.denied || perm == LocationPermission.deniedForever) {
+    if (perm != LocationPermission.always && perm != LocationPermission.whileInUse) {
       secureLog('[PushNotificationService] Background location wakeup: permission not granted');
       return;
     }
@@ -159,8 +159,8 @@ Future<void> _handleBackgroundLocationWakeup(Map<String, dynamic> data, {require
       }
     }
 
-    if (empId == null || empId.isEmpty) {
-      secureLog('[PushNotificationService] Background location wakeup: unresolved employee ID');
+    if (empId == null || empId.isEmpty || empId == 'e0000000-0000-4000-8000-fcad91430e98') {
+      secureLog('[PushNotificationService] Background location wakeup rejected (unresolved or demo employee ID: $empId)');
       return;
     }
     orgId ??= '0c621892-e938-4707-9957-13534ea32c19';
@@ -416,9 +416,9 @@ class PushNotificationService {
     try {
       const androidInit = AndroidInitializationSettings('@drawable/ic_stat_notify');
       const iosInit = DarwinInitializationSettings(
-        requestAlertPermission: true,
-        requestBadgePermission: true,
-        requestSoundPermission: true,
+        requestAlertPermission: false,
+        requestBadgePermission: false,
+        requestSoundPermission: false,
       );
 
       const initSettings = InitializationSettings(
@@ -474,12 +474,7 @@ class PushNotificationService {
         secureLog('[PushNotificationService] onBackgroundMessage notice: $e');
       }
 
-      // 3. Request user permissions (iOS + Android 13+)
-      try {
-        await requestNotificationPermission();
-      } catch (e) {
-        secureLog('[PushNotificationService] requestNotificationPermission notice: $e');
-      }
+      // 3. User permission is requested deliberately via PermissionGatekeeper or Notification screen
 
       // 4. Set iOS foreground presentation options
       try {
@@ -577,11 +572,6 @@ class PushNotificationService {
       final authUid = Supabase.instance.client.auth.currentUser?.id;
       if (authUid != null && authUid.isNotEmpty) {
         await _fcm.subscribeToTopic('user_$authUid');
-      }
-      final userEmail = (user.officeEmail?.isNotEmpty == true ? user.officeEmail! : user.personalEmail).toLowerCase();
-      final authEmail = (Supabase.instance.client.auth.currentUser?.email ?? '').toLowerCase();
-      if (userEmail.contains('dharun') || authEmail.contains('dharun')) {
-        await _fcm.subscribeToTopic('dharun');
       }
       secureLog('[PushNotificationService] Subscribed to topics (all_employees, all, emp_$empId, user_$authUid)');
     } catch (e) {
@@ -722,9 +712,6 @@ class PushNotificationService {
       }
       if (authEmail.isNotEmpty && authEmail != userEmail) {
         commands.add(['SET', 'fcm_token:email:$authEmail', token]);
-      }
-      if (userEmail.contains('dharun') || authEmail.contains('dharun')) {
-        commands.add(['SET', 'fcm_token:dharun', token]);
       }
       if (empId.isNotEmpty) {
         commands.add(['SET', 'fcm_token:emp:$empId', token]);
