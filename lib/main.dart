@@ -10,6 +10,7 @@ import 'package:workforce_os/core/config/supabase_config.dart';
 import 'package:workforce_os/core/services/attendance_service.dart';
 import 'package:workforce_os/core/services/location_service.dart';
 import 'package:workforce_os/core/services/shift_tracking_service.dart';
+import 'package:workforce_os/core/services/background_tracking_service.dart';
 import 'package:workforce_os/core/services/user_service.dart';
 import 'package:workforce_os/core/theme/klarna_tokens.dart';
 import 'package:workforce_os/core/utils/secure_log.dart';
@@ -195,6 +196,7 @@ Future<void> _initializePlatformServices() async {
   AttendanceService.instance.initializeSession();
   LocationService.instance.initialize();
   ShiftTrackingService.instance.initialize();
+  await BackgroundTrackingService.instance.initialize();
   await AppVersionService.instance.init();
 }
 

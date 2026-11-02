@@ -10,6 +10,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../config/supabase_config.dart';
 import '../utils/secure_log.dart';
 import 'attendance_service.dart';
+import 'background_tracking_service.dart';
 import 'user_service.dart';
 
 /// ShiftTrackingService
@@ -471,6 +472,18 @@ class ShiftTrackingService extends ChangeNotifier {
     await _loadTodayCumulativeDistance();
     notifyListeners();
 
+    // Start persistent background service (survives app swipe / closure)
+    final empId = user.dataId.isNotEmpty ? user.dataId : user.employeeId;
+    final orgId = (user.organizationId != null && user.organizationId!.isNotEmpty)
+        ? user.organizationId!
+        : '0c621892-e938-4707-9957-13534ea32c19';
+    BackgroundTrackingService.instance.start(
+      employeeId: empId,
+      organizationId: orgId,
+      employeeName: user.name,
+      employeeCode: user.employeeId,
+    );
+
     secureLog('[ShiftTracking] Shift tracking STARTED for ${user.name} (Foreground Service Active)');
 
     // 1. Capture initial location immediately upon starting
@@ -839,6 +852,9 @@ class ShiftTrackingService extends ChangeNotifier {
     _stationaryHeartbeatTimer = null;
     _isTracking = false;
     notifyListeners();
+
+    // Stop persistent background service
+    BackgroundTrackingService.instance.stop();
 
     final user = UserService.instance.currentUser;
     final orgId = user.companyId;
