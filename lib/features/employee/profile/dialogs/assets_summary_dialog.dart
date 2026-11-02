@@ -44,6 +44,7 @@ class _AssetsSummaryDialogState extends State<AssetsSummaryDialog> {
           _assets = user.assignedAssets.map((a) => {
             'name': a.assetName,
             'id': a.assetId,
+            'asset_code': a.assetId,
             'category': a.category,
             'status': a.status,
             'date': a.assignedDate,
@@ -166,7 +167,9 @@ class _AssetsSummaryDialogState extends State<AssetsSummaryDialog> {
           else
             ..._assets.map((a) {
               final name = a['name'] ?? a['asset_name'] ?? a['asset_code'] ?? 'Company Asset';
-              final id = a['id'] ?? a['asset_code'] ?? '';
+              final rawId = (a['asset_code'] ?? a['id'] ?? '').toString().trim();
+              final isUuid = RegExp(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', caseSensitive: false).hasMatch(rawId);
+              final displayCode = isUuid ? (a['asset_code']?.toString() ?? '') : rawId;
               final category = a['category'] ?? a['asset_type_code'] ?? 'General';
               final status = (a['status'] ?? 'ASSIGNED').toString().toUpperCase();
 
@@ -202,7 +205,7 @@ class _AssetsSummaryDialogState extends State<AssetsSummaryDialog> {
                           ),
                           const SizedBox(height: 2),
                           Text(
-                            id.isNotEmpty ? "ID: $id • $category" : category.toString(),
+                            displayCode.isNotEmpty ? "$displayCode • $category" : category.toString(),
                             style: AppTypography.caption.copyWith(fontSize: 11, color: AppColors.textMuted),
                           ),
                         ],
