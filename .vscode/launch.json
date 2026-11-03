@@ -1,0 +1,13 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Workforce Flutter App",
+      "request": "launch",
+      "type": "dart",
+      "args": [
+        "--android-skip-build-dependency-validation"
+      ]
+    }
+  ]
+}

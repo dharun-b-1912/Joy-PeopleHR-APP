@@ -1,0 +1,32 @@
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+  RewriteRule ^index\.html$ - [L]
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteCond %{REQUEST_FILENAME} !-d
+  RewriteRule . /index.html [L]
+</IfModule>
+
+# Caching and Headers
+<IfModule mod_headers.c>
+  # Avoid caching index.html so iOS Safari users always get the latest app version
+  <Files "index.html">
+    Header set Cache-Control "no-cache, no-store, must-revalidate"
+    Header set Pragma "no-cache"
+    Header set Expires 0
+  </Files>
+
+  # Allow CORS for assets
+  Header set Access-Control-Allow-Origin "*"
+
+  # Explicitly grant geolocation permission to self in browser policy
+  Header set Permissions-Policy "geolocation=(self)"
+</IfModule>
+
+# MIME types for Flutter Web & CanvasKit WebAssembly
+<IfModule mod_mime.c>
+  AddType application/javascript .js
+  AddType application/wasm .wasm
+  AddType application/json .json
+</IfModule>
+
