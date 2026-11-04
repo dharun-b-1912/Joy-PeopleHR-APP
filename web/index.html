@@ -24,60 +24,121 @@
   <title>JOY PeopleHR</title>
   <link rel="manifest" href="manifest.json">
 
-  <!-- iOS Safari & Android Chrome Geolocation Acceleration Bridge -->
+  <!-- iOS Safari & Android Chrome Enterprise Geolocation Bridge -->
   <script>
     window.joyLastKnownLocation = null;
-    window.joyGetLiveLocation = function(highAccuracy, timeoutMs) {
-      return new Promise(function(resolve, reject) {
-        if (!navigator.geolocation) {
-          reject(new Error("GEOLOCATION_UNSUPPORTED"));
+    window.joyLastLocationError = null;
+
+    var isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+    // Master Geolocation Function with Multi-Tier Fallback for iOS & Android
+    window.joyFetchLocation = function(onSuccess, onError, highAccuracy, timeoutMs) {
+      if (!navigator.geolocation) {
+        if (onError) onError("GEOLOCATION_UNSUPPORTED");
+        return;
+      }
+
+      // 1. If we already have a fresh cached position (< 60s), return immediately!
+      if (window.joyLastKnownLocation) {
+        var age = Date.now() - (window.joyLastKnownLocation.timestamp || 0);
+        if (age < 60000 && window.joyLastKnownLocation.lat !== 0) {
+          console.log("[JOY GPS] Using cached position (age: " + Math.round(age/1000) + "s)");
+          if (onSuccess) onSuccess(window.joyLastKnownLocation);
           return;
         }
-        navigator.geolocation.getCurrentPosition(
-          function(pos) {
-            var loc = {
-              lat: pos.coords.latitude,
-              lng: pos.coords.longitude,
-              accuracy: pos.coords.accuracy || 10,
-              timestamp: pos.timestamp || Date.now()
-            };
-            window.joyLastKnownLocation = loc;
-            resolve(loc);
-          },
-          function(err) {
-            // Graceful fallback for iOS Safari when indoors / GPS cold start takes > 10s
-            if (highAccuracy !== false && (err.code === 3 || err.code === 2)) {
-              navigator.geolocation.getCurrentPosition(
-                function(pos2) {
-                  var loc2 = {
-                    lat: pos2.coords.latitude,
-                    lng: pos2.coords.longitude,
-                    accuracy: pos2.coords.accuracy || 15,
-                    timestamp: pos2.timestamp || Date.now()
+      }
+
+      // Tier 1: Try with enableHighAccuracy: false first on iOS to guarantee instant response (< 500ms)
+      // On Android/desktop, use requested highAccuracy.
+      var useHigh = (highAccuracy === true) && !isIOS;
+      var timeout = timeoutMs || 15000;
+
+      function onPositionSuccess(pos) {
+        var loc = {
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          accuracy: pos.coords.accuracy || 10,
+          timestamp: pos.timestamp || Date.now()
+        };
+        window.joyLastKnownLocation = loc;
+        window.joyLastLocationError = null;
+        console.log("[JOY GPS] Position acquired:", loc.lat, loc.lng, "accuracy:", loc.accuracy);
+        if (onSuccess) onSuccess(loc);
+
+        // Tier 3: If on iOS and high accuracy was requested, refine asynchronously in background
+        if (isIOS && highAccuracy === true) {
+          try {
+            navigator.geolocation.getCurrentPosition(
+              function(hiPos) {
+                if (hiPos && hiPos.coords) {
+                  window.joyLastKnownLocation = {
+                    lat: hiPos.coords.latitude,
+                    lng: hiPos.coords.longitude,
+                    accuracy: hiPos.coords.accuracy || 5,
+                    timestamp: hiPos.timestamp || Date.now()
                   };
-                  window.joyLastKnownLocation = loc2;
-                  resolve(loc2);
-                },
-                function(err2) {
-                  reject(err2);
-                },
-                { enableHighAccuracy: false, timeout: 15000, maximumAge: 60000 }
-              );
-            } else {
-              reject(err);
-            }
+                  console.log("[JOY GPS] iOS GPS refined:", hiPos.coords.latitude, hiPos.coords.longitude);
+                }
+              },
+              function() {},
+              { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
+            );
+          } catch(e) {}
+        }
+      }
+
+      function onPositionError(err) {
+        console.warn("[JOY GPS] Primary position error:", err.code, err.message);
+        window.joyLastLocationError = { code: err.code, message: err.message };
+
+        // Fallback for iOS indoors / cold GPS: retry with maximumAge: 300000 (5 min) and false
+        navigator.geolocation.getCurrentPosition(
+          function(pos2) {
+            var loc2 = {
+              lat: pos2.coords.latitude,
+              lng: pos2.coords.longitude,
+              accuracy: pos2.coords.accuracy || 25,
+              timestamp: pos2.timestamp || Date.now()
+            };
+            window.joyLastKnownLocation = loc2;
+            if (onSuccess) onSuccess(loc2);
           },
-          {
-            enableHighAccuracy: highAccuracy !== false,
-            timeout: timeoutMs || 14000,
-            maximumAge: 0
-          }
+          function(err2) {
+            console.error("[JOY GPS] Fallback also failed:", err2.code, err2.message);
+            if (onError) onError(err2.message || "POSITION_UNAVAILABLE");
+          },
+          { enableHighAccuracy: false, timeout: 20000, maximumAge: 300000 }
+        );
+      }
+
+      navigator.geolocation.getCurrentPosition(
+        onPositionSuccess,
+        onPositionError,
+        {
+          enableHighAccuracy: useHigh,
+          timeout: timeout,
+          maximumAge: isIOS ? 60000 : 0
+        }
+      );
+    };
+
+    // Promise wrapper for Dart / JS calls
+    window.joyGetLiveLocation = function(highAccuracy, timeoutMs) {
+      return new Promise(function(resolve, reject) {
+        window.joyFetchLocation(
+          function(loc) { resolve(loc); },
+          function(err) { reject(new Error(err)); },
+          highAccuracy,
+          timeoutMs
         );
       });
     };
 
-    // Auto-prompt on initial page load (Immediately triggers Chrome & Android permission dialog)
-    (function() {
+    // Platform-specific Initialization:
+    // IMPORTANT: On iOS, NEVER call getCurrentPosition on page load! (Safari blocks ungestured calls)
+    // On Android / Desktop, page-load warmup is permitted.
+    if (!isIOS) {
       try {
         if (navigator.geolocation) {
           navigator.geolocation.getCurrentPosition(
@@ -88,32 +149,33 @@
                 accuracy: p.coords.accuracy || 10,
                 timestamp: p.timestamp || Date.now()
               };
-              console.log("[JOY GPS Web] Startup location warmed up successfully:", window.joyLastKnownLocation.lat, window.joyLastKnownLocation.lng);
+              console.log("[JOY GPS] Android/Desktop startup position cached:", window.joyLastKnownLocation.lat, window.joyLastKnownLocation.lng);
             },
             function(e) {
-              console.log("[JOY GPS Web] Startup warmup notice (will retry on user gesture):", e.message);
+              console.log("[JOY GPS] Startup notice:", e.message);
             },
             { enableHighAccuracy: false, timeout: 8000, maximumAge: 60000 }
           );
         }
       } catch(e) {}
-
-      // Also trigger on first user interaction (Satisfies iOS Safari strict user-gesture requirement)
-      var _gestureTriggered = false;
-      function _warmupOnFirstInteraction() {
-        if (_gestureTriggered) return;
-        _gestureTriggered = true;
-        if (window.joyGetLiveLocation) {
-          window.joyGetLiveLocation(true, 12000).catch(function(){});
-        }
-        ['click', 'touchstart', 'pointerdown', 'keydown'].forEach(function(evt) {
-          window.removeEventListener(evt, _warmupOnFirstInteraction);
+    } else {
+      console.log("[JOY GPS] iOS detected (Safari/WebKit). Waiting for active user touch to trigger native prompt...");
+      var _iosTriggered = false;
+      function _onFirstIosUserGesture() {
+        if (_iosTriggered) return;
+        _iosTriggered = true;
+        ['touchstart', 'touchend', 'click', 'pointerdown'].forEach(function(evt) {
+          window.removeEventListener(evt, _onFirstIosUserGesture, true);
+          document.removeEventListener(evt, _onFirstIosUserGesture, true);
         });
+        console.log("[JOY GPS] User touch gesture detected on iOS, initiating native prompt...");
+        window.joyFetchLocation(null, null, false, 15000);
       }
-      ['click', 'touchstart', 'pointerdown', 'keydown'].forEach(function(evt) {
-        window.addEventListener(evt, _warmupOnFirstInteraction, { once: true, passive: true });
+      ['touchstart', 'touchend', 'click', 'pointerdown'].forEach(function(evt) {
+        window.addEventListener(evt, _onFirstIosUserGesture, { capture: true, passive: true });
+        document.addEventListener(evt, _onFirstIosUserGesture, { capture: true, passive: true });
       });
-    })();
+    }
   </script>
 </head>
 

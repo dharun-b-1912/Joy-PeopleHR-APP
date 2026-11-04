@@ -158,7 +158,8 @@ class _PermissionGatekeeperScreenState extends State<PermissionGatekeeperScreen>
 
       // On Web: Execute direct HTML5 Geolocation prompt to browser
       if (kIsWeb) {
-        final pos = await WebLocationBridge.getPosition(enableHighAccuracy: true, timeoutSeconds: 14);
+        // On Web (iOS Safari & Chrome), start with standard accuracy (Wi-Fi/Cell) for sub-second response
+        final pos = await WebLocationBridge.getPosition(enableHighAccuracy: false, timeoutSeconds: 15);
         if (pos != null && (pos.latitude != 0.0 || pos.longitude != 0.0)) {
           setState(() {
             _isLocationGranted = true;

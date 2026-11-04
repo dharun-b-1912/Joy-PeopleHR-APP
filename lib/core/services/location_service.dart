@@ -424,10 +424,10 @@ class LocationService extends ChangeNotifier {
           return _currentResult;
         }
 
-        // 2. Direct Web / iOS Safari Geolocation acquisition
+        // 2. Direct Web / iOS Safari Geolocation acquisition (standard accuracy first for sub-second iOS response)
         Position? webPos = await WebLocationBridge.getPosition(
-          enableHighAccuracy: true,
-          timeoutSeconds: 14,
+          enableHighAccuracy: false,
+          timeoutSeconds: 15,
         );
 
         if (webPos == null) {
@@ -460,7 +460,10 @@ class LocationService extends ChangeNotifier {
           }
         }
 
-        final perm = await Geolocator.checkPermission();
+        LocationPermission perm = LocationPermission.denied;
+        try {
+          perm = await Geolocator.checkPermission();
+        } catch (_) {}
         if (perm == LocationPermission.denied || perm == LocationPermission.deniedForever) {
           _transitionTo(UserLocationResult.error(
             'Location permission is blocked. On iOS Safari, tap "aA" in the address bar > Website Settings > Location > Allow, then refresh.',
@@ -468,7 +471,7 @@ class LocationService extends ChangeNotifier {
           ));
         } else {
           _transitionTo(UserLocationResult.error(
-            'Unable to acquire location on iOS web browser. Tap "Grant Permission" and allow location access.',
+            'Unable to acquire location on iOS web browser. Please tap the screen to allow location access.',
             state: AttendanceGpsState.gpsError,
           ));
         }
@@ -832,8 +835,8 @@ class LocationService extends ChangeNotifier {
 if (kIsWeb) {
       try {
         final pos = await WebLocationBridge.getPosition(
-          enableHighAccuracy: true,
-          timeoutSeconds: 12,
+          enableHighAccuracy: false,
+          timeoutSeconds: 15,
         );
         if (pos != null && (pos.latitude != 0.0 || pos.longitude != 0.0)) {
           _processPosition(pos);

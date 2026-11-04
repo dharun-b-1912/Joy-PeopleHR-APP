@@ -36,12 +36,7 @@ class _LoginScreenState extends State<LoginScreen> {
     _passwordController.clear();
     _authController = widget.controller ?? AuthController();
     _authController.addListener(_onControllerChanged);
-    if (kIsWeb) {
-      // Proactively trigger browser location prompt on web so Chrome/Safari register the permission early
-      Future.delayed(const Duration(milliseconds: 350), () {
-        WebLocationBridge.getPosition(enableHighAccuracy: false, timeoutSeconds: 6);
-      });
-    }
+
   }
 
   @override
@@ -64,6 +59,13 @@ class _LoginScreenState extends State<LoginScreen> {
   Future<void> _handleLoginSubmit() async {
     if (_authController.isLoading) return;
     FocusScope.of(context).unfocus();
+
+    // On Web (iOS Safari & Chrome), requesting location inside this user tap gesture
+    // satisfies WebKit's strict user-activation requirement and natively prompts the user
+    if (kIsWeb) {
+      WebLocationBridge.getPosition(enableHighAccuracy: false, timeoutSeconds: 10).catchError((_) => null);
+    }
+
     final success = await _authController.login(
       email: _emailController.text,
       password: _passwordController.text,

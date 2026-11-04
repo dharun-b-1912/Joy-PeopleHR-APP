@@ -7,11 +7,11 @@ import '../utils/secure_log.dart';
 
 /// Direct HTML5 Geolocation Bridge optimized for iOS Safari & Android Chrome
 Future<Position?> getDirectWebPosition({
-  bool enableHighAccuracy = true,
-  int timeoutSeconds = 14,
+  bool enableHighAccuracy = false,
+  int timeoutSeconds = 15,
 }) async {
   try {
-    // 1. Check if startup warmup or user gesture already cached valid coordinates (< 45s)
+    // 1. Check if startup warmup or user gesture already cached valid coordinates (< 120s)
     try {
       final lastKnown = js.context['joyLastKnownLocation'];
       if (lastKnown != null) {
@@ -20,8 +20,8 @@ Future<Position?> getDirectWebPosition({
         final acc = (lastKnown['accuracy'] as num?)?.toDouble() ?? 10.0;
         final tsMs = (lastKnown['timestamp'] as num?)?.toInt() ?? 0;
         final ageMs = DateTime.now().millisecondsSinceEpoch - tsMs;
-        if (lat != 0.0 && lng != 0.0 && ageMs < 45000) {
-          secureLog('[WebLocationBridge] Instant return of cached warmup position: ($lat, $lng)');
+        if (lat != 0.0 && lng != 0.0 && ageMs < 120000) {
+          secureLog('[WebLocationBridge] Instant return of cached warmup position: ($lat, $lng) age: ${ageMs}ms');
           return Position(
             latitude: lat,
             longitude: lng,
@@ -41,7 +41,6 @@ Future<Position?> getDirectWebPosition({
     }
 
     final geolocation = html.window.navigator.geolocation;
-
     final completer = Completer<Position?>();
 
     void handleSuccess(html.Geoposition pos) {
@@ -57,6 +56,16 @@ Future<Position?> getDirectWebPosition({
       final ts = pos.timestamp != null
           ? DateTime.fromMillisecondsSinceEpoch(pos.timestamp!)
           : DateTime.now();
+
+      // Cache into global JS window for cross-session and cross-service immediate use
+      try {
+        js.context['joyLastKnownLocation'] = js.JsObject.jsify({
+          'lat': lat,
+          'lng': lng,
+          'accuracy': acc,
+          'timestamp': ts.millisecondsSinceEpoch,
+        });
+      } catch (_) {}
 
       completer.complete(Position(
         latitude: lat,
@@ -74,34 +83,15 @@ Future<Position?> getDirectWebPosition({
 
     void handleError(dynamic err) {
       if (completer.isCompleted) return;
-      secureLog('[WebLocationBridge] Primary position acquisition note: $err');
-
-      // If high accuracy timed out or had trouble (common in iOS Safari indoors),
-      // gracefully fall back to standard accuracy with 60-second cached fix
-      if (enableHighAccuracy) {
-        secureLog('[WebLocationBridge] Retrying with standard accuracy for iOS Safari...');
-        geolocation.getCurrentPosition(
-          enableHighAccuracy: false,
-          timeout: const Duration(seconds: 12),
-          maximumAge: const Duration(minutes: 1),
-        ).then((fallbackPos) {
-          handleSuccess(fallbackPos);
-        }).catchError((fallbackErr) {
-          if (!completer.isCompleted) {
-            secureLog('[WebLocationBridge] Fallback location acquisition note: $fallbackErr');
-            completer.complete(null);
-          }
-        });
-        return;
-      }
-
+      secureLog('[WebLocationBridge] Primary position error: $err');
       completer.complete(null);
     }
 
+    // On iOS Safari / Chrome: standard accuracy with maximumAge: 1 min guarantees sub-second response
     geolocation.getCurrentPosition(
       enableHighAccuracy: enableHighAccuracy,
       timeout: Duration(seconds: timeoutSeconds),
-      maximumAge: const Duration(seconds: 0),
+      maximumAge: const Duration(minutes: 1),
     ).then(handleSuccess).catchError(handleError);
 
     return await completer.future.timeout(
