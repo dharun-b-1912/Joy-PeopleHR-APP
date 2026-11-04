@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import '../../../core/services/location_service.dart';
+import '../../../core/services/web_location_bridge.dart';
 import '../../../core/services/push_notification_service.dart';
 import '../../../core/services/shift_tracking_service.dart';
 import '../../../core/theme/klarna_tokens.dart';
@@ -65,21 +66,26 @@ class _PermissionGatekeeperScreenState extends State<PermissionGatekeeperScreen>
   }
 
   Future<void> _checkCurrentPermissions() async {
-    // Check location safely (protect against Safari navigator.permissions.query TypeError)
-    LocationPermission locPerm = LocationPermission.denied;
-    try {
-      locPerm = await Geolocator.checkPermission();
-    } catch (_) {
-      locPerm = LocationPermission.denied;
+    bool isLocGranted = false;
+    if (kIsWeb) {
+      try {
+        final pos = await WebLocationBridge.getPosition(enableHighAccuracy: false, timeoutSeconds: 3);
+        isLocGranted = (pos != null && (pos.latitude != 0.0 || pos.longitude != 0.0));
+      } catch (_) {
+        isLocGranted = false;
+      }
+    } else {
+      LocationPermission locPerm = LocationPermission.denied;
+      try {
+        locPerm = await Geolocator.checkPermission();
+      } catch (_) {
+        locPerm = LocationPermission.denied;
+      }
+      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      isLocGranted = serviceEnabled &&
+          (locPerm == LocationPermission.always ||
+              locPerm == LocationPermission.whileInUse);
     }
-    bool serviceEnabled = true;
-    if (!kIsWeb) {
-      serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    }
-
-    final isLocGranted = serviceEnabled &&
-        (locPerm == LocationPermission.always ||
-            locPerm == LocationPermission.whileInUse);
 
     setState(() {
       _isLocationGranted = isLocGranted;
@@ -150,32 +156,44 @@ class _PermissionGatekeeperScreenState extends State<PermissionGatekeeperScreen>
         }
       }
 
-      // 2. Check current permission status
-      LocationPermission permission = LocationPermission.denied;
-      if (!kIsWeb) {
-        try {
-          permission = await Geolocator.checkPermission();
-          if (permission == LocationPermission.deniedForever) {
-            setState(() {
-              _errorMessage = 'Location permission is permanently denied. Please tap "Open Settings" below.';
-              _isRequesting = false;
-            });
-            await Geolocator.openAppSettings();
-            return;
-          }
-        } catch (_) {}
-      } else {
-        try {
-          permission = await Geolocator.checkPermission();
-        } catch (_) {
-          permission = LocationPermission.denied;
+      // On Web: Execute direct HTML5 Geolocation prompt to browser
+      if (kIsWeb) {
+        final pos = await WebLocationBridge.getPosition(enableHighAccuracy: true, timeoutSeconds: 14);
+        if (pos != null && (pos.latitude != 0.0 || pos.longitude != 0.0)) {
+          setState(() {
+            _isLocationGranted = true;
+            _errorMessage = null;
+            _isRequesting = false;
+          });
+          LocationService.instance.evaluateLiveLocation(silent: true);
+          _checkAllGranted();
+          return;
+        } else {
+          setState(() {
+            _errorMessage = 'Please tap "Allow" when your browser asks for location access.';
+            _isRequesting = false;
+          });
+          return;
         }
       }
 
+      // 2. Native Mobile: Check current permission status
+      LocationPermission permission = LocationPermission.denied;
+      try {
+        permission = await Geolocator.checkPermission();
+        if (permission == LocationPermission.deniedForever) {
+          setState(() {
+            _errorMessage = 'Location permission is permanently denied. Please tap "Open Settings" below.';
+            _isRequesting = false;
+          });
+          await Geolocator.openAppSettings();
+          return;
+        }
+      } catch (_) {}
+
       if (permission != LocationPermission.always &&
           permission != LocationPermission.whileInUse) {
-        // Prominent Disclosure & Affirmative Consent (For native Android/iOS app store compliance)
-        if (!kIsWeb && mounted) {
+        if (mounted) {
           final agreed = await LocationProminentDisclosureDialog.show(context);
           if (!agreed) {
             setState(() {
@@ -185,7 +203,6 @@ class _PermissionGatekeeperScreenState extends State<PermissionGatekeeperScreen>
             return;
           }
         }
-        // In Web, direct user tap invokes runtime permission dialog in Safari / Chrome
         try {
           permission = await Geolocator.requestPermission();
         } catch (e) {

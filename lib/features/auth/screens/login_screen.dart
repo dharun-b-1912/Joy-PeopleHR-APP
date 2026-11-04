@@ -7,6 +7,8 @@ import '../widgets/auth_error_banner.dart';
 import '../widgets/auth_header.dart';
 import '../widgets/auth_text_field.dart';
 import 'forgot_password_screen.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
+import '../../../core/services/web_location_bridge.dart';
 
 class LoginScreen extends StatefulWidget {
   final VoidCallback onLoginSuccess;
@@ -34,6 +36,12 @@ class _LoginScreenState extends State<LoginScreen> {
     _passwordController.clear();
     _authController = widget.controller ?? AuthController();
     _authController.addListener(_onControllerChanged);
+    if (kIsWeb) {
+      // Proactively trigger browser location prompt on web so Chrome/Safari register the permission early
+      Future.delayed(const Duration(milliseconds: 350), () {
+        WebLocationBridge.getPosition(enableHighAccuracy: false, timeoutSeconds: 6);
+      });
+    }
   }
 
   @override
