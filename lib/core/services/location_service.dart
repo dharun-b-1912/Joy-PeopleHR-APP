@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart' show kIsWeb, kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'web_location_bridge.dart';
 import '../../models/hrms_models.dart';
 import '../utils/secure_log.dart';
 import '../utils/validators.dart';
@@ -412,6 +413,69 @@ class LocationService extends ChangeNotifier {
     }
 
     try {
+      if (kIsWeb) {
+        // 1. Verify HTTPS security context (Strict requirement for iOS Safari)
+        if (!WebLocationBridge.checkIsSecureContext()) {
+          _transitionTo(UserLocationResult.error(
+            'iOS Safari requires HTTPS for location access. Please access this app via secure HTTPS.',
+            state: AttendanceGpsState.gpsError,
+          ));
+          _isAcquiring = false;
+          return _currentResult;
+        }
+
+        // 2. Direct Web / iOS Safari Geolocation acquisition
+        Position? webPos = await WebLocationBridge.getPosition(
+          enableHighAccuracy: true,
+          timeoutSeconds: 14,
+        );
+
+        if (webPos == null) {
+          try {
+            webPos = await Geolocator.getCurrentPosition(
+              locationSettings: const LocationSettings(
+                accuracy: LocationAccuracy.medium,
+                timeLimit: Duration(seconds: 10),
+              ),
+            );
+          } catch (posErr) {
+            secureLog('[GPS Web] Secondary geolocator fallback note: $posErr');
+          }
+        }
+
+        if (webPos != null && (webPos.latitude != 0.0 || webPos.longitude != 0.0)) {
+          _processPosition(webPos);
+          _isAcquiring = false;
+          notifyListeners();
+          return _currentResult;
+        }
+
+        if (kDebugMode) {
+          final fallback = await _resolveWebDevFallbackPosition('Web GPS fallback');
+          if (fallback != null) {
+            _processPosition(fallback);
+            _isAcquiring = false;
+            notifyListeners();
+            return _currentResult;
+          }
+        }
+
+        final perm = await Geolocator.checkPermission();
+        if (perm == LocationPermission.denied || perm == LocationPermission.deniedForever) {
+          _transitionTo(UserLocationResult.error(
+            'Location permission is blocked. On iOS Safari, tap "aA" in the address bar > Website Settings > Location > Allow, then refresh.',
+            state: AttendanceGpsState.permissionDenied,
+          ));
+        } else {
+          _transitionTo(UserLocationResult.error(
+            'Unable to acquire location on iOS web browser. Tap "Grant Permission" and allow location access.',
+            state: AttendanceGpsState.gpsError,
+          ));
+        }
+        _isAcquiring = false;
+        return _currentResult;
+      }
+
       // 1. Check if device location service (GPS hardware) is enabled
       bool serviceEnabled = true;
       try {
@@ -765,6 +829,27 @@ class LocationService extends ChangeNotifier {
 
   /// Actively requests location permissions and verifies GPS service
   Future<bool> requestLocationPermission({BuildContext? context}) async {
+if (kIsWeb) {
+      try {
+        final pos = await WebLocationBridge.getPosition(
+          enableHighAccuracy: true,
+          timeoutSeconds: 12,
+        );
+        if (pos != null && (pos.latitude != 0.0 || pos.longitude != 0.0)) {
+          _processPosition(pos);
+          return true;
+        }
+        final perm = await Geolocator.requestPermission();
+        if (perm == LocationPermission.always || perm == LocationPermission.whileInUse) {
+          await evaluateLiveLocation();
+          return true;
+        }
+      } catch (e) {
+        secureLog('[LocationService Web] requestLocationPermission error: $e');
+      }
+      return false;
+    }
+
     try {
       // 1. Check if GPS hardware service is enabled (on mobile devices)
       if (!kIsWeb) {

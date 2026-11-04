@@ -1,5 +1,6 @@
 import 'dart:async';
-import 'package:universal_io/io.dart';
+
+
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -442,7 +443,7 @@ class _PermissionGatekeeperScreenState extends State<PermissionGatekeeperScreen>
                     ),
                   ],
 
-                  if (!kIsWeb && Platform.isAndroid) ...[
+                  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) ...[
                     const SizedBox(height: 16),
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
