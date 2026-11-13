@@ -133,40 +133,42 @@ Future<void> _sanitizeGhostSessionsBeforeBoot() async {
 
     final sessionEmail = currentSession?.user.email?.toLowerCase().trim();
 
-    final isDemoCache = empId == 'JCS-099' ||
-        email.contains('demo') ||
-        email.contains('joypeoplehr.com') ||
-        name.contains('DEMO') ||
-        name.contains('ARJUN KUMAR');
+    // Only perform ghost-session sanitization when a confirmed conflicting session exists
+    if (sessionEmail != null && sessionEmail.isNotEmpty) {
+      final isDemoCache = empId == 'JCS-099' ||
+          email.contains('demo') ||
+          email.contains('joypeoplehr.com') ||
+          name.contains('DEMO') ||
+          name.contains('ARJUN KUMAR');
 
-    if (isDemoCache) {
-      // Production Safety: Allow legitimate Google Play Reviewer session, purge unauthorized ghost sessions
-      final isLegitimateDemoSession = sessionEmail == 'demo.employee@joypeoplehr.com';
-      if (!isLegitimateDemoSession) {
-        secureLog('[BOOT-SECURITY] Authoritatively purging unauthorized demo ghost session from device disk');
-        await UserService.instance.clearUser();
-        try {
-          await Supabase.instance.client.auth.signOut();
-        } catch (_) {}
-        return;
+      if (isDemoCache) {
+        final isLegitimateDemoSession = sessionEmail == 'demo.employee@joypeoplehr.com';
+        if (!isLegitimateDemoSession) {
+          secureLog('[BOOT-SECURITY] Authoritatively purging conflicting demo ghost session from device disk');
+          await UserService.instance.clearUser();
+          try {
+            await Supabase.instance.client.auth.signOut();
+          } catch (_) {}
+          return;
+        }
       }
-    }
 
-    final isDharunCache = empId == 'JCS-017' ||
-        email.contains('dharun') ||
-        name == 'DHARUN' ||
-        name == 'DHARUN B';
+      final isDharunCache = empId == 'JCS-017' ||
+          email.contains('dharun') ||
+          name == 'DHARUN' ||
+          name == 'DHARUN B';
 
-    if (isDharunCache) {
-      final isLegitimateDharun = sessionEmail == 'dharun@joyglobalcorp.com' ||
-          sessionEmail == 'bdharun1912@gmail.com';
+      if (isDharunCache) {
+        final isLegitimateDharun = sessionEmail == 'dharun@joyglobalcorp.com' ||
+            sessionEmail == 'bdharun1912@gmail.com';
 
-      if (!isLegitimateDharun) {
-        secureLog('[BOOT-SECURITY] Authoritatively purging unauthorized Dharun ghost session from device disk');
-        await UserService.instance.clearUser();
-        try {
-          await Supabase.instance.client.auth.signOut();
-        } catch (_) {}
+        if (!isLegitimateDharun) {
+          secureLog('[BOOT-SECURITY] Authoritatively purging conflicting Dharun ghost session from device disk');
+          await UserService.instance.clearUser();
+          try {
+            await Supabase.instance.client.auth.signOut();
+          } catch (_) {}
+        }
       }
     }
   } catch (e) {

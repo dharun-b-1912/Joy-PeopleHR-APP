@@ -83,6 +83,9 @@ class FaceAttendVerificationResult {
   final double? faceSimilarity;
   final double? livenessScore;
   final double? distanceMeters;
+  final String? employeeName;
+  final String? employeeCode;
+  final String? locationName;
 
   const FaceAttendVerificationResult({
     required this.ok,
@@ -97,6 +100,9 @@ class FaceAttendVerificationResult {
     this.faceSimilarity,
     this.livenessScore,
     this.distanceMeters,
+    this.employeeName,
+    this.employeeCode,
+    this.locationName,
   });
 }
 
@@ -421,6 +427,9 @@ class FaceAttendService extends ChangeNotifier {
         }
       }
       final scores = (data['scores'] as Map?) ?? {};
+      final empMap = (data['employee'] as Map?);
+      final locMap = (data['location'] as Map?);
+      final currentUser = UserService.instance.currentUser;
       return FaceAttendVerificationResult(
         ok: data['ok'] == true,
         punchCommitted: data['punch_committed'] == true,
@@ -434,6 +443,9 @@ class FaceAttendService extends ChangeNotifier {
         faceSimilarity: (scores['face_similarity'] as num?)?.toDouble(),
         livenessScore: (scores['liveness_score'] as num?)?.toDouble(),
         distanceMeters: (scores['distance_meters'] as num?)?.toDouble(),
+        employeeName: empMap?['name']?.toString() ?? currentUser.name,
+        employeeCode: empMap?['employee_code']?.toString() ?? currentUser.employeeId,
+        locationName: locMap?['name']?.toString(),
       );
     } catch (e) {
       if (_status.offlineQueueEnabled) {
