@@ -11,6 +11,10 @@ import '../../../../widgets/core/app_skeleton.dart';
 import '../../../../widgets/core/empty_state_widget.dart';
 import '../../../../widgets/core/status_chip.dart';
 import '../dialogs/regularization_modal.dart';
+import '../widgets/break_management_section.dart';
+import 'my_day_timeline_screen.dart';
+import 'work_hours_summary_screen.dart';
+import 'break_history_screen.dart';
 
 class AttendanceScreen extends StatefulWidget {
   final int initialTabIndex;
@@ -143,6 +147,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> with SingleTickerPr
                       ),
                       AppSpacing.gapLG,
                       if (_tabController.index == 0) ...[
+                        const BreakManagementSection(),
+                        AppSpacing.gapLG,
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
@@ -161,6 +167,40 @@ class _AttendanceScreenState extends State<AttendanceScreen> with SingleTickerPr
                               icon: CupertinoIcons.calendar,
                             ),
                           ],
+                        ),
+                        AppSpacing.gapMD,
+                        SingleChildScrollView(
+                          scrollDirection: Axis.horizontal,
+                          child: Row(
+                            children: [
+                              ActionChip(
+                                avatar: const Icon(Icons.timeline_rounded, size: 16, color: Color(0xFF047857)),
+                                label: const Text('My Day Timeline'),
+                                onPressed: () => Navigator.push(
+                                  context,
+                                  CupertinoPageRoute(builder: (_) => const MyDayTimelineScreen()),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              ActionChip(
+                                avatar: const Icon(Icons.bar_chart_rounded, size: 16, color: Color(0xFF0F766E)),
+                                label: const Text('Work Hours Summary'),
+                                onPressed: () => Navigator.push(
+                                  context,
+                                  CupertinoPageRoute(builder: (_) => const WorkHoursSummaryScreen()),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              ActionChip(
+                                avatar: const Icon(Icons.emoji_food_beverage_rounded, size: 16, color: Color(0xFFD97706)),
+                                label: const Text('Break History'),
+                                onPressed: () => Navigator.push(
+                                  context,
+                                  CupertinoPageRoute(builder: (_) => const BreakHistoryScreen()),
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                         AppSpacing.gapMD,
                         if (controller.isLoading)
@@ -220,7 +260,15 @@ class _AttendanceScreenState extends State<AttendanceScreen> with SingleTickerPr
                               final monthAbbr = _getMonthName(ts.date.month).substring(0, 3);
                               final isWeekendOrHoliday = ts.status == DayAttendanceStatus.weekOff || ts.status == DayAttendanceStatus.holiday;
 
-                              return AppCard(
+                              return InkWell(
+                                onTap: () => Navigator.push(
+                                  context,
+                                  CupertinoPageRoute(
+                                    builder: (_) => MyDayTimelineScreen(initialDate: ts.date),
+                                  ),
+                                ),
+                                borderRadius: AppRadius.borderMd,
+                                child: AppCard(
                                 padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                                 child: Column(
                                   children: [
@@ -380,6 +428,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> with SingleTickerPr
                                     ],
                                   ],
                                 ),
+                              ),
                               );
                             },
                           ),

@@ -13,6 +13,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../config/supabase_config.dart';
 import '../../firebase_options.dart';
 import '../../widgets/notification_banner.dart';
+import '../utils/haptic_vibrator.dart';
 import '../utils/secure_log.dart';
 import 'local_notification_store.dart';
 import 'user_service.dart';
@@ -615,15 +616,19 @@ class PushNotificationService {
 
         // 1. Sync to employee_device_tokens table
         try {
+          final nowIso = DateTime.now().toIso8601String();
           await Supabase.instance.client.from('employee_device_tokens').upsert([
             {
               'employee_id': employeeId.isNotEmpty ? employeeId : (authUid ?? 'anonymous'),
               'auth_user_id': authUid ?? '',
+              if (user.organizationId?.isNotEmpty == true) 'organization_id': user.organizationId,
               'fcm_token': token,
               'platform': defaultTargetPlatform.name.toLowerCase(),
-              'updated_at': DateTime.now().toIso8601String(),
+              'token_status': 'ACTIVE',
+              'last_active_at': nowIso,
+              'updated_at': nowIso,
             }
-          ], onConflict: 'fcm_token');
+          ], onConflict: 'auth_user_id,fcm_token');
           secureLog('[PushNotificationService] Token synced to employee_device_tokens for employee: $employeeId, authUser: $authUid');
         } catch (e) {
           secureLog('[PushNotificationService] employee_device_tokens upsert notice: $e');
@@ -885,6 +890,89 @@ class PushNotificationService {
         title: title,
         body: body,
         route: route,
+        data: payload,
+        onTap: () => _handleNotificationNavigation(payload),
+      );
+    }
+  }
+
+  /// Dispatches a targeted break-ending / break-exceeded alert to the employee
+  /// currently on break, with multi-pulse haptic vibration, local push, and banner.
+  Future<void> showBreakAlertNotification({
+    required String title,
+    required String body,
+    required String breakId,
+    bool isExceeded = false,
+  }) async {
+    // Trigger real platform vibration (navigator.vibrate on Web, HapticFeedback.vibrate on Mobile)
+    await HapticVibrator.vibrateAlert(urgent: isExceeded);
+
+    final payload = <String, dynamic>{
+      'route': 'attendance',
+      'type': isExceeded ? 'break_exceeded' : 'break_ending',
+      'break_id': breakId,
+    };
+
+    if (!kIsWeb) {
+      if (!_isLocalNotificationsInitialized) {
+        await initLocalNotifications();
+      }
+      try {
+        final int notifId = ('brk_${breakId}_${isExceeded ? 'exp' : 'warn'}').hashCode & 0x7FFFFFFF;
+        final vibrationPattern = Int64List.fromList(
+          isExceeded ? [0, 450, 180, 450, 180, 450] : [0, 350, 160, 350],
+        );
+        await _localNotifications.show(
+          notifId,
+          title,
+          body,
+          NotificationDetails(
+            android: AndroidNotificationDetails(
+              _channel.id,
+              _channel.name,
+              channelDescription: _channel.description,
+              icon: '@drawable/ic_stat_notify',
+              importance: Importance.max,
+              priority: Priority.high,
+              playSound: true,
+              enableVibration: true,
+              vibrationPattern: vibrationPattern,
+              enableLights: true,
+              styleInformation: BigTextStyleInformation(
+                body,
+                contentTitle: title,
+                summaryText: 'Break Policy Alert',
+              ),
+              category: AndroidNotificationCategory.reminder,
+              visibility: NotificationVisibility.public,
+            ),
+            iOS: const DarwinNotificationDetails(
+              presentAlert: true,
+              presentBadge: true,
+              presentSound: true,
+            ),
+          ),
+          payload: jsonEncode(payload),
+        );
+      } catch (e) {
+        secureLog('[PushNotificationService] Failed to show break alert: $e');
+      }
+    }
+
+    LocalNotificationStore.instance.addNotification(
+      title: title,
+      body: body,
+      route: 'attendance',
+      data: payload,
+    );
+
+    final context = navigatorKey.currentContext;
+    if (context != null && context.mounted) {
+      InAppNotificationBanner.show(
+        context,
+        title: title,
+        body: body,
+        route: 'attendance',
         data: payload,
         onTap: () => _handleNotificationNavigation(payload),
       );

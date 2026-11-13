@@ -11,13 +11,10 @@
 }
 
 # ─── Flutter Embedding & Plugin Bridge ──────────────────────────
--keep class io.flutter.app.** { *; }
--keep class io.flutter.plugin.** { *; }
--keep class io.flutter.util.** { *; }
--keep class io.flutter.view.** { *; }
--keep class io.flutter.embedding.** { *; }
--keep class io.flutter.** { *; }
--keep class io.flutter.plugins.** { *; }
+# Keep only public embedding/plugin entrypoints so R8 can obfuscate & shrink internals
+-keep class com.joypeoplehr.app.MainActivity { *; }
+-keep class io.flutter.embedding.android.FlutterActivity { *; }
+-keep class io.flutter.embedding.engine.FlutterJNI { *; }
 -keep class * implements io.flutter.embedding.engine.plugins.FlutterPlugin { *; }
 -keep class * implements io.flutter.plugin.common.MethodChannel$MethodCallHandler { *; }
 
@@ -28,11 +25,11 @@
 -dontwarn io.flutter.plugins.sharedpreferences.**
 
 # ─── Firebase & Google Play Services ────────────────────────────
--keep class com.google.firebase.** { *; }
--keep class com.google.android.gms.** { *; }
--keep class com.google.firebase.messaging.FirebaseMessagingService { *; }
--keep class com.google.firebase.iid.FirebaseInstanceId { *; }
+# Keep only service/provider entrypoints instead of keeping all Firebase/GMS classes
 -keep class * extends com.google.firebase.messaging.FirebaseMessagingService { *; }
+-keep class com.google.firebase.components.ComponentRegistrar { *; }
+-keep class * implements com.google.firebase.components.ComponentRegistrar { *; }
+-keep class com.google.firebase.provider.FirebaseInitProvider { *; }
 -dontwarn com.google.firebase.**
 
 # ─── Flutter Local Notifications ────────────────────────────────
@@ -76,11 +73,44 @@
 # ─── Open Filex & File Picker ───────────────────────────────────
 -keep class com.crazecoder.openfile.** { *; }
 -keep class com.mr.flutter.plugin.filepicker.** { *; }
+-keep class io.flutter.plugins.imagepicker.** { *; }
+-dontwarn com.crazecoder.openfile.**
+-dontwarn com.mr.flutter.plugin.filepicker.**
+-dontwarn io.flutter.plugins.imagepicker.**
+
+# ─── Google Play In-App Updates & Play Core ───────────────────────
+-keep class com.google.android.play.core.** { *; }
+-keep class de.gigadroid.inappupdate.** { *; }
+-dontwarn com.google.android.play.core.**
+-dontwarn de.gigadroid.inappupdate.**
+
+# ─── Camera & Biometrics Hardware Plugin ──────────────────────────
+-keep class io.flutter.plugins.camera.** { *; }
+-dontwarn io.flutter.plugins.camera.**
+
+# ─── Geolocator & Background Services ─────────────────────────────
+-keep class com.baseflow.geolocator.** { *; }
+-dontwarn com.baseflow.geolocator.**
+-keep class id.flutter.flutter_background_service.** { *; }
+-dontwarn id.flutter.flutter_background_service.**
+
+# ─── Package Info, Battery & Smart Auth ───────────────────────────
+-keep class dev.fluttercommunity.plus.packageinfo.** { *; }
+-dontwarn dev.fluttercommunity.plus.packageinfo.**
+-keep class dev.fluttercommunity.plus.battery.** { *; }
+-dontwarn dev.fluttercommunity.plus.battery.**
+-keep class fman.ge.smart_auth.** { *; }
+-dontwarn fman.ge.smart_auth.**
+
+# ─── Google Maps Android SDK ──────────────────────────────────────
+-keep class com.google.android.gms.maps.** { *; }
+-keep interface com.google.android.gms.maps.** { *; }
+-keep class io.flutter.plugins.googlemaps.** { *; }
+-dontwarn io.flutter.plugins.googlemaps.**
 
 # ─── Suppress Benign Library Warnings ───────────────────────────
 -dontwarn javax.annotation.**
 -dontwarn org.conscrypt.**
--dontwarn com.google.android.play.core.**
 -dontwarn io.ktor.**
 -dontwarn io.github.jan-tennert.supabase.**
 -dontwarn androidx.activity.EdgeToEdge**

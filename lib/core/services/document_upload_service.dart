@@ -12,6 +12,9 @@ class DocumentUploadService {
 
   SupabaseClient get _supabase => Supabase.instance.client;
 
+  /// Human-readable error message from the most recent failed upload attempt.
+  String? lastError;
+
   /// Extract raw storage path from a file URL or storage URI
   String extractStoragePath(String rawUrl) {
     if (rawUrl.startsWith('storage://employee-documents/')) {
@@ -176,13 +179,16 @@ class DocumentUploadService {
         }
       }
 
+      lastError = null;
       if (fileBytes == null || fileBytes.isEmpty) {
+        lastError = 'No file content found. Please re-select the document.';
         secureLog('[Storage] Error: No file bytes provided for upload');
         return null;
       }
 
       // Validate max file size (20MB = 20971520 bytes)
       if (fileBytes.length > 20971520) {
+        lastError = 'File exceeds maximum allowed size of 20 MB.';
         secureLog('[Storage] Error: File size (${fileBytes.length} bytes) exceeds 20MB limit');
         return null;
       }
@@ -218,6 +224,7 @@ class DocumentUploadService {
       }
 
       if (resolvedDocTypeId == null || resolvedDocTypeId.isEmpty) {
+        lastError = 'Document type configuration not found for "$documentType".';
         secureLog('[Storage] Error: Could not resolve document_type_id for "$documentType"');
         return null;
       }
@@ -231,8 +238,12 @@ class DocumentUploadService {
       String mimeType = 'application/pdf';
       if (ext == '.png') {
         mimeType = 'image/png';
-      } else if (ext == '.jpg' || ext == '.jpeg') {
+      } else if (ext == '.jpg' || ext == '.jpeg' || ext == '.jfif') {
         mimeType = 'image/jpeg';
+      } else if (ext == '.webp') {
+        mimeType = 'image/webp';
+      } else if (ext == '.gif') {
+        mimeType = 'image/gif';
       } else if (ext == '.doc') {
         mimeType = 'application/msword';
       } else if (ext == '.docx') {
@@ -252,6 +263,7 @@ class DocumentUploadService {
         );
         secureLog('[Storage] Successfully uploaded document binary to $bucketName/$canonicalPath');
       } catch (e) {
+        lastError = 'Storage upload failed: $e';
         secureLog('[Storage] Storage upload error: $e');
         return null;
       }
@@ -260,22 +272,11 @@ class DocumentUploadService {
 
       // 6. Insert metadata record in canonical 'employee_documents' table
       try {
-        final isExpense = documentType.toUpperCase().contains('RECEIPT') ||
-            documentType.toUpperCase().contains('EXPENSE') ||
-            (documentCategory?.toUpperCase().contains('EXPENSE') == true);
-
-        final cat = documentCategory ?? (isExpense ? 'EXPENSE_RECEIPT' : 'DOCUMENT');
-        final isDigitalLetter = !isExpense && (documentType.toUpperCase().contains('LETTER') || cat.toUpperCase().contains('LETTER'));
-
-        final payload = {
+        final payload = <String, dynamic>{
           'organization_id': resolvedOrgId,
           'employee_id': resolvedEmpId,
           'document_type_id': resolvedDocTypeId,
-          'document_type': isExpense ? 'EXPENSE_RECEIPT' : documentType,
-          'document_category': cat,
-          'is_digital_letter': isDigitalLetter,
           'file_name': fileName,
-          'document_name': fileName,
           'storage_path': canonicalPath,
           'file_size_bytes': fileSize,
           'mime_type': mimeType,
@@ -300,6 +301,7 @@ class DocumentUploadService {
 
         return canonicalPath;
       } catch (e) {
+        lastError = 'Database record save failed: $e';
         secureLog('[Storage] employee_documents table insert error: $e. Rolling back uploaded storage binary.');
         try {
           await _supabase.storage.from(bucketName).remove([canonicalPath]);
@@ -307,6 +309,7 @@ class DocumentUploadService {
         return null;
       }
     } catch (e) {
+      lastError ??= 'Document upload error: $e';
       secureLog('[Storage] uploadEmployeeDocument fatal exception: $e');
       return null;
     }

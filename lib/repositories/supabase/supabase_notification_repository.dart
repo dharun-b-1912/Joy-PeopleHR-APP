@@ -81,17 +81,25 @@ class SupabaseNotificationRepository implements INotificationRepository {
           final message = _sOr(ev['message'], '');
           final recipient = ev['recipient_user_id']?.toString();
 
-          // Privacy guard: Attendance check-in/late alerts belong exclusively to the designated
-          // Reporting Manager / Supervisor hierarchy and must never leak as generic broadcast alerts!
+          // Privacy guard: Personal & supervisor alerts (check-in/out, leave/regularization approvals,
+          // payslips, individual training reminders) must NEVER leak as broadcast alerts when recipient is null.
           final hay = '$title $message'.toLowerCase();
-          final isAttendanceAlert = hay.contains('check-in') ||
+          final isPersonalOrScopedAlert = hay.contains('check-in') ||
               hay.contains('checkin') ||
               hay.contains('check-out') ||
               hay.contains('checkout') ||
               hay.contains('late') ||
-              hay.contains('punch');
+              hay.contains('punch') ||
+              hay.contains('regularization') ||
+              hay.contains('leave application') ||
+              hay.contains('leave approved') ||
+              hay.contains('leave rejected') ||
+              hay.contains('payslip') ||
+              hay.contains('training pending') ||
+              hay.contains('your mandatory training') ||
+              hay.contains('your break');
 
-          if (isAttendanceAlert && (recipient == null || recipient.isEmpty)) {
+          if (isPersonalOrScopedAlert && (recipient == null || recipient.isEmpty)) {
             continue;
           }
 

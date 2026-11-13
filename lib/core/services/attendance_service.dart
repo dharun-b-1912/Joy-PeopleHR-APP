@@ -1,12 +1,14 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../../models/break_models.dart';
 import '../../models/hrms_models.dart';
 import '../../repositories/supabase/supabase_attendance_repository.dart';
 import '../controllers/employee_controller.dart';
 import '../services/attendance_time_service.dart';
 import '../utils/secure_log.dart';
 import 'location_service.dart';
+import 'push_notification_service.dart';
 import 'shift_adaptive_service.dart';
 import 'shift_tracking_service.dart';
 import 'user_service.dart';
@@ -21,11 +23,17 @@ class CheckInResult {
   /// Location verification result (for checkout)
   final CheckoutLocationVerification? verification;
 
+  /// True when checkout is blocked because an active break is still running
+  final bool hasActiveBreak;
+  final String? activeBreakCategory;
+
   const CheckInResult({
     required this.success,
     required this.message,
     this.requiresReason = false,
     this.verification,
+    this.hasActiveBreak = false,
+    this.activeBreakCategory,
   });
 }
 
@@ -39,11 +47,17 @@ class AttendanceService extends ChangeNotifier {
   bool _isProcessing = false;
   bool get isProcessing => _isProcessing;
 
+  bool _isBreakProcessing = false;
+  bool get isBreakProcessing => _isBreakProcessing;
+
   AttendanceSession _session = const AttendanceSession(
     status: AttendanceStatus.notCheckedIn,
   );
 
   AttendanceSession get session => _session;
+
+  BreakSummaryState _breakSummary = const BreakSummaryState();
+  BreakSummaryState get breakSummary => _breakSummary;
 
   Timer? _ticker;
 
@@ -84,6 +98,15 @@ class AttendanceService extends ChangeNotifier {
             fetchTodayAttendance();
           },
         )
+        ..onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'attendance_break_events',
+          callback: (payload) {
+            secureLog('[REALTIME] attendance_break_events event (${payload.eventType.name}) -> refreshing breaks');
+            fetchTodayAttendance();
+          },
+        )
         ..subscribe((status, [error]) {
           if (status == RealtimeSubscribeStatus.subscribed) {
             secureLog('[REALTIME] Subscribed attendance-realtime-$employeeId (attendance_daily, attendance_punches)');
@@ -111,6 +134,26 @@ class AttendanceService extends ChangeNotifier {
 
     try {
       final dailyRow = await _repository.getTodayAttendance(user.dataId);
+      final orgId = user.organizationId ?? user.companyId;
+      final sessionDate = dailyRow?['date']?.toString() ?? AttendanceTimeService.getBusinessDate();
+      final policyFuture = _repository.fetchEffectiveBreakPolicy(
+        organizationId: orgId,
+        employeeId: user.dataId,
+        shiftId: dailyRow?['shift_id']?.toString(),
+        date: sessionDate,
+      );
+      final breaksFuture = _repository.fetchTodayBreakEvents(
+        employeeId: user.dataId,
+        attendanceDate: sessionDate,
+      );
+      final exceptionsFuture = _repository.fetchTodayBreakExceptions(
+        employeeId: user.dataId,
+        attendanceDate: sessionDate,
+      );
+      final otFuture = _repository.fetchTodayApprovedOtMinutes(
+        employeeId: user.dataId,
+        attendanceDate: sessionDate,
+      );
 
       if (dailyRow != null) {
         final firstIn = dailyRow['first_check_in']?.toString();
@@ -182,6 +225,59 @@ class AttendanceService extends ChangeNotifier {
         _ticker?.cancel();
       }
 
+      final policy = await policyFuture;
+      final todayBreaks = await breaksFuture;
+      final todayExceptions = await exceptionsFuture;
+      final approvedOtMins = await otFuture;
+      BreakEventModel? activeBreak;
+      for (final b in todayBreaks) {
+        if (b.isActive) {
+          activeBreak = b;
+          break;
+        }
+      }
+
+      int paidBreakMins = 0;
+      int unpaidBreakMins = 0;
+      for (final b in todayBreaks) {
+        final mins = b.elapsedMinutesAt(DateTime.now());
+        if (b.isPaid) {
+          paidBreakMins += mins;
+        } else {
+          unpaidBreakMins += mins;
+        }
+      }
+      final creditedPaid = paidBreakMins > policy.paidBreakAllowanceMinutes
+          ? policy.paidBreakAllowanceMinutes
+          : paidBreakMins;
+      final excessPaid = paidBreakMins > policy.paidBreakAllowanceMinutes
+          ? paidBreakMins - policy.paidBreakAllowanceMinutes
+          : 0;
+      final effectiveUnpaid = unpaidBreakMins + excessPaid;
+
+      final EmployeeWorkState workState;
+      if (_session.status == AttendanceStatus.checkedOut) {
+        workState = EmployeeWorkState.checkedOut;
+      } else if (_session.status == AttendanceStatus.checkedIn) {
+        workState = activeBreak != null ? EmployeeWorkState.onBreak : EmployeeWorkState.working;
+      } else {
+        workState = EmployeeWorkState.notCheckedIn;
+      }
+
+      _breakSummary = BreakSummaryState(
+        workState: workState,
+        activeBreak: activeBreak,
+        todayBreaks: todayBreaks,
+        exceptions: todayExceptions,
+        policy: policy,
+        paidBreakMinutes: (dailyRow?['paid_break_minutes'] as num?)?.toInt() ?? creditedPaid,
+        unpaidBreakMinutes: (dailyRow?['unpaid_break_minutes'] as num?)?.toInt() ?? effectiveUnpaid,
+        autoDeductedBreakMinutes: (dailyRow?['auto_deducted_break_minutes'] as num?)?.toInt() ?? 0,
+        netPayableMinutes: (dailyRow?['net_payable_minutes'] as num?)?.toInt() ??
+            (_session.netWorkingMinutes ?? 0),
+        approvedOtMinutes: approvedOtMins,
+      );
+
       final checkInFormatted = _session.checkInTime != null
           ? AttendanceTimeService.formatAttendanceTime(_session.checkInTime!)
           : null;
@@ -204,6 +300,7 @@ class AttendanceService extends ChangeNotifier {
     } catch (e) {
       secureLog('[Attendance] fetchTodayAttendance error: $e');
     } finally {
+      _syncBreakAlertMonitor();
       notifyListeners();
     }
   }
@@ -344,6 +441,7 @@ class AttendanceService extends ChangeNotifier {
     UserLocationResult? location,
     CheckoutLocationVerification? verification,
     String? reason,
+    bool resolveActiveBreak = false,
   }) async {
     if (_isProcessing) {
       return const CheckInResult(
@@ -413,6 +511,7 @@ class AttendanceService extends ChangeNotifier {
         accuracy: effectiveAccuracy,
         isMocked: loc.isMock,
         checkoutVerification: verifiedWithReason,
+        resolveActiveBreak: resolveActiveBreak,
       );
 
       // 2. Authoritatively refresh session directly from database
@@ -432,6 +531,15 @@ class AttendanceService extends ChangeNotifier {
     } catch (e) {
       secureLog('[Attendance] Check-out operation failed: $e');
       final errStr = e.toString();
+      if (errStr.contains('ACTIVE_BREAK_EXISTS')) {
+        final cat = _breakSummary.activeBreak?.category.label ?? 'Break';
+        return CheckInResult(
+          success: false,
+          message: 'You currently have an active $cat. End it before checking out.',
+          hasActiveBreak: true,
+          activeBreakCategory: _breakSummary.activeBreak?.category.code,
+        );
+      }
       final cleanMsg = errStr.replaceAll(RegExp(r'^(Exception:\s*|PostgrestException\(message:\s*|\))'), '').trim();
       return CheckInResult(
         success: false,
@@ -441,6 +549,111 @@ class AttendanceService extends ChangeNotifier {
       _isProcessing = false;
       notifyListeners();
     }
+  }
+
+  /// Start a typed break (LUNCH, TEA, COFFEE, PERSONAL, REST, OTHER)
+  Future<CheckInResult> startBreak(BreakCategory category, {String? notes}) async {
+    if (_isBreakProcessing) {
+      return const CheckInResult(success: false, message: 'Processing break action...');
+    }
+    if (_session.status != AttendanceStatus.checkedIn) {
+      return const CheckInResult(
+        success: false,
+        message: 'You must be checked in to start a break.',
+      );
+    }
+    if (_breakSummary.isOnBreak) {
+      return CheckInResult(
+        success: false,
+        message: 'End your active ${_breakSummary.activeBreak?.category.label ?? "break"} first.',
+      );
+    }
+
+    _isBreakProcessing = true;
+    notifyListeners();
+    try {
+      final key = 'brk-start-${DateTime.now().microsecondsSinceEpoch}-${category.code}';
+      await _repository.recordBreakEvent(
+        eventType: 'BREAK_START',
+        breakCategory: category.code,
+        idempotencyKey: key,
+        notes: notes,
+      );
+      await fetchTodayAttendance();
+      _triggerNotificationDispatcher();
+      _syncBreakAlertMonitor();
+      return CheckInResult(
+        success: true,
+        message: '${category.label} started.',
+      );
+    } catch (e) {
+      final clean = e.toString().replaceAll(RegExp(r'^(Exception:\s*|PostgrestException\(message:\s*|\))'), '').trim();
+      return CheckInResult(
+        success: false,
+        message: clean.isNotEmpty ? clean : 'Unable to start ${category.label}.',
+      );
+    } finally {
+      _isBreakProcessing = false;
+      notifyListeners();
+    }
+  }
+
+  /// End currently active break and resume work
+  Future<CheckInResult> endBreak({String? notes}) async {
+    if (_isBreakProcessing) {
+      return const CheckInResult(success: false, message: 'Processing break action...');
+    }
+    if (!_breakSummary.isOnBreak) {
+      return const CheckInResult(
+        success: false,
+        message: 'No active break found to end.',
+      );
+    }
+
+    _isBreakProcessing = true;
+    notifyListeners();
+    try {
+      final activeCat = _breakSummary.activeBreak?.category ?? BreakCategory.other;
+      final key = 'brk-end-${DateTime.now().microsecondsSinceEpoch}-${activeCat.code}';
+      await _repository.recordBreakEvent(
+        eventType: 'BREAK_END',
+        breakCategory: activeCat.code,
+        idempotencyKey: key,
+        notes: notes,
+      );
+      await fetchTodayAttendance();
+      _triggerNotificationDispatcher();
+      _syncBreakAlertMonitor();
+      return CheckInResult(
+        success: true,
+        message: '${activeCat.label} ended. Back to work!',
+      );
+    } catch (e) {
+      final clean = e.toString().replaceAll(RegExp(r'^(Exception:\s*|PostgrestException\(message:\s*|\))'), '').trim();
+      return CheckInResult(
+        success: false,
+        message: clean.isNotEmpty ? clean : 'Unable to end active break.',
+      );
+    } finally {
+      _isBreakProcessing = false;
+      notifyListeners();
+    }
+  }
+
+  /// Fire-and-forget outbox dispatcher so push notifications deliver immediately
+  /// without ever blocking or failing the attendance state transition.
+  void _triggerNotificationDispatcher() {
+    try {
+      final orgId = UserService.instance.currentUser.organizationId;
+      unawaited(
+        Supabase.instance.client.functions
+            .invoke('notification-dispatcher', body: {
+              if (orgId?.isNotEmpty == true) 'organization_id': orgId,
+            })
+            .then((_) {})
+            .catchError((_) {}),
+      );
+    } catch (_) {}
   }
 
   /// Get dynamic elapsed working duration since check-in
@@ -458,6 +671,71 @@ class AttendanceService extends ChangeNotifier {
       return Duration.zero;
     }
     return AttendanceTimeService.calculateDuration(checkIn: _session.checkInTime);
+  }
+
+  Timer? _breakAlertTimer;
+  final Set<String> _alertedEndingBreakIds = <String>{};
+  final Set<String> _alertedExceededBreakIds = <String>{};
+
+  void _syncBreakAlertMonitor() {
+    final active = _breakSummary.activeBreak;
+    if (!_breakSummary.isOnBreak || active == null) {
+      _breakAlertTimer?.cancel();
+      _breakAlertTimer = null;
+      return;
+    }
+    _checkActiveBreakAlert();
+    _breakAlertTimer ??= Timer.periodic(const Duration(seconds: 15), (_) {
+      _checkActiveBreakAlert();
+    });
+  }
+
+  void _checkActiveBreakAlert() {
+    final active = _breakSummary.activeBreak;
+    if (!_breakSummary.isOnBreak || active == null) {
+      _breakAlertTimer?.cancel();
+      _breakAlertTimer = null;
+      return;
+    }
+
+    final matches = _breakSummary.policy.categories.where((c) => c.category == active.category);
+    final cfg = matches.isNotEmpty ? matches.first : null;
+    final maxMinutes = cfg?.maxMinutesPerBreak ?? 15;
+    if (maxMinutes <= 0) return;
+
+    final elapsedSeconds = DateTime.now().difference(active.startedAt).inSeconds;
+    final maxSeconds = maxMinutes * 60;
+    final warnSeconds = maxMinutes > 1 ? (maxMinutes - 1) * 60 : 30;
+
+    if (elapsedSeconds >= maxSeconds) {
+      if (!_alertedExceededBreakIds.contains(active.id)) {
+        _alertedExceededBreakIds.add(active.id);
+        _alertedEndingBreakIds.add(active.id);
+        unawaited(
+          PushNotificationService.instance.showBreakAlertNotification(
+            title: '${active.category.label} Limit Reached (${maxMinutes}m)',
+            body:
+                'Your ${active.category.label.toLowerCase()} has reached the ${maxMinutes}m policy limit. Please end your break and resume work.',
+            breakId: active.id,
+            isExceeded: true,
+          ),
+        );
+      }
+    } else if (elapsedSeconds >= warnSeconds) {
+      if (!_alertedEndingBreakIds.contains(active.id)) {
+        _alertedEndingBreakIds.add(active.id);
+        final remainingLabel = maxMinutes > 1 ? '1 min' : '30 sec';
+        unawaited(
+          PushNotificationService.instance.showBreakAlertNotification(
+            title: '${active.category.label} ending in $remainingLabel',
+            body:
+                'Your ${maxMinutes}m ${active.category.label.toLowerCase()} limit is almost up. Please prepare to resume work.',
+            breakId: active.id,
+            isExceeded: false,
+          ),
+        );
+      }
+    }
   }
 
   /// Formatted timer string HH:MM:SS

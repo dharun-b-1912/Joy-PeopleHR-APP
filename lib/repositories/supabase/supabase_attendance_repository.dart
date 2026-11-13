@@ -9,6 +9,7 @@ import '../../core/utils/app_date_time.dart';
 import '../../core/utils/query_timeout.dart';
 import '../../core/utils/secure_log.dart';
 import '../../core/utils/validators.dart';
+import '../../models/break_models.dart';
 import '../../models/employee_models.dart';
 import '../../models/hrms_models.dart';
 import '../interfaces/employee_repository.dart';
@@ -305,6 +306,7 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
     bool isMocked = false,
     CheckoutLocationVerification? checkoutVerification,
     CompanyShift? selectedShift,
+    bool resolveActiveBreak = false,
   }) async {
     final user = UserService.instance.currentUser;
     final employeeUuid = user.dataId;
@@ -346,6 +348,7 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
               'source': 'MOBILE',
               'punch_source': 'MOBILE',
               'isMock': isMocked,
+              'resolve_active_break': resolveActiveBreak,
             },
           }),
         );
@@ -376,7 +379,7 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
       } catch (rpcErr) {
         secureLog('[ATTENDANCE][RPC] Exception during GPS attendance validation: $rpcErr');
         final errStr = rpcErr.toString();
-        if (errStr.contains('No active check-in found')) {
+        if (errStr.contains('ACTIVE_BREAK_EXISTS') || errStr.contains('No active check-in found')) {
           final cleanMsg = errStr.replaceAll(RegExp(r'^(Exception:|PostgrestException\(message:\s*|\))'), '').trim();
           throw Exception(cleanMsg.isNotEmpty ? cleanMsg : errStr);
         }
@@ -409,13 +412,12 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
             (d) => d['first_check_in'] != null && (d['last_check_out'] == null || d['last_check_out'].toString().isEmpty),
             orElse: () => dailyCheckList.first,
           );
+          fallbackSessionDate = existingDaily['attendance_date']?.toString() ?? todayDate;
         } else {
-          existingDaily = dailyCheckList.firstWhere(
-            (d) => d['attendance_date'] == todayDate,
-            orElse: () => dailyCheckList.first,
-          );
+          final todayMatches = dailyCheckList.where((d) => d['attendance_date'] == todayDate).toList();
+          existingDaily = todayMatches.isNotEmpty ? todayMatches.first : null;
+          fallbackSessionDate = todayDate;
         }
-        fallbackSessionDate = existingDaily['attendance_date']?.toString() ?? todayDate;
       }
     } catch (_) {}
 
@@ -1500,5 +1502,273 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
       default:
         return raw?.isNotEmpty == true ? raw! : 'Mobile Geofence';
     }
+  }
+
+  // ────────────────────────────────────────────────────────────────────────
+  // BREAK MANAGEMENT & POLICY ENGINE
+  // ────────────────────────────────────────────────────────────────────────
+
+  Future<BreakPolicySummary> fetchEffectiveBreakPolicy({
+    required String organizationId,
+    required String employeeId,
+    String? shiftId,
+    String? date,
+  }) async {
+    if (organizationId.isEmpty || employeeId.isEmpty) {
+      return const BreakPolicySummary();
+    }
+    try {
+      final res = await withTimeout(
+        _client.rpc('fn_resolve_effective_break_policy', params: {
+          'p_org_id': organizationId,
+          'p_employee_id': employeeId,
+          'p_shift_id': shiftId,
+          'p_date': date ?? AttendanceTimeService.getBusinessDate(),
+        }),
+      );
+      if (res is Map<String, dynamic>) {
+        return BreakPolicySummary.fromMap(res);
+      }
+      if (res is Map) {
+        return BreakPolicySummary.fromMap(Map<String, dynamic>.from(res));
+      }
+    } catch (e) {
+      secureLog('[Break] fetchEffectiveBreakPolicy notice: $e');
+    }
+    return const BreakPolicySummary();
+  }
+
+  Future<List<BreakEventModel>> fetchTodayBreakEvents({
+    required String employeeId,
+    String? attendanceDate,
+  }) async {
+    if (employeeId.isEmpty) return const [];
+    final date = attendanceDate ?? AttendanceTimeService.getBusinessDate();
+    try {
+      final data = await withTimeout(
+        _client
+            .from('attendance_break_events')
+            .select()
+            .eq('employee_id', employeeId)
+            .eq('attendance_date', date)
+            .neq('status', 'CANCELLED')
+            .order('started_at', ascending: true),
+      );
+      return (data as List)
+          .map((e) => BreakEventModel.fromMap(Map<String, dynamic>.from(e as Map)))
+          .toList();
+    } catch (e) {
+      secureLog('[Break] fetchTodayBreakEvents notice: $e');
+      return const [];
+    }
+  }
+
+  Future<List<BreakExceptionModel>> fetchTodayBreakExceptions({
+    required String employeeId,
+    String? attendanceDate,
+  }) async {
+    if (employeeId.isEmpty) return const [];
+    final date = attendanceDate ?? AttendanceTimeService.getBusinessDate();
+    try {
+      final data = await withTimeout(
+        _client
+            .from('attendance_break_exceptions')
+            .select()
+            .eq('employee_id', employeeId)
+            .eq('attendance_date', date)
+            .order('created_at', ascending: true),
+      );
+      return (data as List)
+          .map((e) => BreakExceptionModel.fromMap(Map<String, dynamic>.from(e as Map)))
+          .toList();
+    } catch (e) {
+      secureLog('[Break] fetchTodayBreakExceptions notice: $e');
+      return const [];
+    }
+  }
+
+  Future<int> fetchTodayApprovedOtMinutes({
+    required String employeeId,
+    String? attendanceDate,
+  }) async {
+    if (employeeId.isEmpty) return 0;
+    final date = attendanceDate ?? AttendanceTimeService.getBusinessDate();
+    try {
+      final data = await withTimeout(
+        _client
+            .from('overtime_records')
+            .select('approved_hours, requested_hours, status')
+            .eq('employee_id', employeeId)
+            .eq('attendance_date', date),
+      );
+      int total = 0;
+      for (final row in (data as List)) {
+        final st = (row['status'] ?? '').toString().toUpperCase();
+        if (st == 'APPROVED' || st == 'PAYABLE') {
+          final hrs = ((row['approved_hours'] ?? row['requested_hours']) as num?)?.toDouble() ?? 0.0;
+          total += (hrs * 60).round();
+        }
+      }
+      return total;
+    } catch (e) {
+      secureLog('[Break] fetchTodayApprovedOtMinutes notice: $e');
+      return 0;
+    }
+  }
+
+  /// Fetch real persisted attendance, breaks, exceptions & OT for any selected date.
+  Future<Map<String, dynamic>> fetchDayAttendanceSnapshot({
+    required String employeeId,
+    required String organizationId,
+    required String attendanceDate,
+  }) async {
+    final dailyFuture = withTimeout(
+      _client
+          .from('attendance_daily')
+          .select('*, shifts(name, code, start_time, end_time)')
+          .eq('employee_id', employeeId)
+          .eq('attendance_date', attendanceDate)
+          .maybeSingle(),
+    );
+    final policyFuture = fetchEffectiveBreakPolicy(
+      employeeId: employeeId,
+      organizationId: organizationId,
+    );
+    final breaksFuture = fetchTodayBreakEvents(
+      employeeId: employeeId,
+      attendanceDate: attendanceDate,
+    );
+    final excFuture = fetchTodayBreakExceptions(
+      employeeId: employeeId,
+      attendanceDate: attendanceDate,
+    );
+    final otFuture = fetchTodayApprovedOtMinutes(
+      employeeId: employeeId,
+      attendanceDate: attendanceDate,
+    );
+
+    final daily = await dailyFuture;
+    final policy = await policyFuture;
+    final breaks = await breaksFuture;
+    final exceptions = await excFuture;
+    final otMinutes = await otFuture;
+
+    return {
+      'daily': daily,
+      'policy': policy,
+      'breaks': breaks,
+      'exceptions': exceptions,
+      'approvedOtMinutes': otMinutes,
+    };
+  }
+
+  /// Fetch persisted break history across a date range for Break History screen.
+  Future<List<Map<String, dynamic>>> fetchBreakHistoryRange({
+    required String employeeId,
+    required String fromDate,
+    required String toDate,
+  }) async {
+    if (employeeId.isEmpty) return const [];
+    try {
+      final data = await withTimeout(
+        _client
+            .from('attendance_break_events')
+            .select('*')
+            .eq('employee_id', employeeId)
+            .gte('attendance_date', fromDate)
+            .lte('attendance_date', toDate)
+            .neq('status', 'CANCELLED')
+            .order('attendance_date', ascending: false)
+            .order('started_at', ascending: false),
+      );
+      return (data as List)
+          .map((e) => Map<String, dynamic>.from(e as Map))
+          .toList();
+    } catch (e) {
+      secureLog('[Break] fetchBreakHistoryRange notice: $e');
+      return const [];
+    }
+  }
+
+  /// Fetch persisted daily work hours across a date range for Work Hours Summary screen.
+  Future<List<Map<String, dynamic>>> fetchWorkHoursRange({
+    required String employeeId,
+    required String fromDate,
+    required String toDate,
+  }) async {
+    if (employeeId.isEmpty) return const [];
+    try {
+      final data = await withTimeout(
+        _client
+            .from('attendance_daily')
+            .select('*')
+            .eq('employee_id', employeeId)
+            .gte('attendance_date', fromDate)
+            .lte('attendance_date', toDate)
+            .order('attendance_date', ascending: false),
+      );
+      return (data as List)
+          .map((e) => Map<String, dynamic>.from(e as Map))
+          .toList();
+    } catch (e) {
+      secureLog('[Break] fetchWorkHoursRange notice: $e');
+      return const [];
+    }
+  }
+
+  /// Fetch authoritative approved overtime minutes per date from `overtime_records`.
+  Future<Map<String, int>> fetchApprovedOtMinutesRange({
+    required String employeeId,
+    required String fromDate,
+    required String toDate,
+  }) async {
+    if (employeeId.isEmpty) return const {};
+    try {
+      final data = await withTimeout(
+        _client
+            .from('overtime_records')
+            .select('attendance_date, approved_hours, requested_hours, status')
+            .eq('employee_id', employeeId)
+            .gte('attendance_date', fromDate)
+            .lte('attendance_date', toDate),
+      );
+      final byDate = <String, int>{};
+      for (final row in (data as List)) {
+        final st = (row['status'] ?? '').toString().toUpperCase();
+        if (st == 'APPROVED' || st == 'PAYABLE') {
+          final dateKey = row['attendance_date']?.toString() ?? '';
+          if (dateKey.isEmpty) continue;
+          final hrs =
+              ((row['approved_hours'] ?? row['requested_hours']) as num?)?.toDouble() ??
+                  0.0;
+          byDate[dateKey] = (byDate[dateKey] ?? 0) + (hrs * 60).round();
+        }
+      }
+      return byDate;
+    } catch (e) {
+      secureLog('[Break] fetchApprovedOtMinutesRange notice: $e');
+      return const {};
+    }
+  }
+
+  Future<Map<String, dynamic>> recordBreakEvent({
+    required String eventType,
+    String? breakCategory,
+    required String idempotencyKey,
+    String? notes,
+  }) async {
+    final res = await withTimeout(
+      _client.rpc('fn_record_break_event', params: {
+        'p_event_type': eventType,
+        'p_break_category': breakCategory,
+        'p_source': 'MOBILE',
+        'p_idempotency_key': idempotencyKey,
+        'p_device_timestamp': DateTime.now().toUtc().toIso8601String(),
+        'p_notes': notes,
+      }),
+    );
+    if (res is Map<String, dynamic>) return res;
+    if (res is Map) return Map<String, dynamic>.from(res);
+    return const {'success': true};
   }
 }

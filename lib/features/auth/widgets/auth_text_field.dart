@@ -12,6 +12,8 @@ class AuthTextField extends StatefulWidget {
   final TextInputAction textInputAction;
   final ValueChanged<String>? onSubmitted;
   final ValueChanged<String>? onChanged;
+  final bool enabled;
+  final int? maxLength;
 
   const AuthTextField({
     super.key,
@@ -24,6 +26,8 @@ class AuthTextField extends StatefulWidget {
     this.textInputAction = TextInputAction.next,
     this.onSubmitted,
     this.onChanged,
+    this.enabled = true,
+    this.maxLength,
   });
 
   @override
@@ -55,6 +59,11 @@ class _AuthTextFieldState extends State<AuthTextField> {
         const SizedBox(height: 6),
         TextField(
           controller: widget.controller,
+          enabled: widget.enabled,
+          maxLength: widget.maxLength,
+          buildCounter: widget.maxLength != null
+              ? (_, {required currentLength, required isFocused, maxLength}) => null
+              : null,
           keyboardType: widget.keyboardType,
           obscureText: widget.isPassword ? _obscureText : false,
           enableSuggestions: !widget.isPassword,

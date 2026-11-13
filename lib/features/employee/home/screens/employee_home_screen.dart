@@ -12,6 +12,7 @@ import '../../../../core/services/user_service.dart';
 import '../../../../core/theme/klarna_tokens.dart';
 import '../../../../models/app_services_catalog.dart';
 import '../../../../models/hrms_models.dart';
+import '../../attendance/widgets/break_management_section.dart';
 import '../../../../widgets/applet_tile.dart';
 import '../../../../widgets/core/app_card.dart';
 import '../../../../widgets/core/avatar_image_helper.dart';
@@ -33,6 +34,8 @@ import '../../../../widgets/attendance/adaptive_shift_modal.dart';
 
 import '../../../../core/services/push_notification_service.dart';
 import 'package:flutter/foundation.dart';
+import '../../../face_attend/services/face_attend_service.dart';
+import '../../../face_attend/screens/face_attend_checkin_screen.dart';
 import 'notifications_screen.dart';
 
 class HomeDashboardScreen extends StatefulWidget {
@@ -440,6 +443,32 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
     // If user cancelled the shift confirmation, abort check-in
     if (confirmedShift == null) return;
 
+    // ── JOY FaceAttend Add-On Verification Gate ──────────────────────
+    final faceAttendStatus = await FaceAttendService.instance.fetchTenantStatus();
+    if (faceAttendStatus.isEntitled &&
+        faceAttendStatus.moduleEnabled &&
+        faceAttendStatus.faceRequiredOnCheckIn) {
+      if (!mounted) return;
+      final faceResult = await Navigator.of(context).push<FaceAttendVerificationResult?>(
+        MaterialPageRoute(
+          builder: (_) => FaceAttendCheckInScreen(
+            punchType: 'CHECK_IN',
+            location: location,
+          ),
+        ),
+      );
+      if (!mounted) return;
+      if (faceResult != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(faceResult.message),
+            backgroundColor: faceResult.punchCommitted ? AppColors.primary : AppColors.statusError,
+          ),
+        );
+      }
+      return;
+    }
+
     final result = await AttendanceService.instance.performCheckIn(
       location: location,
       approvedLocation: currentUser.approvedLocation,
@@ -530,13 +559,69 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
     if (confirmed != true) return;
     if (!mounted) return;
 
+    // ── JOY FaceAttend Add-On Verification Gate (Check-Out) ──────────
+    final faceAttendStatus = await FaceAttendService.instance.fetchTenantStatus();
+    if (!mounted) return;
+    if (faceAttendStatus.isEntitled &&
+        faceAttendStatus.moduleEnabled &&
+        faceAttendStatus.faceRequiredOnCheckOut) {
+      final faceResult = await Navigator.of(context).push<FaceAttendVerificationResult?>(
+        MaterialPageRoute(
+          builder: (_) => FaceAttendCheckInScreen(
+            punchType: 'CHECK_OUT',
+            checkoutVerification: verification,
+            reason: reason,
+          ),
+        ),
+      );
+      if (!mounted) return;
+      if (faceResult != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(faceResult.message),
+            backgroundColor: faceResult.punchCommitted ? AppColors.primary : AppColors.statusError,
+          ),
+        );
+      }
+      return;
+    }
+
     // Step 4: Perform check-out with verification data
-    final result = await AttendanceService.instance.performCheckOut(
+    var result = await AttendanceService.instance.performCheckOut(
       verification: verification,
       reason: reason,
     );
 
     if (!mounted) return;
+
+    if (result.hasActiveBreak) {
+      final confirmClose = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Active Break in Progress'),
+          content: Text(
+            'You currently have an active ${result.activeBreakCategory ?? "break"}. Would you like to end your break now and check out?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('End Break & Check Out'),
+            ),
+          ],
+        ),
+      );
+      if (confirmClose != true) return;
+      result = await AttendanceService.instance.performCheckOut(
+        verification: verification,
+        reason: reason,
+        resolveActiveBreak: true,
+      );
+      if (!mounted) return;
+    }
 
     // Show location-specific success/failure message
     final snackBarColor = result.success ? AppColors.primary : AppColors.statusError;
@@ -1115,7 +1200,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
                             if (locationResult.state == AttendanceGpsState.permissionDenied ||
                                 locationResult.state == AttendanceGpsState.permissionPermanentlyDenied) {
                               final granted = await LocationService.instance.requestLocationPermission(context: context);
-                              if (!granted && mounted) {
+                              if (!granted && context.mounted) {
                                 if (kIsWeb) {
                                   ScaffoldMessenger.of(context).showSnackBar(
                                     const SnackBar(
@@ -1510,7 +1595,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
                                           if (locationResult.state == AttendanceGpsState.permissionDenied ||
                                               locationResult.state == AttendanceGpsState.permissionPermanentlyDenied) {
                                             final granted = await LocationService.instance.requestLocationPermission(context: context);
-                                            if (!granted && mounted) {
+                                            if (!granted && context.mounted) {
                                               if (kIsWeb) {
                                                 ScaffoldMessenger.of(context).showSnackBar(
                                                   const SnackBar(
@@ -1769,6 +1854,8 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
                       ),
                     ],
                   ),
+                AppSpacing.gapMD,
+                const BreakManagementSection(compact: true),
                 if (!_isNotificationPermissionGranted && !kIsWeb) ...[
                   AppSpacing.gapLG,
                   Container(

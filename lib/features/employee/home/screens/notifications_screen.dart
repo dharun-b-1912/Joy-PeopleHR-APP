@@ -8,6 +8,7 @@ import '../../../../widgets/core/app_card.dart';
 import '../../../../widgets/core/app_header.dart';
 import '../../../../widgets/core/empty_state_widget.dart';
 import '../../attendance/screens/attendance_screen.dart';
+import '../../attendance/screens/my_day_timeline_screen.dart';
 import '../../claims/screens/expense_claims_screen.dart';
 import '../../communication/screens/communication_screen.dart';
 import '../../documents/screens/documents_screen.dart';
@@ -56,6 +57,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     // Navigate based on the route stored in the notification
     switch (route) {
       case 'attendance':
+        Navigator.push(context, CupertinoPageRoute(builder: (_) => const MyDayTimelineScreen()));
+        break;
       case 'regularization':
         Navigator.push(context, CupertinoPageRoute(builder: (_) => const AttendanceScreen(initialTabIndex: 2)));
         break;
@@ -139,8 +142,17 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       targetScreen = const PerformanceScreen();
     } else if (combined.contains("grievance") || combined.contains("complaint") || combined.contains("support") || combined.contains("ticket")) {
       targetScreen = const ComplaintScreen();
-    } else if (combined.contains("check-in") || combined.contains("check-out") || combined.contains("attendance")) {
-      targetScreen = const AttendanceScreen(initialTabIndex: 0);
+    } else if (combined.contains("break") ||
+        combined.contains("lunch") ||
+        combined.contains("tea") ||
+        combined.contains("coffee") ||
+        combined.contains("work resumed") ||
+        combined.contains("check-in") ||
+        combined.contains("check-out") ||
+        combined.contains("checked in") ||
+        combined.contains("checked out") ||
+        combined.contains("attendance")) {
+      targetScreen = MyDayTimelineScreen(initialDate: item.timestamp);
     }
 
     if (targetScreen != null) {
@@ -163,114 +175,6 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     return '${dt.day} ${months[dt.month]}';
   }
 
-  void _showTestNotificationSheet(BuildContext context) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
-        decoration: const BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Row(
-                  children: [
-                    Icon(CupertinoIcons.bell_fill, color: AppColors.primary, size: 22),
-                    SizedBox(width: 8),
-                    Text(
-                      "Test Notifications & Sound",
-                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black87),
-                    ),
-                  ],
-                ),
-                IconButton(
-                  icon: const Icon(CupertinoIcons.xmark_circle, color: Colors.grey),
-                  onPressed: () => Navigator.pop(ctx),
-                ),
-              ],
-            ),
-            const SizedBox(height: 6),
-            const Text(
-              "Tap any notification to test sound, haptic vibration, top banner, and deep navigation:",
-              style: TextStyle(fontSize: 13, color: Colors.black54),
-            ),
-            const SizedBox(height: 16),
-            // 1. Announcement notification
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(color: Colors.orange.withValues(alpha: 0.12), shape: BoxShape.circle),
-                child: const Icon(CupertinoIcons.speaker_2_fill, color: Colors.orange, size: 22),
-              ),
-              title: const Text("Company Announcement", style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
-              subtitle: const Text("Town Hall alert • Plays audible sound • Opens Announcements"),
-              onTap: () {
-                Navigator.pop(ctx);
-                PushNotificationService.instance.triggerTestNotification(
-                  title: "Q3 Company Town Hall",
-                  body: "Quarterly Town Hall is scheduled for Friday at 4:00 PM IST. Tap to view details and agenda.",
-                  route: "announcements",
-                  data: {"type": "announcement"},
-                );
-              },
-            ),
-            const Divider(height: 12),
-            // 2. Payslip notification
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(color: Colors.green.withValues(alpha: 0.12), shape: BoxShape.circle),
-                child: const Icon(CupertinoIcons.money_dollar_circle_fill, color: Colors.green, size: 22),
-              ),
-              title: const Text("Salary Payslip Released", style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
-              subtitle: const Text("August 2026 slip • Plays alert sound • Opens Payslips"),
-              onTap: () {
-                Navigator.pop(ctx);
-                PushNotificationService.instance.triggerTestNotification(
-                  title: "August 2026 Salary Payslip Released",
-                  body: "Your salary payslip for August 2026 has been published and is ready for download.",
-                  route: "payslip",
-                  data: {"type": "payslip"},
-                );
-              },
-            ),
-            const Divider(height: 12),
-            // 3. Attendance Clock-in notification
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(color: Colors.blue.withValues(alpha: 0.12), shape: BoxShape.circle),
-                child: const Icon(CupertinoIcons.clock_fill, color: Colors.blue, size: 22),
-              ),
-              title: const Text("Attendance Clock-in Recorded", style: TextStyle(fontWeight: FontWeight.w600, fontSize: 15)),
-              subtitle: const Text("Punch at 09:30 AM recorded • Plays sound alert"),
-              onTap: () {
-                Navigator.pop(ctx);
-                PushNotificationService.instance.triggerTestNotification(
-                  title: "Attendance Clock-in Recorded",
-                  body: "Attendance marked at 09:30 AM (Joy Tech Park). Have a great day!",
-                  route: "attendance",
-                  data: {"type": "attendance"},
-                );
-              },
-            ),
-            const SizedBox(height: 10),
-          ],
-        ),
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
@@ -288,19 +192,9 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                 AppHeader(
                   title: "Notifications",
                   subtitle: "Updates & Alerts",
-                  rightAction: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      IconButton(
-                        icon: const Icon(CupertinoIcons.bolt_fill, color: Colors.amber, size: 22),
-                        tooltip: "Test Push Notifications",
-                        onPressed: () => _showTestNotificationSheet(context),
-                      ),
-                      IconButton(
-                        icon: const Icon(CupertinoIcons.xmark_circle_fill, color: Colors.white70, size: 24),
-                        onPressed: () => Navigator.pop(context),
-                      ),
-                    ],
+                  rightAction: IconButton(
+                    icon: const Icon(CupertinoIcons.xmark_circle_fill, color: Colors.white70, size: 24),
+                    onPressed: () => Navigator.pop(context),
                   ),
                 ),
                 if (!_isNotificationPermissionGranted)

@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 import 'dart:math' as math;
+import 'package:universal_io/io.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -53,9 +54,17 @@ class _DocumentRequestDetailScreenState
 
     try {
       final client = Supabase.instance.client;
-      final data = await withTimeout(
+      Map<String, dynamic>? data = await withTimeout(
         client
-            .from('document_types')
+            .from('document_requests')
+            .select()
+            .eq('id', widget.requestId)
+            .maybeSingle(),
+      );
+
+      data ??= await withTimeout(
+        client
+            .from('document_requirements')
             .select()
             .eq('id', widget.requestId)
             .maybeSingle(),
@@ -64,16 +73,25 @@ class _DocumentRequestDetailScreenState
       if (data != null && mounted) {
         setState(() {
           _req = DocumentRequirementModel(
-            id: data['id'].toString(),
+            id: data!['id'].toString(),
             employeeId: data['employee_id']?.toString() ?? '',
-            documentType: data['document_type']?.toString() ?? 'Document',
-            title: data['title']?.toString() ?? 'Required Document',
-            description: data['description']?.toString() ?? '',
-            isMandatory: data['required'] == true,
+            documentType: data['document_type']?.toString() ??
+                data['document_type_id']?.toString() ??
+                widget.initialModel?.documentType ??
+                'Document',
+            title: data['document_title']?.toString() ??
+                data['title']?.toString() ??
+                'Required Document',
+            description: data['request_message']?.toString() ??
+                data['description']?.toString() ??
+                '',
+            isMandatory: data['is_required'] == true || data['required'] == true,
             dueDate: DateTime.tryParse(data['due_date']?.toString() ?? ''),
             status: (data['status']?.toString() ?? 'REQUIRED').toUpperCase(),
             rejectionReason: data['rejection_reason']?.toString(),
-            requestedBy: data['requested_by']?.toString() ?? 'HR Team',
+            requestedBy: data['requested_by_name']?.toString() ??
+                data['requested_by']?.toString() ??
+                'HR Team',
             documentId: data['document_id']?.toString(),
             createdAt:
                 DateTime.tryParse(data['created_at']?.toString() ?? '') ??
@@ -247,130 +265,147 @@ class _DocumentRequestDetailScreenState
       final storagePath = '$resolvedOrgId/$resolvedEmpUuid/documents/${DateTime.now().millisecondsSinceEpoch}_$cleanName';
       String fileUrl = '';
 
-      // 1. Upload Binary to employee-documents Supabase Storage Bucket (Primary)
-      if (fileBytes != null && fileBytes.isNotEmpty) {
-        final bytesData = Uint8List.fromList(fileBytes);
-        debugPrint(
-            '[DOC_UPLOAD] [1/3] Uploading binary bytes to Supabase storage "employee-documents" at: $storagePath');
+      // Read bytes (including from local filePath on mobile if bytes weren't preloaded)
+      Uint8List? resolvedBytes = fileBytes != null ? Uint8List.fromList(fileBytes) : null;
+      if ((resolvedBytes == null || resolvedBytes.isEmpty) &&
+          _selectedFile!.filePath != null &&
+          _selectedFile!.filePath!.isNotEmpty) {
         try {
-          await client.storage.from('employee-documents').uploadBinary(
-                storagePath,
-                bytesData,
-                fileOptions: FileOptions(contentType: mimeType, upsert: true),
-              );
-          try {
-            fileUrl = await client.storage
-                .from('employee-documents')
-                .createSignedUrl(storagePath, 31536000);
-          } catch (signErr) {
-            debugPrint('[DOC_UPLOAD] createSignedUrl fallback to getPublicUrl: $signErr');
-            fileUrl = client.storage
-                .from('employee-documents')
-                .getPublicUrl(storagePath);
-          }
-          debugPrint(
-              '[DOC_UPLOAD] [1/3] Upload to employee-documents SUCCESS -> $storagePath (URL: $fileUrl)');
-        } catch (storageErr1) {
-          debugPrint(
-              '[DOC_UPLOAD] employee-documents upload error: $storageErr1');
-          rethrow;
+          resolvedBytes = await File(_selectedFile!.filePath!).readAsBytes();
+        } catch (readErr) {
+          debugPrint('[DOC_UPLOAD] Failed reading local file bytes: $readErr');
         }
-      } else {
-        debugPrint(
-            '[DOC_UPLOAD] WARNING: fileBytes is null or empty, using storage path pointer');
       }
 
-      // 2. Submit via RPC (if deployed)
-      bool rpcSuccess = false;
+      if (resolvedBytes == null || resolvedBytes.isEmpty) {
+        throw Exception('Could not read file data. Please re-select the document file.');
+      }
+
+      // 1. Upload Binary to employee-documents Supabase Storage Bucket (Primary)
+      debugPrint(
+          '[DOC_UPLOAD] [1/3] Uploading binary bytes to Supabase storage "employee-documents" at: $storagePath');
+      await client.storage.from('employee-documents').uploadBinary(
+            storagePath,
+            resolvedBytes,
+            fileOptions: FileOptions(contentType: mimeType, upsert: true),
+          );
       try {
-        final rpcRes = await client.rpc('fn_submit_document_upload', params: {
-          'p_requirement_id': widget.requestId,
-          'p_employee_id': resolvedEmpUuid,
-          'p_document_category': 'PERSONAL',
-          'p_document_type': _req?.documentType ?? 'DOCUMENT',
-          'p_file_name': fileName,
-          'p_file_url': fileUrl,
-          'p_storage_path': storagePath,
-          'p_file_size_bytes': _selectedFile!.sizeInBytes,
-          'p_mime_type': mimeType,
+        fileUrl = await client.storage
+            .from('employee-documents')
+            .createSignedUrl(storagePath, 31536000);
+      } catch (signErr) {
+        debugPrint('[DOC_UPLOAD] createSignedUrl notice: $signErr');
+        fileUrl = storagePath;
+      }
+      debugPrint(
+          '[DOC_UPLOAD] [1/3] Upload to employee-documents SUCCESS -> $storagePath');
+
+      // 2. Resolve canonical document_type_id UUID from public.document_types
+      String? resolvedDocTypeId;
+      try {
+        final targetType = (_req?.documentType ?? _req?.title ?? '').trim().toLowerCase();
+        final typesRes = await client
+            .from('document_types')
+            .select('id, name, display_name, code')
+            .limit(50);
+        final list = List<Map<String, dynamic>>.from(typesRes as List);
+        if (list.isNotEmpty) {
+          Map<String, dynamic>? matched;
+          if (targetType.isNotEmpty) {
+            for (final row in list) {
+              final idStr = row['id']?.toString() ?? '';
+              final nameStr = (row['name']?.toString() ?? '').toLowerCase();
+              final dispStr = (row['display_name']?.toString() ?? '').toLowerCase();
+              final codeStr = (row['code']?.toString() ?? '').toLowerCase();
+              if (idStr.toLowerCase() == targetType ||
+                  codeStr == targetType ||
+                  nameStr == targetType ||
+                  dispStr == targetType ||
+                  (nameStr.isNotEmpty && targetType.contains(nameStr)) ||
+                  (dispStr.isNotEmpty && targetType.contains(dispStr))) {
+                matched = row;
+                break;
+              }
+            }
+          }
+          resolvedDocTypeId = (matched ?? list.first)['id']?.toString();
+        }
+      } catch (dtErr) {
+        debugPrint('[DOC_UPLOAD] document_types lookup notice: $dtErr');
+      }
+
+      // 3. Insert canonical row in employee_documents (roll back binary if insert fails)
+      final docId = _generateUuid();
+      debugPrint(
+          '[DOC_UPLOAD] [2/3] Inserting employee_documents row with ID: $docId, emp: $resolvedEmpUuid, org: $resolvedOrgId');
+      try {
+        await client.from('employee_documents').insert({
+          'id': docId,
+          'organization_id': resolvedOrgId,
+          'employee_id': resolvedEmpUuid,
+          if (resolvedDocTypeId != null && resolvedDocTypeId.isNotEmpty)
+            'document_type_id': resolvedDocTypeId,
+          'file_name': fileName,
+          'storage_path': storagePath,
+          'file_size_bytes': resolvedBytes.length,
+          'mime_type': mimeType,
+          'verification_status': 'PENDING',
         });
         debugPrint(
-            '[DOC_UPLOAD] [2/3] RPC fn_submit_document_upload response: $rpcRes');
-        rpcSuccess = true;
-      } catch (rpcErr) {
-        debugPrint(
-            '[DOC_UPLOAD] RPC not deployed or returned: $rpcErr (using direct DB update)');
+            '[DOC_UPLOAD] ✓ employee_documents row inserted successfully!');
+      } catch (docErr) {
+        debugPrint('[DOC_UPLOAD] employee_documents insert error: $docErr');
+        try {
+          await client.storage.from('employee-documents').remove([storagePath]);
+        } catch (_) {}
+        rethrow;
       }
 
-      // 3. Guaranteed Direct Database Fallback Updates with RFC-4122 UUID
+      // 4. Update request status on document_requests / document_requirements
+      final nowIso = DateTime.now().toIso8601String();
       try {
-        try {
-          await client.from('document_types').update({
-            'status': 'SUBMITTED',
-            'updated_at': DateTime.now().toIso8601String(),
-          }).eq('id', widget.requestId);
-        } catch (_) {}
+        await client.from('document_requests').update({
+          'status': 'SUBMITTED',
+          'updated_at': nowIso,
+        }).eq('id', widget.requestId);
+      } catch (_) {}
+      try {
+        await client.from('document_requirements').update({
+          'status': 'SUBMITTED',
+          'document_id': docId,
+          'updated_at': nowIso,
+        }).eq('id', widget.requestId);
+      } catch (_) {}
 
-        final docId = _generateUuid();
-        debugPrint(
-            '[DOC_UPLOAD] [3/3] Inserting employee_documents row with ID: $docId, emp: $resolvedEmpUuid, org: $resolvedOrgId');
-        try {
-          await client.from('employee_documents').insert({
-            'id': docId,
-            'organization_id': resolvedOrgId,
+      // 5. Notify HR Web via Realtime Notification Event
+      try {
+        final notifUuid = _generateUuid();
+        await client.from('notification_events').insert({
+          'id': notifUuid,
+          'organization_id': resolvedOrgId,
+          'event_type': 'DOCUMENT_SUBMITTED',
+          'category': 'SYSTEM',
+          'severity': 'INFO',
+          'title': 'Document Submitted: ${_req?.title ?? "Document"}',
+          'body':
+              '${user.name.isNotEmpty ? user.name : empId} submitted ${_req?.title ?? "Document"} for HR verification.',
+          'resource_type': 'DOCUMENT_REQUIREMENT',
+          'resource_id': widget.requestId,
+          'actor_name': user.name.isNotEmpty ? user.name : 'Employee',
+          'metadata': {
+            'requirement_id': widget.requestId,
+            'document_id': docId,
             'employee_id': resolvedEmpUuid,
-            'document_category': 'PERSONAL',
-            'document_type': _req?.documentType ?? 'Driving Licence',
-            'document_type_id': widget.requestId,
+            'document_type': _req?.documentType,
             'file_name': fileName,
-            'file_path': storagePath,
             'file_url': fileUrl,
             'storage_path': storagePath,
-            'file_size_bytes': _selectedFile!.sizeInBytes,
-            'mime_type': mimeType,
-            'verification_status': 'PENDING',
-            'uploaded_at': DateTime.now().toIso8601String(),
-          });
-          debugPrint(
-              '[DOC_UPLOAD] ✓ Database update and employee_documents row inserted successfully!');
-        } catch (docErr) {
-          debugPrint(
-              '[DOC_UPLOAD] employee_documents insert notice: $docErr');
-        }
-
-        // 4. Notify HR Web via Realtime Notification Event
-        try {
-          final notifUuid = _generateUuid();
-          await client.from('notification_events').insert({
-            'id': notifUuid,
-            'event_type': 'DOCUMENT_SUBMITTED',
-            'category': 'SYSTEM',
-            'severity': 'INFO',
-            'title': 'Document Submitted: ${_req?.title ?? "Document"}',
-            'body':
-                '${user.name.isNotEmpty ? user.name : empId} submitted ${_req?.title ?? "Document"} for HR verification.',
-            'resource_type': 'DOCUMENT_REQUIREMENT',
-            'resource_id': widget.requestId,
-            'actor_name': user.name.isNotEmpty ? user.name : 'Employee',
-            'metadata': {
-              'requirement_id': widget.requestId,
-              'employee_id': empId,
-              'document_type': _req?.documentType,
-              'file_name': fileName,
-              'file_url': fileUrl,
-              'storage_path': storagePath,
-            },
-          });
-          debugPrint(
-              '[DOC_UPLOAD] ✓ notification_events row emitted to HR Web via Realtime');
-        } catch (notifErr) {
-          debugPrint('[DOC_UPLOAD] notification_events notice: $notifErr');
-        }
-      } catch (dbErr) {
-        debugPrint('[DOC_UPLOAD] Database write error: $dbErr');
-        if (!rpcSuccess) {
-          throw Exception('Failed to save document record: $dbErr');
-        }
+          },
+        });
+        debugPrint(
+            '[DOC_UPLOAD] ✓ notification_events row emitted to HR Web via Realtime');
+      } catch (notifErr) {
+        debugPrint('[DOC_UPLOAD] notification_events notice: $notifErr');
       }
 
       debugPrint(

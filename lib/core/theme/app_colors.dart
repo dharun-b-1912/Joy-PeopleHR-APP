@@ -34,6 +34,20 @@ class AppColors {
   static const Color statusInfo = Color(0xFF0284C7);
   static const Color statusInfoBg = Color(0xFFE0F2FE);
 
+  // --- ATTENDANCE & BREAK SEMANTICS ---
+  static const Color workingGreen = Color(0xFF059669);
+  static const Color workingGreenBg = Color(0xFFECFDF5);
+  static const Color workingGreenBorder = Color(0xFFA7F3D0);
+
+  static const Color paidBreakTeal = Color(0xFF0D9488);
+  static const Color paidBreakTealBg = Color(0xFFF0FDFA);
+
+  static const Color unpaidBreakOrange = Color(0xFFD97706);
+  static const Color unpaidBreakOrangeBg = Color(0xFFFFFBEB);
+
+  static const Color overtimePurple = Color(0xFF7C3AED);
+  static const Color overtimePurpleBg = Color(0xFFEDE9FE);
+
   // --- PASTEL APPLET SQUIRCLES ---
   static const Color mintBg = Color(0xFFDCFCE7);
   static const Color mintFg = Color(0xFF047857);
@@ -73,6 +87,18 @@ class AppColors {
       Color(0xFFFFFFFF), // Pure Surface White
     ],
     stops: [0.0, 0.32, 0.66, 1.0],
+  );
+
+  /// Smooth vertical header aura that fades seamlessly into scaffoldBg (#F8FAFC)
+  static const LinearGradient moreHeaderGradient = LinearGradient(
+    begin: Alignment.topCenter,
+    end: Alignment.bottomCenter,
+    colors: [
+      Color(0xFFE6F4EA), // Soft Mint Mist
+      Color(0xFFF0FDF4), // Cream Mint
+      Color(0xFFF8FAFC), // Matches scaffoldBg seamlessly
+    ],
+    stops: [0.0, 0.55, 1.0],
   );
 
   static const LinearGradient approvalsAuraHeader = LinearGradient(

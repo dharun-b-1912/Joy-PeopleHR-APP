@@ -3,6 +3,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../../../core/controllers/employee_controller.dart';
+import '../../../../core/services/document_upload_service.dart';
 import '../../../../core/services/file_pick_service.dart';
 import '../../../../core/theme/klarna_tokens.dart';
 import '../../../../widgets/workforce_request_modal.dart';
@@ -99,6 +100,7 @@ class _UploadDocumentModalState extends State<UploadDocumentModal> {
     final nav = Navigator.of(context);
     final messenger = ScaffoldMessenger.of(context);
 
+    DocumentUploadService.instance.lastError = null;
     final success = await MoreModulesController.instance.uploadDocument(
       documentType: _selectedDocType,
       documentTypeId: _selectedDocTypeId,
@@ -109,12 +111,28 @@ class _UploadDocumentModalState extends State<UploadDocumentModal> {
       filePath: _selectedFile!.filePath,
     );
 
-    if (mounted) {
+    if (!mounted) return;
+
+    if (success) {
       nav.pop();
       messenger.showSnackBar(
+        const SnackBar(
+          content: Text("Document uploaded successfully!"),
+          backgroundColor: AppColors.primary,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } else {
+      final errDetail = DocumentUploadService.instance.lastError ??
+          "Could not upload document. Please check file format/size and try again.";
+      setState(() {
+        _isUploading = false;
+        _validationError = errDetail;
+      });
+      messenger.showSnackBar(
         SnackBar(
-          content: Text(success ? "Document uploaded successfully!" : "Upload failed."),
-          backgroundColor: success ? AppColors.primary : AppColors.statusError,
+          content: Text(errDetail),
+          backgroundColor: AppColors.statusError,
           behavior: SnackBarBehavior.floating,
         ),
       );
