@@ -32,7 +32,7 @@ class FaceAttendCheckInScreen extends StatefulWidget {
   State<FaceAttendCheckInScreen> createState() => _FaceAttendCheckInScreenState();
 }
 
-class _FaceAttendCheckInScreenState extends State<FaceAttendCheckInScreen> {
+class _FaceAttendCheckInScreenState extends State<FaceAttendCheckInScreen> with WidgetsBindingObserver {
   CameraController? _cameraController;
   bool _cameraReady = false;
   FaceAttendChallenge? _challenge;
@@ -46,6 +46,7 @@ class _FaceAttendCheckInScreenState extends State<FaceAttendCheckInScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _captureStartedAt = DateTime.now();
     _initScreen();
   }
@@ -109,7 +110,24 @@ class _FaceAttendCheckInScreenState extends State<FaceAttendCheckInScreen> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final camera = _cameraController;
+    if (state == AppLifecycleState.inactive || state == AppLifecycleState.paused) {
+      if (camera != null) {
+        camera.dispose();
+        _cameraController = null;
+        if (mounted) setState(() => _cameraReady = false);
+      }
+    } else if (state == AppLifecycleState.resumed) {
+      if (_cameraController == null) {
+        _initCamera();
+      }
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _cameraController?.dispose();
     super.dispose();
   }

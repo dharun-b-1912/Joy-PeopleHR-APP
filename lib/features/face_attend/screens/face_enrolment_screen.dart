@@ -20,7 +20,7 @@ class FaceEnrolmentScreen extends StatefulWidget {
   State<FaceEnrolmentScreen> createState() => _FaceEnrolmentScreenState();
 }
 
-class _FaceEnrolmentScreenState extends State<FaceEnrolmentScreen> {
+class _FaceEnrolmentScreenState extends State<FaceEnrolmentScreen> with WidgetsBindingObserver {
   CameraController? _cameraController;
   bool _cameraReady = false;
   bool _consentAccepted = false;
@@ -55,6 +55,7 @@ class _FaceEnrolmentScreenState extends State<FaceEnrolmentScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _initFrontCamera();
     FaceAttendService.instance.fetchTenantStatus();
     _subscribeTemplateRealtime();
@@ -127,7 +128,24 @@ class _FaceEnrolmentScreenState extends State<FaceEnrolmentScreen> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final camera = _cameraController;
+    if (state == AppLifecycleState.inactive || state == AppLifecycleState.paused) {
+      if (camera != null) {
+        camera.dispose();
+        _cameraController = null;
+        if (mounted) setState(() => _cameraReady = false);
+      }
+    } else if (state == AppLifecycleState.resumed) {
+      if (_cameraController == null && !_submitting) {
+        _initFrontCamera();
+      }
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _isGuidedScanning = false;
     _templateChannel?.unsubscribe();
     _cameraController?.dispose();

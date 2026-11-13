@@ -60,9 +60,11 @@ class AppUpdateService extends ChangeNotifier {
 
   AppUpdateInfo? _updateInfo;
   bool _isChecking = false;
+  bool _isDialogShowing = false;
 
   AppUpdateInfo? get updateInfo => _updateInfo;
   bool get isChecking => _isChecking;
+  bool get isDialogShowing => _isDialogShowing;
   bool get hasUpdate => _updateInfo?.isUpdateAvailable ?? false;
 
   /// Checks for newer versions against remote Supabase config
@@ -204,6 +206,8 @@ class AppUpdateService extends ChangeNotifier {
 
   /// Evaluates update state and presents the update modal dialog if available
   Future<void> checkAndShowUpdateDialog(BuildContext context, {bool forceShow = false}) async {
+    if (_isDialogShowing && !forceShow) return;
+
     final info = await checkForUpdate(ignoreSnooze: forceShow);
     if (!context.mounted) return;
 
@@ -236,12 +240,15 @@ class AppUpdateService extends ChangeNotifier {
       if (snoozed) return;
     }
 
-    if (context.mounted) {
+    if (context.mounted && !_isDialogShowing) {
+      _isDialogShowing = true;
       showDialog(
         context: context,
         barrierDismissible: !info.isForceUpdate,
         builder: (dialogCtx) => AppUpdateDialog(info: info),
-      );
+      ).then((_) {
+        _isDialogShowing = false;
+      });
     }
   }
 }
