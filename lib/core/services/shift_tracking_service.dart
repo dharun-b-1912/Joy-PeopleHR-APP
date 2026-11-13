@@ -22,7 +22,7 @@ import 'user_service.dart';
 /// - Features military-grade stationary anchor anti-drift filtering (filters out indoor GPS flutter).
 /// - Calculates running cumulative travel distance for shift expense/reimbursement.
 /// - Syncs to `employee_live_locations` and `employee_location_trails` via Supabase.
-class ShiftTrackingService extends ChangeNotifier {
+class ShiftTrackingService extends ChangeNotifier with WidgetsBindingObserver {
   static final ShiftTrackingService instance = ShiftTrackingService._internal();
   ShiftTrackingService._internal();
 
@@ -182,6 +182,7 @@ class ShiftTrackingService extends ChangeNotifier {
 
   /// Initializes shift tracking listener tied to attendance status and shift timing
   void initialize() {
+    WidgetsBinding.instance.addObserver(this);
     AttendanceService.instance.addListener(_handleAttendanceStateChange);
     UserService.instance.addListener(_handleAttendanceStateChange);
 
@@ -195,6 +196,13 @@ class ShiftTrackingService extends ChangeNotifier {
     });
 
     _handleAttendanceStateChange();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _handleAttendanceStateChange();
+    }
   }
 
   /// Parses time strings (e.g., "09:30 AM", "6:30 PM", "09:00", "18:00")
@@ -286,12 +294,17 @@ class ShiftTrackingService extends ChangeNotifier {
       if (isCheckedIn || isShiftActive) {
         final status = isCheckedIn ? 'on_duty' : 'active_shift';
 
-        // Sync initial/current position immediately if GPS is enabled
-        syncCurrentDeviceLocation(status: status);
+        // Sync initial/current position safely
+        try {
+          syncCurrentDeviceLocation(status: status);
+        } catch (_) {}
 
-        // Start continuous stream whenever employee is logged in with location enabled
+        // Start continuous stream safely when employee is logged in with location enabled
         if (!_isTracking) {
-          startShiftTracking();
+          final isAppForeground = WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
+          if (isAppForeground) {
+            startShiftTracking();
+          }
         }
       } else {
         // Outside shift hours and not checked in -> clean standby stop
@@ -526,12 +539,29 @@ class ShiftTrackingService extends ChangeNotifier {
       );
     }
 
-    _positionSub = Geolocator.getPositionStream(
-      locationSettings: locationSettings,
-    ).listen(
-      (pos) => _recordPosition(pos),
-      onError: (err) => secureLog('[ShiftTracking] Stream error: $err'),
-    );
+    try {
+      _positionSub = Geolocator.getPositionStream(
+        locationSettings: locationSettings,
+      ).listen(
+        (pos) => _recordPosition(pos),
+        onError: (err) => secureLog('[ShiftTracking] Stream error: $err'),
+      );
+    } catch (e) {
+      secureLog('[ShiftTracking] Foreground stream failed ($e), falling back to standard stream...');
+      try {
+        _positionSub = Geolocator.getPositionStream(
+          locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.high,
+            distanceFilter: 20,
+          ),
+        ).listen(
+          (pos) => _recordPosition(pos),
+          onError: (err) => secureLog('[ShiftTracking] Fallback stream error: $err'),
+        );
+      } catch (e2) {
+        secureLog('[ShiftTracking] Fallback stream failed: $e2');
+      }
+    }
 
     // 3. 10-Minute stationary heartbeat so HR radar knows device is alive while idle
     _stationaryHeartbeatTimer?.cancel();

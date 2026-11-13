@@ -84,15 +84,22 @@
 -dontwarn com.google.android.play.core.**
 -dontwarn de.gigadroid.inappupdate.**
 
-# ─── Camera & Biometrics Hardware Plugin ──────────────────────────
+# ─── Camera, CameraX & Biometrics Hardware Plugin ─────────────────
 -keep class io.flutter.plugins.camera.** { *; }
+-keep class io.flutter.plugins.camerax.** { *; }
+-keep class androidx.camera.** { *; }
+-keep class androidx.camera.core.** { *; }
+-keep class androidx.camera.camera2.** { *; }
+-keep class androidx.camera.lifecycle.** { *; }
+-keep class androidx.camera.view.** { *; }
 -dontwarn io.flutter.plugins.camera.**
+-dontwarn io.flutter.plugins.camerax.**
+-dontwarn androidx.camera.**
 
-# ─── Geolocator & Background Services ─────────────────────────────
+# ─── Geolocator & Native Location Service ─────────────────────────
 -keep class com.baseflow.geolocator.** { *; }
+-keep class com.baseflow.geolocator.GeolocatorLocationService { *; }
 -dontwarn com.baseflow.geolocator.**
--keep class id.flutter.flutter_background_service.** { *; }
--dontwarn id.flutter.flutter_background_service.**
 
 # ─── Package Info, Battery & Smart Auth ───────────────────────────
 -keep class dev.fluttercommunity.plus.packageinfo.** { *; }

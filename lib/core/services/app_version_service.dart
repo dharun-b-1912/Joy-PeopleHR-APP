@@ -12,8 +12,8 @@ class AppVersionService {
   bool _initialized = false;
 
   /// Default fallback version matching current release in pubspec.yaml
-  static const String fallbackVersion = '1.1.14';
-  static const String fallbackBuildNumber = '35';
+  static const String fallbackVersion = '1.1.15';
+  static const String fallbackBuildNumber = '36';
 
   Future<void> init() async {
     if (_initialized && _info != null) return;

@@ -3,9 +3,11 @@ import 'package:camera/camera.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../../../core/services/attendance_service.dart';
 import '../../../core/services/location_service.dart';
 import '../../../core/theme/klarna_tokens.dart';
+import '../../../core/utils/secure_log.dart';
 import '../../../models/hrms_models.dart';
 import '../services/face_attend_service.dart';
 import '../utils/face_quality_analyzer.dart';
@@ -57,12 +59,29 @@ class _FaceAttendCheckInScreenState extends State<FaceAttendCheckInScreen> {
 
   Future<void> _initCamera() async {
     try {
+      final perm = await Permission.camera.request();
+      if (!perm.isGranted) {
+        secureLog('[FaceAttend] Camera permission denied: $perm');
+        if (mounted) setState(() => _cameraReady = false);
+        return;
+      }
+
       final cams = await availableCameras();
+      if (cams.isEmpty) {
+        secureLog('[FaceAttend] No camera devices found on device');
+        if (mounted) setState(() => _cameraReady = false);
+        return;
+      }
       final front = cams.firstWhere(
         (c) => c.lensDirection == CameraLensDirection.front,
         orElse: () => cams.first,
       );
-      final ctrl = CameraController(front, ResolutionPreset.medium, enableAudio: false);
+      final ctrl = CameraController(
+        front,
+        ResolutionPreset.medium,
+        enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.jpeg,
+      );
       await ctrl.initialize();
       if (!mounted) {
         ctrl.dispose();
@@ -72,7 +91,8 @@ class _FaceAttendCheckInScreenState extends State<FaceAttendCheckInScreen> {
         _cameraController = ctrl;
         _cameraReady = true;
       });
-    } catch (_) {
+    } catch (e) {
+      secureLog('[FaceAttend] Camera init error: $e');
       if (mounted) setState(() => _cameraReady = false);
     }
   }
