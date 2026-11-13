@@ -228,11 +228,40 @@ class SupabaseAttendanceRepository implements IAttendanceRepository {
 
             final latestEvent = events.last;
             final latestType = (latestEvent['punch_type'] ?? '').toString().toUpperCase();
-            final isCurrentlyIn = latestType.contains('IN') && !latestType.contains('OUT');
+            final latestTsStr = latestEvent['punch_time']?.toString();
+            final latestPunchDt = latestTsStr != null ? DateTime.tryParse(latestTsStr) : null;
+
+            final dailyOutStr = activeRow?['last_check_out']?.toString();
+            final dailyOutDt = (dailyOutStr != null && dailyOutStr.isNotEmpty) ? DateTime.tryParse(dailyOutStr) : null;
+            final isDailyCheckedOut = activeRow?['current_work_state'] == 'CHECKED_OUT' || (dailyOutDt != null);
+
+            // Determine if employee is currently clocked in:
+            // An IN punch only marks the employee as currently in if:
+            // 1. It is genuinely an IN punch, AND
+            // 2. There is no subsequent OUT punch, AND
+            // 3. attendance_daily has no checkout timestamp that occurred at or after this IN punch
+            bool isCurrentlyIn = false;
+            if (latestType.contains('IN') && !latestType.contains('OUT')) {
+              if (dailyOutDt != null && latestPunchDt != null && !latestPunchDt.isAfter(dailyOutDt)) {
+                // The IN punch is older than or equal to daily last_check_out -> user is checked out!
+                isCurrentlyIn = false;
+              } else if (dailyOutDt != null && latestPunchDt == null) {
+                isCurrentlyIn = false;
+              } else if (isDailyCheckedOut && (dailyOutDt == null || (latestPunchDt != null && !latestPunchDt.isAfter(dailyOutDt)))) {
+                isCurrentlyIn = false;
+              } else {
+                isCurrentlyIn = true;
+              }
+            } else if (latestType.contains('OUT')) {
+              isCurrentlyIn = false;
+            }
+
+            final resolvedLastOut = isCurrentlyIn ? null : (lastOutTimestamp ?? dailyOutStr ?? merged['last_check_out']);
 
             merged['first_check_in'] = firstInTimestamp ?? merged['first_check_in'];
-            merged['last_check_out'] = isCurrentlyIn ? null : (lastOutTimestamp ?? merged['last_check_out']);
+            merged['last_check_out'] = resolvedLastOut;
             merged['is_currently_in'] = isCurrentlyIn || (merged['first_check_in'] != null && (merged['last_check_out'] == null || merged['last_check_out'].toString().isEmpty));
+            merged['current_work_state'] = isCurrentlyIn ? 'WORKING' : (resolvedLastOut != null ? 'CHECKED_OUT' : (merged['current_work_state'] ?? 'NOT_CHECKED_IN'));
             merged['date'] = activeSessionDate;
             if (firstSource != null) merged['source'] = firstSource;
             if (firstVerifyType != null) merged['verification_type'] = firstVerifyType;

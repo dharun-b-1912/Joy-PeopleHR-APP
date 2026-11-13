@@ -260,13 +260,20 @@ class EmployeeRealtimeService with WidgetsBindingObserver {
         },
       );
 
-      // Scoped Postgres change listener: ALL events on employee_shift_assignments for real-time shift sync
+      // Scoped Postgres change listener: Scoped events on employee_shift_assignments for real-time shift sync
       channel.onPostgresChanges(
         event: PostgresChangeEvent.all,
         schema: 'public',
         table: 'employee_shift_assignments',
+        filter: PostgresChangeFilter(
+          type: PostgresChangeFilterType.eq,
+          column: 'employee_id',
+          value: trimmedUuid,
+        ),
         callback: (PostgresChangePayload payload) {
-          secureLog('[REALTIME] Shift schedule change event received');
+          final evEmp = payload.newRecord['employee_id']?.toString() ?? payload.oldRecord['employee_id']?.toString();
+          if (evEmp != null && evEmp != trimmedUuid) return;
+          secureLog('[REALTIME] Shift schedule change event received for employee $trimmedUuid');
           MoreModulesController.instance.loadAllData();
           reconcile();
           PushNotificationService.instance.triggerTestNotification(
@@ -278,13 +285,20 @@ class EmployeeRealtimeService with WidgetsBindingObserver {
         },
       );
 
-      // Scoped Postgres change listener: ALL events on attendance_regularizations
+      // Scoped Postgres change listener: Scoped events on attendance_regularizations
       channel.onPostgresChanges(
         event: PostgresChangeEvent.all,
         schema: 'public',
         table: 'attendance_regularizations',
+        filter: PostgresChangeFilter(
+          type: PostgresChangeFilterType.eq,
+          column: 'employee_id',
+          value: trimmedUuid,
+        ),
         callback: (PostgresChangePayload payload) {
-          secureLog('[REALTIME] attendance_regularizations event received (type: ${payload.eventType})');
+          final evEmp = payload.newRecord['employee_id']?.toString() ?? payload.oldRecord['employee_id']?.toString();
+          if (evEmp != null && evEmp != trimmedUuid) return;
+          secureLog('[REALTIME] attendance_regularizations event received for employee $trimmedUuid (type: ${payload.eventType})');
           AttendanceService.instance.fetchTodayAttendance();
           AttendanceDetailController.instance.refresh();
           NotificationController.instance.loadNotifications();
@@ -303,25 +317,39 @@ class EmployeeRealtimeService with WidgetsBindingObserver {
         },
       );
 
-      // Scoped Postgres change listener: ALL events on attendance_daily for real-time attendance status
+      // Scoped Postgres change listener: Scoped events on attendance_daily for real-time attendance status
       channel.onPostgresChanges(
         event: PostgresChangeEvent.all,
         schema: 'public',
         table: 'attendance_daily',
+        filter: PostgresChangeFilter(
+          type: PostgresChangeFilterType.eq,
+          column: 'employee_id',
+          value: trimmedUuid,
+        ),
         callback: (PostgresChangePayload payload) {
-          secureLog('[REALTIME] attendance_daily change event received');
+          final evEmp = payload.newRecord['employee_id']?.toString() ?? payload.oldRecord['employee_id']?.toString();
+          if (evEmp != null && evEmp != trimmedUuid) return;
+          secureLog('[REALTIME] scoped attendance_daily change event received for $trimmedUuid');
           AttendanceService.instance.fetchTodayAttendance();
           AttendanceDetailController.instance.refresh();
         },
       );
 
-      // Scoped Postgres change listener: ALL events on attendance_punches for raw punch sync
+      // Scoped Postgres change listener: Scoped events on attendance_punches for raw punch sync
       channel.onPostgresChanges(
         event: PostgresChangeEvent.all,
         schema: 'public',
         table: 'attendance_punches',
+        filter: PostgresChangeFilter(
+          type: PostgresChangeFilterType.eq,
+          column: 'employee_id',
+          value: trimmedUuid,
+        ),
         callback: (PostgresChangePayload payload) {
-          secureLog('[REALTIME] attendance_punches change event received');
+          final evEmp = payload.newRecord['employee_id']?.toString() ?? payload.oldRecord['employee_id']?.toString();
+          if (evEmp != null && evEmp != trimmedUuid) return;
+          secureLog('[REALTIME] scoped attendance_punches change event received for $trimmedUuid');
           AttendanceService.instance.fetchTodayAttendance();
           AttendanceDetailController.instance.refresh();
           if (payload.eventType == PostgresChangeEvent.insert) {

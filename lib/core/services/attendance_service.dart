@@ -63,6 +63,7 @@ class AttendanceService extends ChangeNotifier {
 
   RealtimeChannel? _attendanceChannel;
   String? _subscribedEmpId;
+  Timer? _debounceTimer;
 
   /// Initializes session listener and loads today's real attendance from Supabase
   void initializeSession() {
@@ -70,6 +71,13 @@ class AttendanceService extends ChangeNotifier {
       fetchTodayAttendance();
     });
     fetchTodayAttendance();
+  }
+
+  void _debouncedFetchTodayAttendance({int delayMs = 300}) {
+    _debounceTimer?.cancel();
+    _debounceTimer = Timer(Duration(milliseconds: delayMs), () {
+      fetchTodayAttendance();
+    });
   }
 
   void _subscribeRealtime(String employeeId) {
@@ -84,32 +92,47 @@ class AttendanceService extends ChangeNotifier {
           event: PostgresChangeEvent.all,
           schema: 'public',
           table: 'attendance_daily',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'employee_id',
+            value: employeeId,
+          ),
           callback: (payload) {
-            secureLog('[REALTIME] attendance_daily event (${payload.eventType.name}) -> refreshing attendance');
-            fetchTodayAttendance();
+            secureLog('[REALTIME] attendance_daily scoped event (${payload.eventType.name}) -> debounced refresh');
+            _debouncedFetchTodayAttendance();
           },
         )
         ..onPostgresChanges(
           event: PostgresChangeEvent.all,
           schema: 'public',
           table: 'attendance_punches',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'employee_id',
+            value: employeeId,
+          ),
           callback: (payload) {
-            secureLog('[REALTIME] attendance_punches event (${payload.eventType.name}) -> refreshing attendance');
-            fetchTodayAttendance();
+            secureLog('[REALTIME] attendance_punches scoped event (${payload.eventType.name}) -> debounced refresh');
+            _debouncedFetchTodayAttendance();
           },
         )
         ..onPostgresChanges(
           event: PostgresChangeEvent.all,
           schema: 'public',
           table: 'attendance_break_events',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'employee_id',
+            value: employeeId,
+          ),
           callback: (payload) {
-            secureLog('[REALTIME] attendance_break_events event (${payload.eventType.name}) -> refreshing breaks');
-            fetchTodayAttendance();
+            secureLog('[REALTIME] attendance_break_events scoped event (${payload.eventType.name}) -> debounced refresh');
+            _debouncedFetchTodayAttendance();
           },
         )
         ..subscribe((status, [error]) {
           if (status == RealtimeSubscribeStatus.subscribed) {
-            secureLog('[REALTIME] Subscribed attendance-realtime-$employeeId (attendance_daily, attendance_punches)');
+            secureLog('[REALTIME] Subscribed scoped attendance-realtime-$employeeId');
           }
         });
     } catch (e) {
@@ -180,7 +203,9 @@ class AttendanceService extends ChangeNotifier {
         final leaveReason = dailyRow['leave_reason']?.toString();
 
         if (checkInDt != null) {
-          final isCheckedOut = !isCurrentlyIn && checkOutDt != null && checkOutDt.isAfter(checkInDt);
+          final isExplicitlyCheckedOut = dailyRow['current_work_state'] == 'CHECKED_OUT';
+          final isCheckedOut = isExplicitlyCheckedOut ||
+              (!isCurrentlyIn && checkOutDt != null && !checkOutDt.isBefore(checkInDt));
           if (isCheckedOut) {
             _session = AttendanceSession(
               status: AttendanceStatus.checkedOut,

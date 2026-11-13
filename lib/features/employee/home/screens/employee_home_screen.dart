@@ -1004,17 +1004,26 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
     if (_isRefreshingHome) return;
     _isRefreshingHome = true;
     try {
+      // Prioritize high-impact UI elements immediately so pull-to-refresh is instant
       await Future.wait([
-        LocationService.instance.evaluateLiveLocation(),
         AttendanceService.instance.fetchTodayAttendance(),
+        LocationService.instance.evaluateLiveLocation(),
         NotificationController.instance.refresh(),
-        MoreModulesController.instance.loadAllData(),
         AttendanceDetailController.instance.refresh(),
-        SupabaseEmployeeRepository().getCurrentEmployee(),
       ]);
+
+      // Secondary heavy modules refresh asynchronously without delaying user UI
+      unawaited(Future.wait([
+        MoreModulesController.instance.loadAllData(),
+        SupabaseEmployeeRepository().getCurrentEmployee(),
+      ]).catchError((_) => []));
     } catch (_) {
     } finally {
-      _isRefreshingHome = false;
+      if (mounted) {
+        setState(() {
+          _isRefreshingHome = false;
+        });
+      }
     }
   }
 
