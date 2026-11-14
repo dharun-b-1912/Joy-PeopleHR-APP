@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:isolate';
 import 'package:flutter/foundation.dart';
 import 'package:firebase_crashlytics/firebase_crashlytics.dart';
+import 'package:http/http.dart' as http;
 import '../utils/secure_log.dart';
 import '../config/app_env.dart';
 
@@ -19,6 +21,7 @@ class CrashReportingService {
 
   FirebaseCrashlytics? _crashlytics;
   bool _isInitialized = false;
+  static final Map<String, int> _sentinelThrottleMap = {};
 
   FirebaseCrashlytics get _fb => _crashlytics!;
 
@@ -120,6 +123,16 @@ class CrashReportingService {
     String? errorCode,
     Map<String, dynamic>? information,
   }) {
+    // 1. Ingest into JOY Sentinel Telemetry and trigger Telegram Watchdog Alert
+    _reportToSentinel(
+      error: error,
+      stackTrace: stackTrace,
+      reason: reason,
+      errorCode: errorCode,
+      information: information,
+    );
+
+    // 2. Record to Firebase Crashlytics if initialized
     if (!_isInitialized || _crashlytics == null) return;
     try {
       final sanitizedInfo = <String>[];
@@ -140,6 +153,64 @@ class CrashReportingService {
       );
     } catch (e) {
       secureLog('[Crashlytics] recordError error: $e');
+    }
+  }
+
+  /// Non-blocking, battery-safe report dispatcher to JOY Sentinel
+  static Future<void> _reportToSentinel({
+    required dynamic error,
+    StackTrace? stackTrace,
+    String? reason,
+    String? errorCode,
+    Map<String, dynamic>? information,
+  }) async {
+    try {
+      final errStr = _sanitizeString(error.toString());
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final sentinelCode = errorCode ?? 'MOBILE-001';
+      final throttleKey = '$sentinelCode:${errStr.length > 40 ? errStr.substring(0, 40) : errStr}';
+
+      // 60-second in-memory throttle: eliminates UI loop storming
+      final last = _sentinelThrottleMap[throttleKey];
+      if (last != null && now - last < 60000) {
+        return;
+      }
+      _sentinelThrottleMap[throttleKey] = now;
+
+      final cleanStack = stackTrace != null
+          ? stackTrace.toString().split('\n').take(6).join('\n')
+          : 'No stack trace captured';
+
+      final payload = {
+        'action': 'report_event',
+        'event': {
+          'eventCode': sentinelCode,
+          'severity': (sentinelCode == 'AUTH-001' || sentinelCode == 'ATT-001') ? 'P1' : 'P2',
+          'serviceName': 'JOY Mobile App (Flutter)',
+          'message': errStr.length > 250 ? errStr.substring(0, 250) : errStr,
+          'sourceLocation': reason ?? 'Flutter Widget / Platform',
+          'diagnosticPayload': {
+            'reason': reason,
+            'stack': cleanStack,
+            'platform': defaultTargetPlatform.name,
+            'isWeb': kIsWeb,
+            'app_version': AppEnv.versionName,
+            'build_number': AppEnv.buildNumber,
+            ...?information,
+          },
+          'probableCause': 'Unhandled exception in Flutter mobile runtime or async isolate.',
+          'recommendedAction': 'Inspect stack trace, platform null-safety, and device permissions.',
+        }
+      };
+
+      final url = Uri.parse('https://ysiajemrqakfngasehhi.supabase.co/functions/v1/telegram-webhook');
+      http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(payload),
+      ).catchError((_) => http.Response('error', 500));
+    } catch (_) {
+      // Fail silently to guarantee zero performance or UX impact
     }
   }
 
@@ -193,6 +264,14 @@ class CrashReportingService {
         FlutterError.presentError(details);
       }
 
+      // Always report to JOY Sentinel Telemetry and Telegram Watchdog Bot
+      _reportToSentinel(
+        error: details.exception,
+        stackTrace: details.stack,
+        reason: details.context?.toString() ?? 'Flutter framework layout/widget error',
+        errorCode: 'MOBILE-001',
+      );
+
       // Record to Crashlytics in release builds
       if (_isInitialized && !kDebugMode) {
         _fb.recordError(
@@ -211,6 +290,14 @@ class CrashReportingService {
 
     // Handle async errors that aren't caught
     PlatformDispatcher.instance.onError = (error, stackTrace) {
+      // Always report to JOY Sentinel Telemetry and Telegram Watchdog Bot
+      _reportToSentinel(
+        error: error,
+        stackTrace: stackTrace,
+        reason: 'Uncaught async platform error',
+        errorCode: 'MOBILE-001',
+      );
+
       if (_isInitialized && !kDebugMode) {
         _fb.recordError(
           error,
@@ -229,6 +316,15 @@ class CrashReportingService {
       RawReceivePort((dynamic pair) {
         final error = pair[0] as Object;
         final stackTrace = pair[1] as StackTrace;
+
+        // Always report to JOY Sentinel Telemetry and Telegram Watchdog Bot
+        _reportToSentinel(
+          error: error,
+          stackTrace: stackTrace,
+          reason: 'Root isolate runtime exception',
+          errorCode: 'MOBILE-001',
+        );
+
         if (_isInitialized && !kDebugMode) {
           _fb.recordError(
             error,
