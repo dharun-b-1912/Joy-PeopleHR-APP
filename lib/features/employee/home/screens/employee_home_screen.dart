@@ -36,6 +36,7 @@ import '../../../../core/services/push_notification_service.dart';
 import 'package:flutter/foundation.dart';
 import '../../../face_attend/services/face_attend_service.dart';
 import '../../../face_attend/screens/face_attend_checkin_screen.dart';
+import '../../../face_attend/screens/face_enrolment_screen.dart';
 import 'notifications_screen.dart';
 
 class HomeDashboardScreen extends StatefulWidget {
@@ -290,6 +291,98 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
     return now.weekday == DateTime.sunday || now.weekday == DateTime.saturday;
   }
 
+  Future<bool> _ensureFaceEnrolled(FaceAttendStatus faceAttendStatus) async {
+    // If employee is exempted from face camera verification (broken camera / HR exemption)
+    if (!faceAttendStatus.employeeFaceEnabled) {
+      return true;
+    }
+
+    if (faceAttendStatus.templateStatus == 'ACTIVE') {
+      return true;
+    }
+
+    if (!mounted) return false;
+
+    // If pending approval, advise user
+    if (faceAttendStatus.templateStatus == 'PENDING_APPROVAL') {
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+          title: const Row(
+            children: [
+              Icon(CupertinoIcons.clock_fill, color: Color(0xFFD97706), size: 24),
+              SizedBox(width: 8),
+              Text('Approval Pending', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+            ],
+          ),
+          content: const Text(
+            'Your face enrolment has been submitted and is currently awaiting approval from HR. Once approved, FaceAttend check-in will be automatically enabled.',
+            style: TextStyle(fontSize: 13.5, height: 1.4),
+          ),
+          actions: [
+            ElevatedButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              ),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
+      );
+      return false;
+    }
+
+    // Otherwise, not enrolled yet -> trigger automatic enrolment modal
+    final shouldEnrol = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Row(
+          children: [
+            Icon(CupertinoIcons.person_crop_circle_badge_plus, color: AppColors.primary, size: 28),
+            SizedBox(width: 10),
+            Text('Face Enrolment Required', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: const Text(
+          'FaceAttend verification is required for your company attendance. Please complete a quick 3-angle face scan (Front, Left, and Right) before your first check-in.',
+          style: TextStyle(fontSize: 13.5, height: 1.4),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Later', style: TextStyle(color: Colors.grey)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            child: const Text('Register Face Now'),
+          ),
+        ],
+      ),
+    );
+
+    if (shouldEnrol != true) return false;
+    if (!mounted) return false;
+
+    await Navigator.of(context).push<bool?>(
+      MaterialPageRoute(builder: (_) => const FaceEnrolmentScreen()),
+    );
+
+    if (!mounted) return false;
+    final refreshedStatus = await FaceAttendService.instance.fetchTenantStatus();
+    return refreshedStatus.templateStatus == 'ACTIVE';
+  }
+
   Future<void> _handleCheckIn() async {
     if (AttendanceService.instance.isProcessing) return;
     if (AttendanceService.instance.session.isCheckedIn) return;
@@ -447,8 +540,12 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
     final faceAttendStatus = await FaceAttendService.instance.fetchTenantStatus();
     if (faceAttendStatus.isEntitled &&
         faceAttendStatus.moduleEnabled &&
+        faceAttendStatus.employeeFaceEnabled &&
         faceAttendStatus.faceRequiredOnCheckIn) {
       if (!mounted) return;
+      final isReady = await _ensureFaceEnrolled(faceAttendStatus);
+      if (!isReady || !mounted) return;
+
       final faceResult = await Navigator.of(context).push<FaceAttendVerificationResult?>(
         MaterialPageRoute(
           builder: (_) => FaceAttendCheckInScreen(
@@ -564,7 +661,11 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen> with WidgetsB
     if (!mounted) return;
     if (faceAttendStatus.isEntitled &&
         faceAttendStatus.moduleEnabled &&
+        faceAttendStatus.employeeFaceEnabled &&
         faceAttendStatus.faceRequiredOnCheckOut) {
+      final isReady = await _ensureFaceEnrolled(faceAttendStatus);
+      if (!isReady || !mounted) return;
+
       final faceResult = await Navigator.of(context).push<FaceAttendVerificationResult?>(
         MaterialPageRoute(
           builder: (_) => FaceAttendCheckInScreen(

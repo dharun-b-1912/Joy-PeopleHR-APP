@@ -96,12 +96,13 @@ class _AppletTileWidgetState extends State<AppletTileWidget> with SingleTickerPr
               fit: BoxFit.scaleDown,
               child: ConstrainedBox(
                 constraints: BoxConstraints(
-                  maxWidth: widget.compact ? 64 : 56,
+                  maxWidth: widget.compact ? 72 : 68,
                 ),
                 child: Text(
                   widget.tile.label,
                   textAlign: TextAlign.center,
-                  maxLines: 2,
+                  maxLines: 1,
+                  softWrap: false,
                   overflow: TextOverflow.ellipsis,
                   style: AppTypography.caption.copyWith(
                     fontSize: fontSize,

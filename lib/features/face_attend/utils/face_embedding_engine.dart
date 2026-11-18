@@ -344,11 +344,13 @@ class FaceEmbeddingEngine {
     final clamped = cosine.clamp(-1.0, 1.0);
     double pct;
     if (clamped >= 0.70) {
-      pct = 88.0 + ((clamped - 0.70) / 0.30) * 11.9;
-    } else if (clamped >= 0.40) {
-      pct = 55.0 + ((clamped - 0.40) / 0.30) * 33.0;
+      pct = 90.0 + ((clamped - 0.70) / 0.30) * 9.9;
+    } else if (clamped >= 0.45) {
+      pct = 72.0 + ((clamped - 0.45) / 0.25) * 18.0;
+    } else if (clamped >= 0.35) {
+      pct = 55.0 + ((clamped - 0.35) / 0.10) * 17.0;
     } else {
-      pct = math.max(0.0, (clamped + 0.20) * 90.0);
+      pct = math.max(0.0, ((clamped + 0.10) / 0.45) * 55.0);
     }
     return double.parse(pct.clamp(0.0, 99.9).toStringAsFixed(1));
   }

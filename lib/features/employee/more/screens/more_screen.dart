@@ -132,7 +132,7 @@ class _MoreScreenState extends State<MoreScreen> {
 
         // Categorized modules catalog
         final sections = [
-          if (faceAttend.status.isEntitled)
+          if (faceAttend.status.isEntitled && faceAttend.status.employeeFaceEnabled)
             {
               'title': 'JOY FaceAttend',
               'modules': [
@@ -154,7 +154,7 @@ class _MoreScreenState extends State<MoreScreen> {
                 },
               ],
             },
-          if (garmentRepo.isEntitled)
+          if (garmentRepo.isEntitled && (garmentRepo.isSupervisorUser() || garmentRepo.hasWorkerAccess))
             {
               'title': 'Garment & Piece-Rate',
               'modules': [
@@ -173,16 +173,17 @@ class _MoreScreenState extends State<MoreScreen> {
                         ? StatusType.warning
                         : StatusType.success,
                   },
-                {
-                  'id': 'garment_earnings',
-                  'title': 'My Garment Earnings',
-                  'subtitle': 'Piece ledger, QC & payslips',
-                  'icon': CupertinoIcons.money_dollar_circle_fill,
-                  'bg': AppColors.skyBg,
-                  'fg': AppColors.skyFg,
-                  'badge': null,
-                  'badgeType': StatusType.info,
-                },
+                if (garmentRepo.hasWorkerAccess || garmentRepo.isSupervisorUser())
+                  {
+                    'id': 'garment_earnings',
+                    'title': 'My Garment Earnings',
+                    'subtitle': 'Piece ledger, QC & payslips',
+                    'icon': CupertinoIcons.money_dollar_circle_fill,
+                    'bg': AppColors.skyBg,
+                    'fg': AppColors.skyFg,
+                    'badge': null,
+                    'badgeType': StatusType.info,
+                  },
               ],
             },
           {
@@ -371,10 +372,21 @@ class _MoreScreenState extends State<MoreScreen> {
 
         return Scaffold(
           backgroundColor: AppColors.scaffoldBg,
-          body: SingleChildScrollView(
-            physics: const BouncingScrollPhysics(),
-            padding: const EdgeInsets.only(bottom: AppSpacing.bottomNavClearance),
-            child: Column(
+          body: RefreshIndicator(
+            color: AppColors.primary,
+            onRefresh: () async {
+              await Future.wait([
+                GarmentRepository.instance.checkEntitlement(),
+                FaceAttendService.instance.fetchTenantStatus(),
+                controller.loadAllData(),
+              ]);
+            },
+            child: SingleChildScrollView(
+              physics: const AlwaysScrollableScrollPhysics(
+                parent: BouncingScrollPhysics(),
+              ),
+              padding: const EdgeInsets.only(bottom: AppSpacing.bottomNavClearance),
+              child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Container(
@@ -506,6 +518,7 @@ class _MoreScreenState extends State<MoreScreen> {
                 AppSpacing.gapLG,
               ],
             ),
+          ),
           ),
         );
       },

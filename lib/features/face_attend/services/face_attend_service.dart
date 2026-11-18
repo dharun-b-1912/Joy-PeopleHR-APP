@@ -21,6 +21,8 @@ class FaceAttendStatus {
   final bool hasActiveConsent;
   final String? templateStatus;
   final int retentionDays;
+  final bool employeeFaceEnabled;
+  final String? employeeExemptionReason;
 
   const FaceAttendStatus({
     required this.isEntitled,
@@ -36,6 +38,8 @@ class FaceAttendStatus {
     required this.hasActiveConsent,
     this.templateStatus,
     this.retentionDays = 90,
+    this.employeeFaceEnabled = true,
+    this.employeeExemptionReason,
   });
 
   static const disabled = FaceAttendStatus(
@@ -51,6 +55,8 @@ class FaceAttendStatus {
     consentVersionRequired: 'v1.0',
     hasActiveConsent: false,
     templateStatus: null,
+    employeeFaceEnabled: false,
+    employeeExemptionReason: null,
   );
 }
 
@@ -171,12 +177,26 @@ class FaceAttendService extends ChangeNotifier {
           .limit(1)
           .maybeSingle();
 
+      // Check per-employee face attendance exemption (e.g. broken camera, exempted role)
+      final empRes = await client
+          .from('employees')
+          .select('face_attendance_enabled, face_attendance_exemption_reason')
+          .eq('id', empId)
+          .maybeSingle();
+
+      final bool employeeFaceEnabled = empRes != null && empRes['face_attendance_enabled'] != null
+          ? (empRes['face_attendance_enabled'] as bool)
+          : user.faceAttendanceEnabled;
+      final String? exemptionReason = empRes?['face_attendance_exemption_reason'] as String? ?? user.faceAttendanceExemptionReason;
+
       _status = FaceAttendStatus(
         isEntitled: true,
         moduleEnabled: settingsRes?['module_enabled'] ?? true,
-        faceRequiredOnCheckIn: (settingsRes?['face_verification_enabled'] ?? true) &&
+        faceRequiredOnCheckIn: employeeFaceEnabled &&
+            (settingsRes?['face_verification_enabled'] ?? true) &&
             (settingsRes?['require_face_on_checkin'] ?? true),
-        faceRequiredOnCheckOut: (settingsRes?['face_verification_enabled'] ?? true) &&
+        faceRequiredOnCheckOut: employeeFaceEnabled &&
+            (settingsRes?['face_verification_enabled'] ?? true) &&
             (settingsRes?['require_face_on_checkout'] ?? true),
         livenessEnabled: settingsRes?['liveness_enabled'] ?? true,
         gpsEnabled: settingsRes?['gps_verification_enabled'] ?? true,
@@ -187,6 +207,8 @@ class FaceAttendService extends ChangeNotifier {
         hasActiveConsent: consentRes != null && consentRes['status'] == 'GRANTED',
         templateStatus: templateRes?['enrolment_status'] as String?,
         retentionDays: (settingsRes?['retention_days_images'] as int?) ?? 90,
+        employeeFaceEnabled: employeeFaceEnabled,
+        employeeExemptionReason: exemptionReason,
       );
       await _refreshOfflineCount();
       notifyListeners();

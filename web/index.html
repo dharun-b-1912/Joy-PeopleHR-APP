@@ -176,6 +176,26 @@
         document.addEventListener(evt, _onFirstIosUserGesture, { capture: true, passive: true });
       });
     }
+
+    // Dedicated Web Update Bridge: Clears CacheStorage, unregisters ServiceWorker, and hard-reloads
+    window.joyPerformWebUpdate = function() {
+      console.log("[JOY Web Update] Invalidating browser caches & refreshing...");
+      if ('caches' in window) {
+        caches.keys().then(function(names) {
+          return Promise.all(names.map(function(name) { return caches.delete(name); }));
+        }).catch(function(e) { console.warn("[JOY Web Update] Cache delete error:", e); });
+      }
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistrations().then(function(regs) {
+          return Promise.all(regs.map(function(r) { return r.unregister(); }));
+        }).catch(function(e) { console.warn("[JOY Web Update] SW unregister error:", e); });
+      }
+      setTimeout(function() {
+        var url = new URL(window.location.href);
+        url.searchParams.set('_v', Date.now());
+        window.location.href = url.toString();
+      }, 300);
+    };
   </script>
 </head>
 

@@ -75,15 +75,17 @@ void main() {
       );
       await tester.pump();
 
-      expect(find.text('FaceAttend Check-In Verification'), findsOneWidget);
-      expect(find.textContaining('Location Verified (22m'), findsOneWidget);
-      expect(find.textContaining('Natural blink performed'), findsOneWidget);
+      expect(find.text('FaceID Attendance'), findsOneWidget);
+      expect(find.text('Shift Check-In Punch'), findsOneWidget);
+      expect(find.text('Workplace Geofence Verified'), findsOneWidget);
+      expect(find.textContaining('22m from center'), findsOneWidget);
+      expect(find.textContaining('Step 1: Natural Eye Blink'), findsOneWidget);
       await tester.scrollUntilVisible(
-        find.textContaining('Capture & Verify Attendance'),
+        find.textContaining('Capture'),
         200,
         scrollable: find.byType(Scrollable),
       );
-      expect(find.textContaining('Capture & Verify Attendance'), findsOneWidget);
+      expect(find.textContaining('Capture'), findsWidgets);
     });
 
     test('FaceEmbeddingEngine extracts 192-D embedding, matches same face across lighting, and rejects blank frame', () {

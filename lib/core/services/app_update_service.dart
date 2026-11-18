@@ -9,6 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../theme/klarna_tokens.dart';
 import '../utils/secure_log.dart';
 import 'app_version_service.dart';
+import 'web_update_bridge.dart';
 
 /// Data model representing remote and local version comparison state
 class AppUpdateInfo {
@@ -78,13 +79,14 @@ class AppUpdateService extends ChangeNotifier {
       final currentVer = AppVersionService.instance.version;
       final currentBuild = int.tryParse(AppVersionService.instance.buildNumber) ?? 31;
 
-      // Query Supabase for remote version config
+      // Query Supabase for remote version config matching runtime platform
+      final String targetPlatform = kIsWeb ? 'web' : (Platform.isIOS ? 'ios' : 'android');
       Map<String, dynamic>? remoteRow;
       try {
         final res = await Supabase.instance.client
             .from('app_versions')
             .select('*')
-            .eq('platform', 'android')
+            .eq('platform', targetPlatform)
             .eq('is_active', true)
             .maybeSingle();
         remoteRow = res;
@@ -180,7 +182,12 @@ class AppUpdateService extends ChangeNotifier {
 
   /// Triggers update: first attempts Google Play native in-app update, then falls back to store link
   Future<void> performUpdate({String? targetUrl, bool immediate = true}) async {
-    if (!kIsWeb && Platform.isAndroid) {
+    if (kIsWeb) {
+      WebUpdateBridge.reload();
+      return;
+    }
+
+    if (Platform.isAndroid) {
       try {
         final updateInfo = await InAppUpdate.checkForUpdate();
         if (updateInfo.updateAvailability == UpdateAvailability.updateAvailable) {
@@ -232,6 +239,38 @@ class AppUpdateService extends ChangeNotifier {
           ),
         );
       }
+      return;
+    }
+
+    // On Dedicated Mobile Web App: Auto-update seamlessly!
+    // Never display native Android Google Play Store popups on web.
+    if (kIsWeb) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  "Updating to latest mobile web app version (v${info.latestVersion})...",
+                  style: AppTypography.bodyRegular.copyWith(color: Colors.white, fontWeight: FontWeight.w600),
+                ),
+              ),
+            ],
+          ),
+          backgroundColor: AppColors.primary,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: AppRadius.borderMd),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+      await Future.delayed(const Duration(milliseconds: 1200));
+      WebUpdateBridge.reload();
       return;
     }
 

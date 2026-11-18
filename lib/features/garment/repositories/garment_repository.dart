@@ -14,6 +14,7 @@ class GarmentRepository extends ChangeNotifier {
 
   bool isLoading = false;
   bool isEntitled = false;
+  bool hasWorkerAccess = false;
   String? orgId;
   String currencyCode = 'INR';
   String? lastError;
@@ -50,7 +51,10 @@ class GarmentRepository extends ChangeNotifier {
   }
 
   Future<String?> resolveActiveOrgId() async {
-    final cached = UserService.instance.currentUser.companyId;
+    final user = UserService.instance.currentUser;
+    final cached = (user.organizationId?.isNotEmpty == true)
+        ? user.organizationId!
+        : user.companyId;
     if (cached.isNotEmpty) {
       orgId = cached;
       return cached;
@@ -77,6 +81,7 @@ class GarmentRepository extends ChangeNotifier {
     final id = await resolveActiveOrgId();
     if (id == null || id.isEmpty) {
       isEntitled = false;
+      hasWorkerAccess = false;
       notifyListeners();
       return false;
     }
@@ -88,12 +93,85 @@ class GarmentRepository extends ChangeNotifier {
           .eq('addon_key', 'garment_workforce')
           .maybeSingle();
       isEntitled = row?['is_enabled'] == true;
+
+      if (isEntitled) {
+        await _checkUserWorkerAccess(id);
+      } else {
+        hasWorkerAccess = false;
+      }
     } catch (e) {
       lastError = e.toString();
+      isEntitled = false;
+      hasWorkerAccess = false;
     }
     await _refreshOfflineCounts();
     notifyListeners();
     return isEntitled;
+  }
+
+  Future<void> _checkUserWorkerAccess(String id) async {
+    final user = UserService.instance.currentUser;
+    final empUuid = user.employeeUuid ?? user.employeeId;
+    if (empUuid.isEmpty) {
+      hasWorkerAccess = false;
+      return;
+    }
+
+    final desig = user.designation.toUpperCase();
+    final dept = user.department.toUpperCase();
+    final role = user.role.toUpperCase();
+
+    // Factory floor supervisors/leads always have access
+    if (role.contains('SUPERVISOR') ||
+        desig.contains('SUPERVISOR') ||
+        dept.contains('PRODUCTION') ||
+        dept.contains('GARMENT') ||
+        dept.contains('FLOOR')) {
+      hasWorkerAccess = true;
+      return;
+    }
+
+    // Check if worker designation is piece-rate/garment related
+    final isGarmentWorkerRole = desig.contains('TAILOR') ||
+        desig.contains('OPERATOR') ||
+        desig.contains('SEWING') ||
+        desig.contains('CHECKER') ||
+        desig.contains('CUTTING') ||
+        desig.contains('IRON') ||
+        desig.contains('PACK') ||
+        desig.contains('HELPER');
+
+    if (isGarmentWorkerRole) {
+      hasWorkerAccess = true;
+      return;
+    }
+
+    try {
+      final profile = await _client
+          .from('garment_worker_profiles')
+          .select('id')
+          .eq('organization_id', id)
+          .eq('employee_id', empUuid)
+          .eq('is_active', true)
+          .maybeSingle();
+
+      if (profile != null) {
+        hasWorkerAccess = true;
+        return;
+      }
+
+      final wage = await _client
+          .from('garment_wage_assignments')
+          .select('id')
+          .eq('organization_id', id)
+          .eq('employee_id', empUuid)
+          .eq('is_active', true)
+          .maybeSingle();
+
+      hasWorkerAccess = wage != null;
+    } catch (_) {
+      hasWorkerAccess = false;
+    }
   }
 
   Future<void> _refreshOfflineCounts() async {

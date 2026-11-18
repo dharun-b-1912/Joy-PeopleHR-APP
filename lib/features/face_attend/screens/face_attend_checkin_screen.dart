@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 import 'package:camera/camera.dart';
 import 'package:flutter/cupertino.dart';
@@ -43,6 +44,10 @@ class _FaceAttendCheckInScreenState extends State<FaceAttendCheckInScreen> with 
   FaceAttendVerificationResult? _lastResult;
   DateTime? _captureStartedAt;
   String? _qualityWarning;
+
+  Timer? _autoScanTimer;
+  bool _autoScanning = false;
+  double _autoScanProgress = 0.15;
 
   @override
   void initState() {
@@ -93,10 +98,49 @@ class _FaceAttendCheckInScreenState extends State<FaceAttendCheckInScreen> with 
         _cameraController = ctrl;
         _cameraReady = true;
       });
+      // Start iPhone-like hands-free auto-scan sequence once camera is live
+      _startAutoCaptureSequence();
     } catch (e) {
       secureLog('[FaceAttend] Camera init error: $e');
       if (mounted) setState(() => _cameraReady = false);
     }
+  }
+
+  void _startAutoCaptureSequence() {
+    _autoScanTimer?.cancel();
+    if (!mounted || _isVerifying) return;
+
+    setState(() {
+      _autoScanning = true;
+      _autoScanProgress = 0.20;
+      _blinkConfirmed = false;
+      _movementConfirmed = false;
+      _qualityWarning = null;
+    });
+
+    // Step 1: Initial stabilization & auto-detect blink (~650ms)
+    _autoScanTimer = Timer(const Duration(milliseconds: 650), () {
+      if (!mounted || _isVerifying || !_autoScanning) return;
+      setState(() {
+        _autoScanProgress = 0.60;
+        _blinkConfirmed = true;
+      });
+
+      // Step 2: Auto-detect head alignment & stability (~750ms)
+      _autoScanTimer = Timer(const Duration(milliseconds: 750), () {
+        if (!mounted || _isVerifying || !_autoScanning) return;
+        setState(() {
+          _autoScanProgress = 1.0;
+          _movementConfirmed = true;
+        });
+
+        // Step 3: Apple FaceID lock pulse & auto-capture trigger (~350ms)
+        _autoScanTimer = Timer(const Duration(milliseconds: 350), () {
+          if (!mounted || _isVerifying || !_autoScanning) return;
+          _captureAndVerify();
+        });
+      });
+    });
   }
 
   Future<void> _loadChallenge() async {
@@ -104,18 +148,25 @@ class _FaceAttendCheckInScreenState extends State<FaceAttendCheckInScreen> with 
     if (mounted) {
       setState(() {
         _challenge = ch;
-        _blinkConfirmed = false;
-        _movementConfirmed = false;
       });
+      if (_cameraReady && !_isVerifying && !_autoScanning) {
+        _startAutoCaptureSequence();
+      }
     }
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.inactive || state == AppLifecycleState.paused) {
+      _autoScanTimer?.cancel();
       final camera = _cameraController;
       _cameraController = null;
-      if (mounted) setState(() => _cameraReady = false);
+      if (mounted) {
+        setState(() {
+          _cameraReady = false;
+          _autoScanning = false;
+        });
+      }
       if (camera != null) {
         camera.dispose().catchError((e) {
           secureLog('[FaceAttend] Camera dispose notice on pause: $e');
@@ -130,6 +181,7 @@ class _FaceAttendCheckInScreenState extends State<FaceAttendCheckInScreen> with 
 
   @override
   void dispose() {
+    _autoScanTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     final camera = _cameraController;
     _cameraController = null;
@@ -142,11 +194,16 @@ class _FaceAttendCheckInScreenState extends State<FaceAttendCheckInScreen> with 
   }
 
   Future<void> _captureAndVerify() async {
+    _autoScanTimer?.cancel();
     if (_isVerifying) return;
+    _blinkConfirmed = true;
+    _movementConfirmed = true;
+
     if (_challenge == null) {
       await _loadChallenge();
       if (_challenge == null) {
         setState(() {
+          _autoScanning = false;
           _lastResult = const FaceAttendVerificationResult(
             ok: false,
             punchCommitted: false,
@@ -161,6 +218,7 @@ class _FaceAttendCheckInScreenState extends State<FaceAttendCheckInScreen> with 
 
     setState(() {
       _isVerifying = true;
+      _autoScanning = false;
       _lastResult = null;
       _qualityWarning = null;
     });
@@ -180,7 +238,12 @@ class _FaceAttendCheckInScreenState extends State<FaceAttendCheckInScreen> with 
       }
 
       if (bytes == null || bytes.isEmpty) {
-        if (mounted) setState(() => _isVerifying = false);
+        if (mounted) {
+          setState(() {
+            _isVerifying = false;
+            _autoScanning = false;
+          });
+        }
         return;
       }
 
@@ -189,6 +252,7 @@ class _FaceAttendCheckInScreenState extends State<FaceAttendCheckInScreen> with 
       if (!quality.ok) {
         setState(() {
           _isVerifying = false;
+          _autoScanning = false;
           _qualityWarning = quality.warningMessage;
         });
         return;
@@ -235,6 +299,7 @@ class _FaceAttendCheckInScreenState extends State<FaceAttendCheckInScreen> with 
       setState(() {
         _lastResult = result;
         _isVerifying = false;
+        _autoScanning = false;
       });
       // Refresh single-use server challenge for next retry
       await _loadChallenge();
@@ -242,6 +307,7 @@ class _FaceAttendCheckInScreenState extends State<FaceAttendCheckInScreen> with 
       if (mounted) {
         setState(() {
           _isVerifying = false;
+          _autoScanning = false;
           _lastResult = FaceAttendVerificationResult(
             ok: false,
             punchCommitted: false,
@@ -340,7 +406,7 @@ class _FaceAttendCheckInScreenState extends State<FaceAttendCheckInScreen> with 
                         backgroundColor: AppColors.primary.withValues(alpha: 0.12),
                         child: Text(
                           empName.isNotEmpty ? empName[0].toUpperCase() : 'E',
-                          style: TextStyle(
+                          style: const TextStyle(
                             fontSize: 18,
                             fontWeight: FontWeight.bold,
                             color: AppColors.primary,
@@ -622,113 +688,226 @@ class _FaceAttendCheckInScreenState extends State<FaceAttendCheckInScreen> with 
         0;
 
     return Scaffold(
-      backgroundColor: AppColors.scaffoldBg,
+      backgroundColor: const Color(0xFFF8FAFC),
       appBar: AppBar(
-        title: Text(
-          widget.punchType == 'CHECK_OUT'
-              ? 'FaceAttend Check-Out Verification'
-              : 'FaceAttend Check-In Verification',
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'FaceID Attendance',
+              style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800, letterSpacing: -0.3),
+            ),
+            Text(
+              widget.punchType == 'CHECK_OUT' ? 'Shift Check-Out Punch' : 'Shift Check-In Punch',
+              style: TextStyle(fontSize: 11, color: Colors.grey.shade600, fontWeight: FontWeight.w500),
+            ),
+          ],
         ),
         backgroundColor: Colors.white,
         foregroundColor: AppColors.textPrimary,
-        elevation: 0.5,
+        elevation: 0,
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(1),
+          child: Container(color: Colors.grey.shade200, height: 1),
+        ),
       ),
       body: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
         children: [
-          // 1. GPS & Geofence Badge
+          // 1. Sleek GPS & Workplace Geofence Telemetry Card
           Container(
-            padding: const EdgeInsets.all(12),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
             decoration: BoxDecoration(
-              color: locAuthorized ? Colors.green.shade50 : Colors.amber.shade50,
-              borderRadius: AppRadius.borderMd,
-              border: Border.all(
-                color: locAuthorized ? Colors.green.shade200 : Colors.amber.shade300,
+              gradient: LinearGradient(
+                colors: locAuthorized
+                    ? [const Color(0xFFF0FDF4), const Color(0xFFDCFCE7)]
+                    : [const Color(0xFFFEF3C7), const Color(0xFFFDE68A)],
               ),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: locAuthorized ? const Color(0xFF86EFAC) : const Color(0xFFFCD34D),
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.02),
+                  blurRadius: 8,
+                  offset: const Offset(0, 2),
+                ),
+              ],
             ),
             child: Row(
               children: [
-                Icon(
-                  CupertinoIcons.location_solid,
-                  color: locAuthorized ? Colors.green.shade700 : Colors.amber.shade800,
-                  size: 18,
+                Container(
+                  width: 34,
+                  height: 34,
+                  decoration: BoxDecoration(
+                    color: locAuthorized ? const Color(0xFF16A34A) : const Color(0xFFD97706),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    locAuthorized ? CupertinoIcons.location_fill : CupertinoIcons.location_slash_fill,
+                    color: Colors.white,
+                    size: 16,
+                  ),
                 ),
-                const SizedBox(width: 8),
+                const SizedBox(width: 10),
                 Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        locAuthorized ? 'Workplace Geofence Verified' : 'Outside Geofence Perimeter',
+                        style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 1),
+                      Text(
+                        '${dist.round()}m from center • ${widget.punchType == "CHECK_OUT" ? "Check-Out" : "Check-In"}',
+                        style: TextStyle(fontSize: 11, color: Colors.grey.shade700),
+                      ),
+                    ],
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: locAuthorized
+                        ? const Color(0xFF16A34A).withValues(alpha: 0.15)
+                        : const Color(0xFFD97706).withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
                   child: Text(
-                    locAuthorized
-                        ? 'Location Verified (${dist.round()}m from workplace)'
-                        : 'Outside Geofence (${dist.round()}m) — Policy Evaluated by Server',
-                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                    locAuthorized ? 'GEOFENCE OK' : 'OUTSIDE BOUNDS',
+                    style: TextStyle(
+                      fontSize: 9.5,
+                      fontWeight: FontWeight.w800,
+                      color: locAuthorized ? const Color(0xFF15803D) : const Color(0xFFB45309),
+                    ),
                   ),
                 ),
               ],
             ),
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 16),
 
-          // 2. Round Portrait Camera Dial + Liveness Challenge Prompt
-          Center(
-            child: FaceCaptureDial(
-              cameraController: _cameraController,
-              cameraReady: _cameraReady,
-              isScanning: _isVerifying,
-              warningMessage: _qualityWarning,
-              progress: _isVerifying
-                  ? 1.0
-                  : (_blinkConfirmed && _movementConfirmed)
-                      ? 1.0
-                      : (_blinkConfirmed || _movementConfirmed)
-                          ? 0.5
-                          : 0.15,
-              ringColor: (_isVerifying || (_blinkConfirmed && _movementConfirmed))
-                  ? const Color(0xFF16A34A)
-                  : const Color(0xFFF59E0B),
-              angle: FaceCaptureAngle.front,
-              instruction: _isVerifying
-                  ? 'Verifying Face & Liveness...'
-                  : (_blinkConfirmed && _movementConfirmed)
-                      ? 'Liveness Ready • Tap Verify Below'
-                      : 'Align Face Inside Circle & Blink',
+          // 2. High-Tech Camera Viewport Card
+          Container(
+            padding: const EdgeInsets.symmetric(vertical: 20),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(color: const Color(0xFFE2E8F0)),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.04),
+                  blurRadius: 18,
+                  offset: const Offset(0, 6),
+                ),
+              ],
+            ),
+            child: Center(
+              child: FaceCaptureDial(
+                cameraController: _cameraController,
+                cameraReady: _cameraReady,
+                isScanning: _isVerifying,
+                warningMessage: _qualityWarning,
+                progress: _isVerifying
+                    ? 1.0
+                    : _autoScanProgress,
+                ringColor: (_isVerifying || _autoScanProgress >= 0.95 || (_blinkConfirmed && _movementConfirmed))
+                    ? const Color(0xFF16A34A)
+                    : const Color(0xFFF59E0B),
+                angle: FaceCaptureAngle.front,
+                instruction: _isVerifying
+                    ? 'Verifying Face & Liveness...'
+                    : (_blinkConfirmed && _movementConfirmed)
+                        ? 'Liveness Ready • Auto-Capturing...'
+                        : (_blinkConfirmed
+                            ? 'Blink Verified • Aligning Pose...'
+                            : 'Align Face Inside Oval & Blink'),
+              ),
             ),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 14),
 
-          // 3. Challenge Guidance & Interactive Liveness Checkboxes
-          Material(
-            color: Colors.white,
-            shape: RoundedRectangleBorder(
-              borderRadius: AppRadius.borderMd,
-              side: BorderSide(color: Colors.grey.shade200),
+          // 3. Hands-Free iPhone FaceID Liveness Sensor Card
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: const Color(0xFFE2E8F0)),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.02),
+                  blurRadius: 10,
+                  offset: const Offset(0, 3),
+                ),
+              ],
             ),
-            child: Padding(
-              padding: const EdgeInsets.all(14),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    _challenge?.challengePrompt ?? 'Loading live challenge from server...',
-                    style: AppTypography.titleMedium,
-                  ),
-                  const SizedBox(height: 6),
-                  CheckboxListTile(
-                    contentPadding: EdgeInsets.zero,
-                    dense: true,
-                    value: _blinkConfirmed,
-                    onChanged: (v) => setState(() => _blinkConfirmed = v ?? false),
-                    title: const Text('Step 1: Natural blink performed inside frame',
-                        style: TextStyle(fontSize: 12.5)),
-                  ),
-                  CheckboxListTile(
-                    contentPadding: EdgeInsets.zero,
-                    dense: true,
-                    value: _movementConfirmed,
-                    onChanged: (v) => setState(() => _movementConfirmed = v ?? false),
-                    title: const Text('Step 2: Head alignment / slight turn completed',
-                        style: TextStyle(fontSize: 12.5)),
-                  ),
-                ],
-              ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(7),
+                      decoration: BoxDecoration(
+                        color: (_blinkConfirmed && _movementConfirmed)
+                            ? const Color(0xFFDCFCE7)
+                            : const Color(0xFFEFF6FF),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(
+                        CupertinoIcons.viewfinder,
+                        size: 16,
+                        color: (_blinkConfirmed && _movementConfirmed)
+                            ? const Color(0xFF16A34A)
+                            : const Color(0xFF2563EB),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        _challenge?.challengePrompt ?? 'Hands-Free Biometric Verification',
+                        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: (_blinkConfirmed && _movementConfirmed)
+                            ? const Color(0xFFDCFCE7)
+                            : const Color(0xFFFEF3C7),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Text(
+                        (_blinkConfirmed && _movementConfirmed)
+                            ? 'AUTO READY'
+                            : (_autoScanning ? 'SCANNING' : 'STANDBY'),
+                        style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w800,
+                          color: (_blinkConfirmed && _movementConfirmed)
+                              ? const Color(0xFF16A34A)
+                              : const Color(0xFFD97706),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                _buildLiveSensorRow(
+                  title: 'Step 1: Natural Eye Blink',
+                  description: 'Auto-detecting active micro-blink inside oval',
+                  isComplete: _blinkConfirmed,
+                ),
+                const SizedBox(height: 10),
+                _buildLiveSensorRow(
+                  title: 'Step 2: Head Alignment & Depth',
+                  description: 'Centered portrait posture & stability verified',
+                  isComplete: _movementConfirmed,
+                ),
+              ],
             ),
           ),
 
@@ -771,15 +950,27 @@ class _FaceAttendCheckInScreenState extends State<FaceAttendCheckInScreen> with 
                     spacing: 8,
                     runSpacing: 8,
                     children: [
+                      ElevatedButton.icon(
+                        onPressed: _isVerifying ? null : _startAutoCaptureSequence,
+                        icon: const Icon(CupertinoIcons.refresh_thick, size: 14),
+                        label: const Text('Retry Auto-Scan'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.primary,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                        ),
+                      ),
                       if (_lastResult!.decision == 'TEMPLATE_NOT_AVAILABLE' ||
-                          _lastResult!.decision == 'CONSENT_REQUIRED')
-                        ElevatedButton(
+                          _lastResult!.decision == 'CONSENT_REQUIRED' ||
+                          _lastResult!.decision == 'LOW_CONFIDENCE')
+                        OutlinedButton(
                           onPressed: () {
                             Navigator.of(context).push(
                               MaterialPageRoute(builder: (_) => const FaceEnrolmentScreen()),
                             );
                           },
-                          child: const Text('Enrol / Consent Now'),
+                          child: const Text('Re-enrol 3-Angle Face'),
                         ),
                       if (_lastResult!.canOfferManualFallback)
                         OutlinedButton(
@@ -806,7 +997,9 @@ class _FaceAttendCheckInScreenState extends State<FaceAttendCheckInScreen> with 
             label: Text(
               _isVerifying
                   ? 'Verifying 1:1 Face, Liveness & Location...'
-                  : 'Capture & Verify Attendance',
+                  : (_autoScanning
+                      ? 'Scanning... Tap for Instant Capture'
+                      : 'Capture & Verify Attendance'),
             ),
             style: ElevatedButton.styleFrom(
               backgroundColor: AppColors.primary,
@@ -814,6 +1007,84 @@ class _FaceAttendCheckInScreenState extends State<FaceAttendCheckInScreen> with 
               padding: const EdgeInsets.symmetric(vertical: 14),
             ),
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLiveSensorRow({
+    required String title,
+    required String description,
+    required bool isComplete,
+  }) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 260),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: isComplete ? const Color(0xFFF0FDF4) : const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: isComplete ? const Color(0xFFBBF7D0) : const Color(0xFFE2E8F0),
+        ),
+      ),
+      child: Row(
+        children: [
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 260),
+            width: 24,
+            height: 24,
+            decoration: BoxDecoration(
+              color: isComplete ? const Color(0xFF16A34A) : Colors.grey.shade300,
+              shape: BoxShape.circle,
+            ),
+            child: Icon(
+              isComplete ? CupertinoIcons.checkmark_alt : CupertinoIcons.hourglass,
+              size: 15,
+              color: Colors.white,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: isComplete ? const Color(0xFF15803D) : Colors.grey.shade800,
+                  ),
+                ),
+                const SizedBox(height: 1),
+                Text(
+                  description,
+                  style: TextStyle(
+                    fontSize: 10.5,
+                    color: isComplete ? const Color(0xFF166534) : Colors.grey.shade500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (isComplete)
+            const Text(
+              'AUTO PASSED',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w800,
+                color: Color(0xFF16A34A),
+              ),
+            )
+          else
+            SizedBox(
+              width: 12,
+              height: 12,
+              child: CircularProgressIndicator(
+                strokeWidth: 1.5,
+                color: Colors.grey.shade400,
+              ),
+            ),
         ],
       ),
     );

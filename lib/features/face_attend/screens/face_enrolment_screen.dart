@@ -343,6 +343,9 @@ class _FaceEnrolmentScreenState extends State<FaceEnrolmentScreen> with WidgetsB
               : 'Your 3-angle face template has been securely saved and sent to HR for approval. This screen will update automatically once HR approves or revokes it.',
           badgeText: 'Status: $approvalState',
         );
+        if (mounted) {
+          Navigator.of(context).pop(isActive);
+        }
       } else {
         setState(() => _statusMsg = 'Enrolment failed: ${res['error'] ?? 'Unknown error'}');
       }
@@ -860,6 +863,61 @@ class _FaceEnrolmentScreenState extends State<FaceEnrolmentScreen> with WidgetsB
       listenable: FaceAttendService.instance,
       builder: (context, _) {
         final st = FaceAttendService.instance.status;
+        if (!st.employeeFaceEnabled) {
+          return Scaffold(
+            backgroundColor: const Color(0xFFF8FAFC),
+            appBar: AppBar(
+              title: const Text('Face Attendance Exemption'),
+              backgroundColor: Colors.white,
+              foregroundColor: Colors.black,
+              elevation: 0,
+            ),
+            body: Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24.0),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 80,
+                      height: 80,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFEF3C7),
+                        shape: BoxShape.circle,
+                        border: Border.all(color: const Color(0xFFFCD34D), width: 2),
+                      ),
+                      child: const Icon(CupertinoIcons.camera_fill, color: Color(0xFFB45309), size: 38),
+                    ),
+                    const SizedBox(height: 20),
+                    const Text(
+                      'Exempted from Camera Attendance',
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      'HR has exempted your account from mobile face scanning.\n\nReason: ${st.employeeExemptionReason ?? "Camera damaged / broken or standard clock-in authorized"}.\n\nYou do not need to enrol your face. You can perform standard one-tap location-verified check-in on the Home screen.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 13.5, color: Colors.grey.shade700, height: 1.5),
+                    ),
+                    const SizedBox(height: 24),
+                    ElevatedButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.primary,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                      child: const Text('Back to Home'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        }
+
         final capturedCount = _capturedAngles.length;
         final allCaptured = capturedCount == _angleOrder.length;
         final dialColor = (_isGuidedScanning || _testingMatch || allCaptured)
@@ -867,293 +925,555 @@ class _FaceEnrolmentScreenState extends State<FaceEnrolmentScreen> with WidgetsB
             : const Color(0xFF0284C7);
 
         return Scaffold(
-      backgroundColor: AppColors.scaffoldBg,
-      appBar: AppBar(
-        title: const Text('JOY FaceAttend Enrolment & Privacy'),
-        backgroundColor: Colors.white,
-        foregroundColor: AppColors.textPrimary,
-        elevation: 0.5,
-      ),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Container(
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: AppRadius.borderMd,
-              border: Border.all(color: Colors.grey.shade200),
-            ),
-            child: Column(
+          backgroundColor: const Color(0xFFF8FAFC),
+          appBar: AppBar(
+            title: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Current Status', style: AppTypography.titleMedium),
-                const SizedBox(height: 6),
+                const Text(
+                  'FaceID Enrolment',
+                  style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800, letterSpacing: -0.3),
+                ),
                 Text(
-                  'Template: ${st.templateStatus ?? "Not Enrolled"}  •  Consent: ${st.hasActiveConsent ? "Granted (${st.consentVersionRequired})" : "Not Granted"}  •  Retention: ${st.retentionDays} days',
-                  style: AppTypography.bodySmall.copyWith(color: AppColors.textSecondary),
+                  '3-Angle 192-D Biometric Registration',
+                  style: TextStyle(fontSize: 11, color: Colors.grey.shade600, fontWeight: FontWeight.w500),
                 ),
               ],
             ),
-          ),
-          const SizedBox(height: 18),
-
-          // Centered Round Portrait Capture Dial (enlarges & turns green during guided scan)
-          Center(
-            child: FaceCaptureDial(
-              cameraController: _cameraController,
-              cameraReady: _cameraReady,
-              progress: _testingMatch
-                  ? 1.0
-                  : _isGuidedScanning
-                      ? _scanProgress
-                      : (capturedCount / _angleOrder.length),
-              ringColor: dialColor,
-              angle: _activeAngle,
-              isScanning: _isGuidedScanning || _testingMatch,
-              justCaptured: _justCaptured,
-              warningMessage: _qualityWarning,
-              instruction: _testingMatch
-                  ? 'Verifying Your Face Identity...'
-                  : allCaptured && !_isGuidedScanning
-                      ? 'All 3 Angles Verified • Ready to Submit'
-                      : _angleInstruction(_activeAngle),
+            backgroundColor: Colors.white,
+            foregroundColor: AppColors.textPrimary,
+            elevation: 0,
+            bottom: PreferredSize(
+              preferredSize: const Size.fromHeight(1),
+              child: Container(color: Colors.grey.shade200, height: 1),
             ),
           ),
-          const SizedBox(height: 16),
-
-          // 3-Angle Progress Chips (Front / Left / Right — tap any to retake)
-          Row(
-            children: _angleOrder.map((angle) {
-              final bytes = _capturedAngles[angle];
-              final isSelected = _activeAngle == angle;
-              final isDone = bytes != null;
-              return Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 4),
-                  child: InkWell(
-                    borderRadius: AppRadius.borderMd,
-                    onTap: (_submitting || _isGuidedScanning)
-                        ? null
-                        : () => _startGuidedScan(singleRetakeAngle: angle),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 8),
+          body: ListView(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            children: [
+              // 1. Sleek Status & Telemetry Header Pill
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: st.templateStatus == 'ACTIVE'
+                        ? [const Color(0xFFECFDF5), const Color(0xFFDCFCE7)]
+                        : [Colors.white, const Color(0xFFF8FAFC)],
+                  ),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: st.templateStatus == 'ACTIVE'
+                        ? const Color(0xFFA7F3D0)
+                        : const Color(0xFFE2E8F0),
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.02),
+                      blurRadius: 10,
+                      offset: const Offset(0, 3),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 36,
+                      height: 36,
                       decoration: BoxDecoration(
-                        color: isDone
-                            ? const Color(0xFFECFDF5)
-                            : isSelected
-                                ? const Color(0xFFF0FDF4)
-                                : Colors.white,
-                        borderRadius: AppRadius.borderMd,
-                        border: Border.all(
-                          color: isSelected
-                              ? dialColor
-                              : isDone
-                                  ? const Color(0xFF86EFAC)
-                                  : Colors.grey.shade300,
-                          width: isSelected ? 1.6 : 1,
-                        ),
+                        color: st.templateStatus == 'ACTIVE'
+                            ? const Color(0xFF10B981)
+                            : const Color(0xFF0F172A),
+                        shape: BoxShape.circle,
                       ),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
+                      child: Icon(
+                        st.templateStatus == 'ACTIVE'
+                            ? CupertinoIcons.checkmark_seal_fill
+                            : CupertinoIcons.person_crop_circle_badge_plus,
+                        color: Colors.white,
+                        size: 18,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          if (bytes != null)
-                            ClipOval(
-                              child: Image.memory(bytes, width: 22, height: 22, fit: BoxFit.cover),
-                            )
-                          else
-                            Icon(
-                              CupertinoIcons.circle,
-                              size: 16,
-                              color: isSelected ? dialColor : Colors.grey.shade400,
-                            ),
-                          const SizedBox(width: 6),
                           Text(
-                            _angleLabel(angle),
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w700,
-                              color: isDone ? const Color(0xFF15803D) : AppColors.textPrimary,
-                            ),
+                            st.templateStatus == 'ACTIVE'
+                                ? 'Face Profile Active'
+                                : (st.templateStatus == 'PENDING_APPROVAL'
+                                    ? 'Awaiting HR Approval'
+                                    : '3-Angle Setup Required'),
+                            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
                           ),
-                          if (isDone) ...[
-                            const SizedBox(width: 4),
-                            const Icon(CupertinoIcons.checkmark_alt, size: 13, color: Color(0xFF16A34A)),
-                          ],
+                          const SizedBox(height: 2),
+                          Text(
+                            'DPDP Compliant • Stored on isolated private cloud • ${st.retentionDays}d retention',
+                            style: TextStyle(fontSize: 10.5, color: Colors.grey.shade600),
+                          ),
                         ],
                       ),
                     ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: st.templateStatus == 'ACTIVE'
+                            ? const Color(0xFF16A34A).withValues(alpha: 0.12)
+                            : Colors.grey.shade200,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        st.templateStatus ?? 'UNENROLLED',
+                        style: TextStyle(
+                          fontSize: 9.5,
+                          fontWeight: FontWeight.w800,
+                          color: st.templateStatus == 'ACTIVE'
+                              ? const Color(0xFF16A34A)
+                              : Colors.grey.shade700,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              // 2. High-Tech Camera Viewport Card
+              Container(
+                padding: const EdgeInsets.symmetric(vertical: 20),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(color: const Color(0xFFE2E8F0)),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.04),
+                      blurRadius: 18,
+                      offset: const Offset(0, 6),
+                    ),
+                  ],
+                ),
+                child: Center(
+                  child: FaceCaptureDial(
+                    cameraController: _cameraController,
+                    cameraReady: _cameraReady,
+                    progress: _testingMatch
+                        ? 1.0
+                        : _isGuidedScanning
+                            ? _scanProgress
+                            : (capturedCount / _angleOrder.length),
+                    ringColor: dialColor,
+                    angle: _activeAngle,
+                    isScanning: _isGuidedScanning || _testingMatch,
+                    justCaptured: _justCaptured,
+                    warningMessage: _qualityWarning,
+                    instruction: _testingMatch
+                        ? 'Verifying Your Face Identity...'
+                        : allCaptured && !_isGuidedScanning
+                            ? 'All 3 Angles Verified • Ready to Submit'
+                            : _angleInstruction(_activeAngle),
                   ),
                 ),
-              );
-            }).toList(),
+              ),
+              const SizedBox(height: 14),
+
+              // 3. Apple FaceID Style 3-Angle Cards Gallery
+              Row(
+                children: _angleOrder.map((angle) {
+                  final bytes = _capturedAngles[angle];
+                  final isSelected = _activeAngle == angle;
+                  final isDone = bytes != null;
+                  return Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(16),
+                        onTap: (_submitting || _isGuidedScanning)
+                            ? null
+                            : () => _startGuidedScan(singleRetakeAngle: angle),
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 240),
+                          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+                          decoration: BoxDecoration(
+                            color: isDone
+                                ? const Color(0xFFF0FDF4)
+                                : isSelected
+                                    ? const Color(0xFFEFF6FF)
+                                    : Colors.white,
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(
+                              color: isSelected
+                                  ? const Color(0xFF2563EB)
+                                  : isDone
+                                      ? const Color(0xFF86EFAC)
+                                      : const Color(0xFFE2E8F0),
+                              width: isSelected ? 1.8 : 1,
+                            ),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withValues(alpha: 0.02),
+                                blurRadius: 6,
+                                offset: const Offset(0, 2),
+                              ),
+                            ],
+                          ),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (bytes != null)
+                                Container(
+                                  width: 40,
+                                  height: 40,
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    border: Border.all(color: const Color(0xFF16A34A), width: 1.5),
+                                  ),
+                                  child: ClipOval(
+                                    child: Image.memory(bytes, fit: BoxFit.cover),
+                                  ),
+                                )
+                              else
+                                Container(
+                                  width: 40,
+                                  height: 40,
+                                  decoration: BoxDecoration(
+                                    color: isSelected ? const Color(0xFFDBEAFE) : const Color(0xFFF1F5F9),
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: Icon(
+                                    _angleIcon(angle),
+                                    size: 20,
+                                    color: isSelected ? const Color(0xFF2563EB) : Colors.grey.shade500,
+                                  ),
+                                ),
+                              const SizedBox(height: 6),
+                              Text(
+                                _angleLabel(angle),
+                                style: TextStyle(
+                                  fontSize: 11.5,
+                                  fontWeight: FontWeight.w700,
+                                  color: isDone
+                                      ? const Color(0xFF15803D)
+                                      : isSelected
+                                          ? const Color(0xFF1D4ED8)
+                                          : const Color(0xFF334155),
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                isDone ? 'Captured' : (isSelected ? 'Scanning' : 'Pending'),
+                                style: TextStyle(
+                                  fontSize: 9.5,
+                                  fontWeight: FontWeight.w600,
+                                  color: isDone ? const Color(0xFF16A34A) : Colors.grey.shade500,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                }).toList(),
+              ),
+              const SizedBox(height: 14),
+
+              // 4. Guided Hands-Free Scan Action Button
+              if (_isGuidedScanning)
+                OutlinedButton.icon(
+                  onPressed: _cancelGuidedScan,
+                  icon: const Icon(CupertinoIcons.xmark_circle_fill, size: 18, color: Colors.redAccent),
+                  label: Text(
+                    'Scanning ${_angleLabel(_activeAngle)}... Tap to Cancel',
+                    style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 13),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: Colors.redAccent, width: 1.4),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  ),
+                )
+              else
+                ElevatedButton.icon(
+                  onPressed: _submitting ? null : () => _startGuidedScan(),
+                  icon: Icon(
+                    allCaptured ? CupertinoIcons.refresh_thick : CupertinoIcons.viewfinder,
+                    size: 18,
+                  ),
+                  label: Text(
+                    allCaptured
+                        ? 'Rescan 3-Angle Profile'
+                        : capturedCount == 0
+                            ? 'Start Hands-Free 3-Angle Scan'
+                            : 'Resume 3-Angle Scan ($capturedCount/3 Done)',
+                    style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF0F172A),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    elevation: 0,
+                  ),
+                ),
+              const SizedBox(height: 16),
+
+              // 5. Modern Language Chips & Multilingual Biometric Consent Card
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: const Color(0xFFE2E8F0)),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.02),
+                      blurRadius: 10,
+                      offset: const Offset(0, 3),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(CupertinoIcons.shield_lefthalf_fill, color: Color(0xFF07563D), size: 17),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Privacy Notice (${st.consentVersionRequired})',
+                          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+                        ),
+                        const Spacer(),
+                        Wrap(
+                          spacing: 6,
+                          children: [
+                            _buildLanguageChip(code: 'en', label: 'EN', flag: '🇬🇧'),
+                            _buildLanguageChip(code: 'hi', label: 'हिन्दी', flag: '🇮🇳'),
+                            _buildLanguageChip(code: 'ta', label: 'தமிழ்', flag: '🇮🇳'),
+                          ],
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF8FAFC),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: const Color(0xFFF1F5F9)),
+                      ),
+                      child: Text(
+                        _consentText[_selectedLang] ?? _consentText['en']!,
+                        style: TextStyle(fontSize: 11.5, color: Colors.grey.shade700, height: 1.45),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    _buildConsentToggleCard(st),
+                  ],
+                ),
+              ),
+
+              if (_statusMsg != null) ...[
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFEFF6FF),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: const Color(0xFFBFDBFE)),
+                  ),
+                  child: Text(
+                    _statusMsg!,
+                    style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600, color: Color(0xFF1D4ED8)),
+                  ),
+                ),
+              ],
+
+              const SizedBox(height: 16),
+              ElevatedButton.icon(
+                onPressed: (_submitting || _isGuidedScanning || !allCaptured || !_consentAccepted)
+                    ? null
+                    : _submitEnrolment,
+                icon: _submitting
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                      )
+                    : const Icon(CupertinoIcons.checkmark_shield_fill),
+                label: Text(
+                  _submitting
+                      ? 'Uploading Encrypted Biometric Template...'
+                      : allCaptured
+                          ? (_consentAccepted ? 'Submit & Activate Face Profile' : 'Accept Consent to Continue')
+                          : 'Complete All 3 Angles ($capturedCount/3)',
+                  style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700),
+                ),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 15),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  elevation: 0,
+                ),
+              ),
+
+              if (st.templateStatus == 'ACTIVE') ...[
+                const SizedBox(height: 10),
+                OutlinedButton.icon(
+                  onPressed: (_testingMatch || _isGuidedScanning || _submitting)
+                      ? null
+                      : _testFaceMatchAgainstDatabase,
+                  icon: _testingMatch
+                      ? const SizedBox(
+                          width: 15,
+                          height: 15,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(CupertinoIcons.checkmark_seal_fill, color: Color(0xFF16A34A), size: 16),
+                  label: Text(
+                    _testingMatch ? 'Verifying 1:1 Match...' : 'Test Facial Match Against Database',
+                    style: const TextStyle(color: Color(0xFF16A34A), fontWeight: FontWeight.w700, fontSize: 12.5),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    side: const BorderSide(color: Color(0xFF16A34A), width: 1.3),
+                    padding: const EdgeInsets.symmetric(vertical: 13),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                  ),
+                ),
+              ],
+
+              if (st.hasActiveConsent || st.templateStatus != null) ...[
+                const SizedBox(height: 10),
+                TextButton.icon(
+                  onPressed: _submitting ? null : _withdrawAndErase,
+                  icon: const Icon(CupertinoIcons.trash, color: Colors.redAccent, size: 15),
+                  label: const Text(
+                    'Withdraw Consent & Erase Face Data',
+                    style: TextStyle(color: Colors.redAccent, fontSize: 12, fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 20),
+            ],
           ),
-          const SizedBox(height: 14),
+        );
+      },
+    );
+  }
 
-          // Guided Auto-Scan Button (no manual clicking while turning Left/Right)
-          if (_isGuidedScanning)
-            OutlinedButton.icon(
-              onPressed: _cancelGuidedScan,
-              icon: const Icon(CupertinoIcons.xmark_circle, size: 18, color: Colors.redAccent),
-              label: Text(
-                'Scanning ${_angleLabel(_activeAngle)}... (Tap to Cancel)',
-                style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.w600),
-              ),
-              style: OutlinedButton.styleFrom(
-                side: const BorderSide(color: Colors.redAccent),
-                padding: const EdgeInsets.symmetric(vertical: 12),
-              ),
-            )
-          else
-            OutlinedButton.icon(
-              onPressed: _submitting ? null : () => _startGuidedScan(),
-              icon: Icon(
-                allCaptured ? CupertinoIcons.refresh : CupertinoIcons.viewfinder,
-                size: 18,
-              ),
-              label: Text(
-                allCaptured
-                    ? 'Rescan All 3 Angles'
-                    : capturedCount == 0
-                        ? 'Start Guided 3-Angle Scan (Hands-Free)'
-                        : 'Resume Scan ($capturedCount/3 Done)',
-              ),
-              style: OutlinedButton.styleFrom(
-                foregroundColor: const Color(0xFF16A34A),
-                side: const BorderSide(color: Color(0xFF16A34A), width: 1.4),
-                padding: const EdgeInsets.symmetric(vertical: 13),
+  Widget _buildLanguageChip({
+    required String code,
+    required String label,
+    required String flag,
+  }) {
+    final isSelected = _selectedLang == code;
+    return InkWell(
+      borderRadius: BorderRadius.circular(999),
+      onTap: () => setState(() => _selectedLang = code),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+        decoration: BoxDecoration(
+          color: isSelected ? const Color(0xFF0F172A) : const Color(0xFFF1F5F9),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(
+            color: isSelected ? const Color(0xFF0F172A) : const Color(0xFFE2E8F0),
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(flag, style: const TextStyle(fontSize: 10)),
+            const SizedBox(width: 4),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+                color: isSelected ? Colors.white : const Color(0xFF334155),
               ),
             ),
-          const SizedBox(height: 16),
+          ],
+        ),
+      ),
+    );
+  }
 
-          // Multilingual Consent Card
-          Material(
-            color: Colors.white,
-            shape: RoundedRectangleBorder(
-              borderRadius: AppRadius.borderMd,
-              side: BorderSide(color: Colors.grey.shade200),
+  Widget _buildConsentToggleCard(FaceAttendStatus st) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(14),
+      onTap: () => setState(() => _consentAccepted = !_consentAccepted),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: _consentAccepted ? const Color(0xFFF0FDF4) : Colors.white,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: _consentAccepted ? const Color(0xFF86EFAC) : const Color(0xFFCBD5E1),
+            width: _consentAccepted ? 1.5 : 1,
+          ),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 200),
+              width: 22,
+              height: 22,
+              decoration: BoxDecoration(
+                color: _consentAccepted ? const Color(0xFF16A34A) : Colors.transparent,
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: _consentAccepted ? const Color(0xFF16A34A) : Colors.grey.shade400,
+                  width: 1.8,
+                ),
+              ),
+              child: _consentAccepted
+                  ? const Icon(CupertinoIcons.checkmark_alt, size: 14, color: Colors.white)
+                  : null,
             ),
-            child: Padding(
-              padding: const EdgeInsets.all(14),
+            const SizedBox(width: 10),
+            Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text('Explicit Consent (${st.consentVersionRequired})',
-                          style: AppTypography.titleMedium),
-                      DropdownButton<String>(
-                        value: _selectedLang,
-                        underline: const SizedBox.shrink(),
-                        items: const [
-                          DropdownMenuItem(value: 'en', child: Text('English')),
-                          DropdownMenuItem(value: 'hi', child: Text('हिन्दी')),
-                          DropdownMenuItem(value: 'ta', child: Text('தமிழ்')),
-                        ],
-                        onChanged: (v) => setState(() => _selectedLang = v ?? 'en'),
-                      ),
-                    ],
+                  const Text(
+                    'I Agree to 1:1 Biometric Verification',
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFF0F172A),
+                    ),
                   ),
-                  const SizedBox(height: 6),
+                  const SizedBox(height: 2),
                   Text(
-                    _consentText[_selectedLang] ?? _consentText['en']!,
-                    style: AppTypography.bodySmall.copyWith(height: 1.4),
-                  ),
-                  const SizedBox(height: 10),
-                  CheckboxListTile(
-                    contentPadding: EdgeInsets.zero,
-                    value: _consentAccepted,
-                    activeColor: AppColors.primary,
-                    onChanged: (v) => setState(() => _consentAccepted = v ?? false),
-                    title: const Text(
-                      'I agree to 1:1 biometric attendance verification.',
-                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                    'Encrypted 192-D vectors only. Auto-purged after ${st.retentionDays} days per DPDP Act standards.',
+                    style: TextStyle(
+                      fontSize: 10.5,
+                      color: Colors.grey.shade600,
+                      height: 1.35,
                     ),
                   ),
                 ],
               ),
             ),
-          ),
-
-          if (_statusMsg != null) ...[
-            const SizedBox(height: 12),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.blue.shade50,
-                borderRadius: AppRadius.borderMd,
-              ),
-              child: Text(_statusMsg!, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
-            ),
           ],
-
-          const SizedBox(height: 16),
-          ElevatedButton.icon(
-            onPressed: (_submitting || _isGuidedScanning || !allCaptured) ? null : _submitEnrolment,
-            icon: _submitting
-                ? const SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                  )
-                : const Icon(CupertinoIcons.checkmark_shield_fill),
-            label: Text(
-              _submitting
-                  ? 'Uploading Optimized 3-Angle Template...'
-                  : allCaptured
-                      ? 'Submit 3-Angle Face Enrolment'
-                      : 'Complete 3-Angle Scan to Enrol ($capturedCount/3)',
-            ),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.primary,
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(vertical: 14),
-            ),
-          ),
-
-          if (st.templateStatus == 'ACTIVE') ...[
-            const SizedBox(height: 12),
-            OutlinedButton.icon(
-              onPressed: (_testingMatch || _isGuidedScanning || _submitting)
-                  ? null
-                  : _testFaceMatchAgainstDatabase,
-              icon: _testingMatch
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(CupertinoIcons.person_crop_circle_badge_checkmark,
-                      color: Color(0xFF0284C7)),
-              label: Text(
-                _testingMatch
-                    ? 'Verifying Your Face...'
-                    : 'Verify Your Face',
-                style: const TextStyle(color: Color(0xFF0284C7), fontWeight: FontWeight.w600),
-              ),
-              style: OutlinedButton.styleFrom(
-                side: const BorderSide(color: Color(0xFF0284C7), width: 1.3),
-                padding: const EdgeInsets.symmetric(vertical: 13),
-              ),
-            ),
-          ],
-
-          if (st.hasActiveConsent || st.templateStatus != null) ...[
-            const SizedBox(height: 12),
-            OutlinedButton.icon(
-              onPressed: _submitting ? null : _withdrawAndErase,
-              icon: const Icon(CupertinoIcons.trash, color: Colors.redAccent),
-              label: const Text(
-                'Withdraw Consent & Permanently Erase My Face Data',
-                style: TextStyle(color: Colors.redAccent),
-              ),
-            ),
-          ],
-        ],
+        ),
       ),
     );
-      },
-    );
+  }
+
+  IconData _angleIcon(FaceCaptureAngle angle) {
+    switch (angle) {
+      case FaceCaptureAngle.front:
+        return CupertinoIcons.person_crop_circle_fill;
+      case FaceCaptureAngle.left:
+        return CupertinoIcons.arrow_left_circle_fill;
+      case FaceCaptureAngle.right:
+        return CupertinoIcons.arrow_right_circle_fill;
+    }
   }
 }

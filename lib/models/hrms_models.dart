@@ -405,6 +405,8 @@ class UserModel {
   final String? profileImage;
   final List<CompanyAssetModel> assignedAssets;
   final List<ApprovedWorkLocation> assignedLocations;
+  final bool faceAttendanceEnabled;
+  final String? faceAttendanceExemptionReason;
 
   const UserModel({
     required this.name,
@@ -440,6 +442,8 @@ class UserModel {
     this.profileImage,
     this.assignedAssets = const [],
     this.assignedLocations = const [],
+    this.faceAttendanceEnabled = true,
+    this.faceAttendanceExemptionReason,
   });
 
   /// Id to use for DB queries — prefers the employees.id PK, falls back to code.
@@ -513,6 +517,8 @@ class UserModel {
     String? profileImage,
     List<CompanyAssetModel>? assignedAssets,
     List<ApprovedWorkLocation>? assignedLocations,
+    bool? faceAttendanceEnabled,
+    String? faceAttendanceExemptionReason,
   }) {
     return UserModel(
       name: name ?? this.name,
@@ -547,6 +553,8 @@ class UserModel {
       profileImage: profileImage ?? this.profileImage,
       assignedAssets: assignedAssets ?? this.assignedAssets,
       assignedLocations: assignedLocations ?? this.assignedLocations,
+      faceAttendanceEnabled: faceAttendanceEnabled ?? this.faceAttendanceEnabled,
+      faceAttendanceExemptionReason: faceAttendanceExemptionReason ?? this.faceAttendanceExemptionReason,
     );
   }
 
@@ -584,6 +592,8 @@ class UserModel {
     'profile_image': profileImage,
     'assigned_assets': assignedAssets.map((a) => a.toJson()).toList(),
     'assigned_locations': assignedLocations.map((l) => l.toJson()).toList(),
+    'face_attendance_enabled': faceAttendanceEnabled,
+    'face_attendance_exemption_reason': faceAttendanceExemptionReason,
   };
 
   factory UserModel.fromJson(Map<String, dynamic> json) => UserModel(
@@ -632,6 +642,10 @@ class UserModel {
     assignedLocations: json['assigned_locations'] is List
         ? (json['assigned_locations'] as List).map((l) => ApprovedWorkLocation.fromJson(Map<String, dynamic>.from(l))).toList()
         : const [],
+    faceAttendanceEnabled: json['face_attendance_enabled'] is bool
+        ? (json['face_attendance_enabled'] as bool)
+        : (json['face_attendance_enabled']?.toString().toLowerCase() != 'false'),
+    faceAttendanceExemptionReason: json['face_attendance_exemption_reason']?.toString(),
   );
 }
 

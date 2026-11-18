@@ -338,6 +338,10 @@ class EmployeeProfileMapper {
       payrollStatutory: payrollModel,
       profileImage: _s(emp['avatar_url']) ?? authAvatarUrl,
       assignedLocations: deduplicatedLocations,
+      faceAttendanceEnabled: emp['face_attendance_enabled'] is bool
+          ? (emp['face_attendance_enabled'] as bool)
+          : (emp['face_attendance_enabled']?.toString().toLowerCase() != 'false'),
+      faceAttendanceExemptionReason: _s(emp['face_attendance_exemption_reason']),
     );
   }
 

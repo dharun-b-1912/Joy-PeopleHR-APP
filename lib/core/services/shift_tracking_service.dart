@@ -186,9 +186,9 @@ class ShiftTrackingService extends ChangeNotifier with WidgetsBindingObserver {
     AttendanceService.instance.addListener(_handleAttendanceStateChange);
     UserService.instance.addListener(_handleAttendanceStateChange);
 
-    // Periodically re-check attendance & shift window every 2 minutes (catches biometric machine punches)
+    // Periodically re-check attendance & shift window every 60 seconds (catches biometric machine punches)
     _shiftWindowMonitorTimer?.cancel();
-    _shiftWindowMonitorTimer = Timer.periodic(const Duration(minutes: 2), (_) {
+    _shiftWindowMonitorTimer = Timer.periodic(const Duration(minutes: 1), (_) {
       if (UserService.instance.isLoggedIn) {
         AttendanceService.instance.fetchTodayAttendance();
       }
@@ -290,9 +290,12 @@ class ShiftTrackingService extends ChangeNotifier with WidgetsBindingObserver {
 
     if (isLoggedIn) {
       final isShiftActive = isCurrentlyWithinShiftWindow();
-      // Track continuously if employee is checked in (via mobile or biometric) OR within assigned shift hours
-      if (isCheckedIn || isShiftActive) {
-        final status = isCheckedIn ? 'on_duty' : 'active_shift';
+      // Strict Enterprise Shift-Bound Protocol:
+      // Real-time background GPS tracking strictly runs while employee is CHECKED IN
+      // (via mobile app, face attend, or office biometric punch) AND within their active shift timing.
+      // Upon check-out (or if not yet checked in), GPS tracking terminates/remains idle for employee privacy.
+      if (isCheckedIn && isShiftActive) {
+        const status = 'on_duty';
 
         // Sync initial/current position safely
         try {
@@ -300,14 +303,12 @@ class ShiftTrackingService extends ChangeNotifier with WidgetsBindingObserver {
         } catch (_) {}
 
         // Start continuous stream safely when employee is logged in with location enabled
+        // Runs even when app is in background (e.g. employee clocked in via office biometric machine)
         if (!_isTracking) {
-          final isAppForeground = WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
-          if (isAppForeground) {
-            startShiftTracking();
-          }
+          startShiftTracking();
         }
       } else {
-        // Outside shift hours and not checked in -> clean standby stop
+        // Outside shift hours or not checked in -> clean standby stop
         if (_isTracking) {
           stopShiftTracking();
         }
@@ -512,30 +513,30 @@ class ShiftTrackingService extends ChangeNotifier with WidgetsBindingObserver {
       secureLog('[ShiftTracking] Initial position capture failed: $e');
     }
 
-    // 2. Stream updates with 30-meter distance filter & Foreground Notification (Google Fused Location)
+    // 2. Stream updates with 10-meter distance filter & Foreground Notification (Google Fused Location)
     late final LocationSettings locationSettings;
     if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
       locationSettings = AndroidSettings(
         accuracy: LocationAccuracy.bestForNavigation,
-        distanceFilter: 15, // 15-meter displacement trigger
-        intervalDuration: const Duration(seconds: 10),
+        distanceFilter: 10, // 10-meter displacement trigger
+        intervalDuration: const Duration(seconds: 15),
         foregroundNotificationConfig: const ForegroundNotificationConfig(
-          notificationTitle: "JOY PeopleHR • GPS Tracking Active",
-          notificationText: "High-accuracy Google Maps GPS active during work hours",
+          notificationTitle: "JOY PeopleHR • Realtime Shift GPS",
+          notificationText: "Live fleet telemetry active during duty hours",
           enableWakeLock: true,
         ),
       );
     } else if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
       locationSettings = AppleSettings(
         accuracy: LocationAccuracy.bestForNavigation,
-        distanceFilter: 15,
+        distanceFilter: 10,
         pauseLocationUpdatesAutomatically: false,
         showBackgroundLocationIndicator: true,
       );
     } else {
       locationSettings = const LocationSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: 15,
+        distanceFilter: 10,
       );
     }
 
@@ -552,7 +553,7 @@ class ShiftTrackingService extends ChangeNotifier with WidgetsBindingObserver {
         _positionSub = Geolocator.getPositionStream(
           locationSettings: const LocationSettings(
             accuracy: LocationAccuracy.high,
-            distanceFilter: 20,
+            distanceFilter: 10,
           ),
         ).listen(
           (pos) => _recordPosition(pos),
@@ -563,9 +564,9 @@ class ShiftTrackingService extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
 
-    // 3. 10-Minute stationary heartbeat so HR radar knows device is alive while idle
+    // 3. 60-Second stationary heartbeat so HR radar knows device is alive in real time while desk idle
     _stationaryHeartbeatTimer?.cancel();
-    _stationaryHeartbeatTimer = Timer.periodic(const Duration(minutes: 10), (_) async {
+    _stationaryHeartbeatTimer = Timer.periodic(const Duration(seconds: 60), (_) async {
       if (!_isTracking) return;
       try {
         final pos = await Geolocator.getCurrentPosition(
@@ -757,8 +758,25 @@ class ShiftTrackingService extends ChangeNotifier with WidgetsBindingObserver {
           onConflict: 'organization_id,employee_id',
         );
       } catch (upsertErr) {
-        secureLog('[ShiftTracking] Standard live upsert rejected ($upsertErr), using telemetry transport bridge...');
-        await _syncLiveLocationViaTelemetry(livePayload);
+        secureLog('[ShiftTracking] Standard live upsert error ($upsertErr), trying RPC sync fallback...');
+        try {
+          await supabase.rpc('fn_sync_employee_live_location', params: {
+            'p_organization_id': orgId,
+            'p_employee_id': empId,
+            'p_latitude': currentPos.latitude,
+            'p_longitude': currentPos.longitude,
+            'p_accuracy': currentPos.accuracy,
+            'p_speed': rawSpeed,
+            'p_battery_level': batteryLevel,
+            'p_is_charging': isCharging,
+            'p_is_moving': isMoving,
+            'p_status': status,
+            'p_cumulative_distance_meters': _cumulativeDistanceMeters,
+            'p_record_trail': false,
+          });
+        } catch (_) {
+          await _syncLiveLocationViaTelemetry(livePayload);
+        }
       }
 
       // 2. Insert into Breadcrumb Trail
