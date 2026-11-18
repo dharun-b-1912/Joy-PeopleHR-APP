@@ -96,7 +96,7 @@ class _AppletTileWidgetState extends State<AppletTileWidget> with SingleTickerPr
               fit: BoxFit.scaleDown,
               child: ConstrainedBox(
                 constraints: BoxConstraints(
-                  maxWidth: widget.compact ? 72 : 68,
+                  maxWidth: widget.compact ? 72 : 78,
                 ),
                 child: Text(
                   widget.tile.label,
@@ -109,6 +109,7 @@ class _AppletTileWidgetState extends State<AppletTileWidget> with SingleTickerPr
                     fontWeight: FontWeight.w600,
                     color: AppColors.textPrimary,
                     height: 1.15,
+                    letterSpacing: -0.2,
                   ),
                 ),
               ),

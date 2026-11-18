@@ -17,3 +17,4 @@ void performWebReload() {
     html.window.location.href = html.window.location.href;
   }
 }
+

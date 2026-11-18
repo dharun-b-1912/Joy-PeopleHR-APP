@@ -196,11 +196,37 @@
         window.location.href = url.toString();
       }, 300);
     };
+
+    // Auto-purge stale cache if app version has been updated
+    (function() {
+      var CURRENT_BUILD = "1.1.18+40";
+      var lastBuild = localStorage.getItem("joy_web_build");
+      if (lastBuild !== CURRENT_BUILD) {
+        console.log("[JOY Auto-Update] Updating from " + lastBuild + " to " + CURRENT_BUILD + ". Clearing stale assets...");
+        localStorage.setItem("joy_web_build", CURRENT_BUILD);
+        if ('caches' in window) {
+          caches.keys().then(function(names) {
+            names.forEach(function(name) { caches.delete(name); });
+          });
+        }
+        if ('serviceWorker' in navigator) {
+          navigator.serviceWorker.getRegistrations().then(function(regs) {
+            regs.forEach(function(r) { r.unregister(); });
+          });
+        }
+      }
+    })();
   </script>
 </head>
 
 <body>
-  <script src="flutter_bootstrap.js" async></script>
+  <script>
+    // Dynamically load flutter_bootstrap.js with cache-busting query to bypass CDN/browser disk cache
+    var flutterBootScript = document.createElement('script');
+    flutterBootScript.src = 'flutter_bootstrap.js?v=' + Date.now();
+    flutterBootScript.async = true;
+    document.body.appendChild(flutterBootScript);
+  </script>
 </body>
 
 </html>

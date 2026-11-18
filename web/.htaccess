@@ -9,12 +9,12 @@
 
 # Caching and Headers
 <IfModule mod_headers.c>
-  # Avoid caching index.html so iOS Safari users always get the latest app version
-  <Files "index.html">
-    Header set Cache-Control "no-cache, no-store, must-revalidate"
+  # Avoid caching html, js, json, wasm so users always get the latest app version
+  <FilesMatch "\.(html|js|json|wasm)$">
+    Header set Cache-Control "no-cache, no-store, must-revalidate, max-age=0"
     Header set Pragma "no-cache"
     Header set Expires 0
-  </Files>
+  </FilesMatch>
 
   # Allow CORS for assets
   Header set Access-Control-Allow-Origin "*"
